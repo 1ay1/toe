@@ -68,7 +68,7 @@ xcb_atom_t intern_atom(xcb_connection_t *c, const char *name) {
     xcb_intern_atom_cookie_t cookie = xcb_intern_atom(c, 0, static_cast<uint16_t>(std::strlen(name)),
                                                       name);
     xcb_intern_atom_reply_t *reply = xcb_intern_atom_reply(c, cookie, nullptr);
-    const xcb_atom_t atom = reply ? reply->atom : XCB_ATOM_NONE;
+    const xcb_atom_t atom = reply ? reply->atom : static_cast<xcb_atom_t>(XCB_ATOM_NONE);
     free(reply);
     return atom;
 }
