@@ -146,7 +146,11 @@ void Screen::put(char32_t cp) {
     }
     at(cursor_.row, cursor_.col) = Cell{cp, pen_};
     if (cursor_.col.get() + 1 >= size_.cols) {
-        wrap_pending_ = true; // defer the wrap until the next glyph (DEC semantics)
+        if (autowrap_) {
+            wrap_pending_ = true; // defer the wrap until the next glyph (DEC semantics)
+        }
+        // With autowrap off, the cursor stays pinned at the last column and
+        // subsequent glyphs overwrite it (xterm behavior).
     } else {
         ++cursor_.col;
     }
@@ -383,6 +387,9 @@ void Screen::set_private_mode(int mode, bool set) {
     switch (mode) {
     case 1: // DECCKM — application cursor keys.
         app_cursor_keys_ = set;
+        break;
+    case 7: // DECAWM — autowrap at right margin.
+        autowrap_ = set;
         break;
     case 25: // DECTCEM — show/hide cursor.
         cursor_shown_ = set;

@@ -18,6 +18,7 @@
 #include <X11/Xlib.h>
 #include <X11/Xlib-xcb.h>
 #include <X11/Xutil.h>
+#include <X11/XKBlib.h>
 #include <X11/Xatom.h>
 #include <xcb/xcb.h>
 #include <xkbcommon/xkbcommon.h>
@@ -173,6 +174,12 @@ Result<void> X11Surface::init(std::string_view title, PixelSize initial) {
     a_prop_ = XInternAtom(display_, "GVTE_CLIP", False);
 
     XMapWindow(display_, win);
+    // Detectable auto-repeat: the server sends only KeyPress on repeat (no
+    // phantom KeyRelease/KeyPress pair), so held keys repeat cleanly.
+    {
+        Bool supported = False;
+        XkbSetDetectableAutoRepeat(display_, True, &supported);
+    }
     XSync(display_, False);
 
     if (auto r = create_egl_surface(); !r) {

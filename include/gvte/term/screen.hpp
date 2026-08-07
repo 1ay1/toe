@@ -194,6 +194,7 @@ private:
     bool bracketed_paste_{false};
     bool app_cursor_keys_{false};
     bool app_keypad_{false};
+    bool autowrap_{true}; // DECAWM (?7): wrap at right margin (on by default)
     bool mouse_sgr_{false};
     MouseMode mouse_mode_{MouseMode::off};
 

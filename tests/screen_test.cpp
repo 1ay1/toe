@@ -214,6 +214,19 @@ int main() {
         expect(glyph_at(s, 0, 0) == U' ', "DECSTBM leaves rows above region");
     }
 
+    // DECAWM off (?7l): glyphs past the right margin overwrite the last column
+    // instead of wrapping.
+    {
+        term::Screen s{Extent{4, 2}};
+        feed(s, "\x1b[?7l"); // autowrap off
+        feed(s, "abcdef");   // 4-wide row; d/e/f pile onto the last column
+        expect(glyph_at(s, 0, 0) == U'a' && glyph_at(s, 0, 3) == U'f', "DECAWM off: no wrap");
+        expect(glyph_at(s, 1, 0) == U' ', "DECAWM off: row 1 untouched");
+        feed(s, "\x1b[?7h\x1b[2J\x1b[H"); // autowrap on, clear
+        feed(s, "abcde");                  // now wraps: 'e' -> row 1
+        expect(glyph_at(s, 1, 0) == U'e', "DECAWM on: wraps again");
+    }
+
     // DECSC/DECRC save & restore cursor + pen.
     {
         term::Screen s{Extent{8, 4}};

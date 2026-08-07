@@ -24,6 +24,8 @@
 #include <epoxy/gl.h>
 
 #include <sys/mman.h>
+#include <sys/timerfd.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "xdg-shell-client-protocol.h"
@@ -41,6 +43,7 @@ public:
     void swap() override;
     [[nodiscard]] PixelSize pixel_size() const override { return size_; }
     [[nodiscard]] int event_fd() const override { return wl_display_get_fd(display_); }
+    [[nodiscard]] int repeat_fd() const override { return repeat_fd_; }
     void flush() override { wl_display_flush(display_); }
     void set_title(std::string_view title) override {
         if (toplevel_) {
@@ -68,12 +71,24 @@ public:
     static void seat_name(void *, wl_seat *, const char *) {}
     static void kb_keymap(void *data, wl_keyboard *, uint32_t format, int fd, uint32_t size);
     static void kb_enter(void *, wl_keyboard *, uint32_t, wl_surface *, wl_array *) {}
-    static void kb_leave(void *, wl_keyboard *, uint32_t, wl_surface *) {}
+    static void kb_leave(void *data, wl_keyboard *, uint32_t, wl_surface *) {
+        // Losing keyboard focus must cancel any in-flight key repeat.
+        static_cast<WaylandSurface *>(data)->disarm_repeat();
+    }
     static void kb_key(void *data, wl_keyboard *, uint32_t serial, uint32_t time, uint32_t key,
                        uint32_t state);
     static void kb_modifiers(void *data, wl_keyboard *, uint32_t serial, uint32_t dep,
                              uint32_t lat, uint32_t locked, uint32_t group);
-    static void kb_repeat_info(void *, wl_keyboard *, int32_t, int32_t) {}
+    static void kb_repeat_info(void *data, wl_keyboard *, int32_t rate, int32_t delay) {
+        auto *self = static_cast<WaylandSurface *>(data);
+        self->repeat_rate_ = rate;   // keys/second; 0 disables
+        self->repeat_delay_ = delay; // ms before first repeat
+    }
+
+    // Key repeat helpers (instance methods).
+    void emit_key(uint32_t key);
+    void arm_repeat(uint32_t key);
+    void disarm_repeat();
 
     // data-device (clipboard) callbacks.
     static void dd_data_offer(void *data, wl_data_device *, wl_data_offer *offer);
@@ -133,6 +148,13 @@ private:
     wl_data_offer *selection_offer_ = nullptr; // current incoming selection (paste)
     std::string clipboard_owned_;             // text we currently offer
     uint32_t last_serial_ = 0;                // most recent input event serial
+
+    // Key repeat. Wayland does NOT resend held keys — the client must synthesize
+    // repeats from the compositor's advertised rate/delay via a timer.
+    int repeat_fd_ = -1;         // timerfd, added to the host poll set
+    int repeat_rate_ = 25;       // keys/second (0 disables repeat)
+    int repeat_delay_ = 600;     // ms before the first repeat
+    xkb_keycode_t repeat_key_ = 0; // the evdev keycode currently repeating (0 = none)
 
     // Pointer state / click-count tracking.
     std::int32_t ptr_x_ = 0, ptr_y_ = 0;
@@ -302,36 +324,33 @@ void WaylandSurface::kb_modifiers(void *data, wl_keyboard *, uint32_t, uint32_t 
     }
 }
 
-void WaylandSurface::kb_key(void *data, wl_keyboard *, uint32_t serial, uint32_t, uint32_t key,
-                            uint32_t state) {
-    auto *self = static_cast<WaylandSurface *>(data);
-    self->last_serial_ = serial; // needed for wl_data_device.set_selection
-    if (state != WL_KEYBOARD_KEY_STATE_PRESSED || !self->xkb_state_ || !self->sink_) {
-        return;
-    }
-    // Wayland keycodes are evdev; xkb expects +8.
+// Translate one evdev keycode (already the raw wl key, +8 done here) into an
+// Event and hand it to the sink. Shared by the initial press and by the repeat
+// timer, so held keys repeat with identical semantics.
+void WaylandSurface::emit_key(uint32_t key) {
+    if (!xkb_state_ || !sink_) return;
     const xkb_keycode_t kc = key + 8;
-    const xkb_keysym_t sym = xkb_state_key_get_one_sym(self->xkb_state_, kc);
+    const xkb_keysym_t sym = xkb_state_key_get_one_sym(xkb_state_, kc);
 
     Modifiers mods;
-    mods.ctrl = xkb_state_mod_name_is_active(self->xkb_state_, XKB_MOD_NAME_CTRL,
+    mods.ctrl = xkb_state_mod_name_is_active(xkb_state_, XKB_MOD_NAME_CTRL,
                                              XKB_STATE_MODS_EFFECTIVE) > 0;
-    mods.alt = xkb_state_mod_name_is_active(self->xkb_state_, XKB_MOD_NAME_ALT,
+    mods.alt = xkb_state_mod_name_is_active(xkb_state_, XKB_MOD_NAME_ALT,
                                             XKB_STATE_MODS_EFFECTIVE) > 0;
-    mods.shift = xkb_state_mod_name_is_active(self->xkb_state_, XKB_MOD_NAME_SHIFT,
+    mods.shift = xkb_state_mod_name_is_active(xkb_state_, XKB_MOD_NAME_SHIFT,
                                               XKB_STATE_MODS_EFFECTIVE) > 0;
 
-    // Special keys first.
     auto special = [&](SpecialKey sk) {
         KeyEvent ev;
         ev.key = sk;
         ev.mods = mods;
-        (*self->sink_)(Event{KeyPressed{ev}});
+        (*sink_)(Event{KeyPressed{ev}});
     };
     switch (sym) {
-    case XKB_KEY_Return: case XKB_KEY_KP_Enter: return special(SpecialKey::Enter);
+    case XKB_KEY_Return: return special(SpecialKey::Enter);
+    case XKB_KEY_KP_Enter: return special(SpecialKey::KpEnter);
     case XKB_KEY_BackSpace: return special(SpecialKey::Backspace);
-    case XKB_KEY_Tab: return special(SpecialKey::Tab);
+    case XKB_KEY_Tab: case XKB_KEY_ISO_Left_Tab: return special(SpecialKey::Tab);
     case XKB_KEY_Escape: return special(SpecialKey::Escape);
     case XKB_KEY_Up: return special(SpecialKey::Up);
     case XKB_KEY_Down: return special(SpecialKey::Down);
@@ -343,26 +362,83 @@ void WaylandSurface::kb_key(void *data, wl_keyboard *, uint32_t serial, uint32_t
     case XKB_KEY_Page_Down: return special(SpecialKey::PageDown);
     case XKB_KEY_Delete: return special(SpecialKey::Delete);
     case XKB_KEY_Insert: return special(SpecialKey::Insert);
+    case XKB_KEY_F1: return special(SpecialKey::F1);
+    case XKB_KEY_F2: return special(SpecialKey::F2);
+    case XKB_KEY_F3: return special(SpecialKey::F3);
+    case XKB_KEY_F4: return special(SpecialKey::F4);
+    case XKB_KEY_F5: return special(SpecialKey::F5);
+    case XKB_KEY_F6: return special(SpecialKey::F6);
+    case XKB_KEY_F7: return special(SpecialKey::F7);
+    case XKB_KEY_F8: return special(SpecialKey::F8);
+    case XKB_KEY_F9: return special(SpecialKey::F9);
+    case XKB_KEY_F10: return special(SpecialKey::F10);
+    case XKB_KEY_F11: return special(SpecialKey::F11);
+    case XKB_KEY_F12: return special(SpecialKey::F12);
     default: break;
     }
 
-    // Control-letter combos: emit as text so the terminal folds to a C0 control.
-    if (mods.ctrl) {
-        const xkb_keysym_t lower = xkb_keysym_to_lower(sym);
-        if (lower >= XKB_KEY_a && lower <= XKB_KEY_z) {
-            KeyEvent ev;
-            ev.key = TextInput{std::string(1, static_cast<char>('a' + (lower - XKB_KEY_a)))};
-            ev.mods = mods;
-            (*self->sink_)(Event{KeyPressed{ev}});
-            return;
-        }
-    }
-
-    // Ordinary text: let xkb produce the UTF-8 for this keysym+state.
+    // Ctrl / Alt combos and symbols: emit as a single-char TextInput with mods
+    // set, and let the terminal's keymap encoder do the C0 / ESC-prefix work.
     char utf8[8] = {0};
-    const int n = xkb_state_key_get_utf8(self->xkb_state_, kc, utf8, sizeof(utf8));
-    if (n > 0 && !(mods.ctrl || mods.alt)) {
-        (*self->sink_)(Event{TextEntered{std::string_view{utf8, static_cast<size_t>(n)}}});
+    const int n = xkb_state_key_get_utf8(xkb_state_, kc, utf8, sizeof(utf8));
+    if (mods.ctrl || mods.alt) {
+        // Prefer the base (unshifted-ascii) character for control folding.
+        const uint32_t cp = xkb_keysym_to_utf32(xkb_keysym_to_lower(sym));
+        if (cp && cp < 0x80) {
+            KeyEvent ev;
+            ev.key = TextInput{std::string(1, static_cast<char>(cp))};
+            ev.mods = mods;
+            (*sink_)(Event{KeyPressed{ev}});
+        }
+        return;
+    }
+    if (n > 0) {
+        (*sink_)(Event{TextEntered{std::string_view{utf8, static_cast<size_t>(n)}}});
+    }
+}
+
+void WaylandSurface::arm_repeat(uint32_t key) {
+    if (repeat_rate_ <= 0 || repeat_fd_ < 0) return;
+    repeat_key_ = key;
+    const long interval_ns = 1000000000L / repeat_rate_;
+    itimerspec its{};
+    its.it_value.tv_sec = repeat_delay_ / 1000;
+    its.it_value.tv_nsec = (repeat_delay_ % 1000) * 1000000L;
+    its.it_interval.tv_sec = interval_ns / 1000000000L;
+    its.it_interval.tv_nsec = interval_ns % 1000000000L;
+    timerfd_settime(repeat_fd_, 0, &its, nullptr);
+}
+
+void WaylandSurface::disarm_repeat() {
+    repeat_key_ = 0;
+    if (repeat_fd_ >= 0) {
+        itimerspec its{};
+        timerfd_settime(repeat_fd_, 0, &its, nullptr); // all-zero disarms
+    }
+}
+
+void WaylandSurface::kb_key(void *data, wl_keyboard *, uint32_t serial, uint32_t, uint32_t key,
+                            uint32_t state) {
+    auto *self = static_cast<WaylandSurface *>(data);
+    self->last_serial_ = serial; // needed for wl_data_device.set_selection
+
+    if (state == WL_KEYBOARD_KEY_STATE_RELEASED) {
+        // Stop repeating iff the released key is the one repeating.
+        if (self->repeat_key_ == key) self->disarm_repeat();
+        return;
+    }
+    // Pressed: emit once, then (re)arm the repeat timer for this key. A new
+    // press supersedes any previous repeat (last-key-wins, like every terminal).
+    self->emit_key(key);
+    // Only repeat keys that actually produce output; modifiers/dead keys don't.
+    const xkb_keysym_t sym = xkb_state_key_get_one_sym(self->xkb_state_, key + 8);
+    const bool repeatable = self->xkb_keymap_ &&
+                            xkb_keymap_key_repeats(self->xkb_keymap_, key + 8) &&
+                            sym != XKB_KEY_NoSymbol;
+    if (repeatable) {
+        self->arm_repeat(key);
+    } else {
+        self->disarm_repeat();
     }
 }
 
@@ -383,6 +459,8 @@ Result<void> WaylandSurface::init(std::string_view title, PixelSize initial) {
     if (!display_) {
         return fail("wayland: wl_display_connect failed (is a compositor running?)");
     }
+    // A timerfd drives synthetic key repeat (Wayland doesn't resend held keys).
+    repeat_fd_ = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
     registry_ = wl_display_get_registry(display_);
     wl_registry_add_listener(registry_, &kRegistryListener, this);
     wl_display_roundtrip(display_); // bind globals
@@ -482,6 +560,7 @@ WaylandSurface::~WaylandSurface() {
     if (xkb_ctx_) xkb_context_unref(xkb_ctx_);
     if (keyboard_) wl_keyboard_destroy(keyboard_);
     if (pointer_) wl_pointer_destroy(pointer_);
+    if (repeat_fd_ >= 0) ::close(repeat_fd_);
     if (toplevel_) xdg_toplevel_destroy(toplevel_);
     if (xdg_surface_) xdg_surface_destroy(xdg_surface_);
     if (surface_) wl_surface_destroy(surface_);
@@ -509,6 +588,16 @@ void WaylandSurface::poll_events(const std::function<void(const Event &)> &sink)
     wl_display_flush(display_);
     wl_display_read_events(display_);
     wl_display_dispatch_pending(display_);
+
+    // Fire synthetic key repeats for however many intervals elapsed.
+    if (repeat_fd_ >= 0 && repeat_key_ != 0) {
+        uint64_t expirations = 0;
+        if (::read(repeat_fd_, &expirations, sizeof expirations) == sizeof expirations) {
+            for (uint64_t i = 0; i < expirations && repeat_key_ != 0; ++i) {
+                emit_key(repeat_key_);
+            }
+        }
+    }
     sink_ = nullptr;
 }
 

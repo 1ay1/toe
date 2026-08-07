@@ -96,6 +96,11 @@ public:
     // PTY fd to block idle instead of busy-spinning. -1 if none.
     [[nodiscard]] virtual int event_fd() const = 0;
 
+    // A timer fd that fires when a held key should repeat (Wayland synthesizes
+    // repeats; X11 auto-repeats natively). Host adds it to its poll set. -1 if
+    // the backend needs no timer.
+    [[nodiscard]] virtual int repeat_fd() const { return -1; }
+
     // Flush any buffered outgoing protocol requests before blocking on the fd
     // (Wayland requires this so the compositor sees pending commits).
     virtual void flush() {}

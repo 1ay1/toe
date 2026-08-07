@@ -139,6 +139,9 @@ Cmds Session::update(const Msg &msg) {
                 out.insert(out.end(), std::make_move_iterator(fx.begin()),
                            std::make_move_iterator(fx.end()));
             } else if constexpr (std::is_same_v<T, Key>) {
+                // Typing snaps the view back to the live prompt (every terminal
+                // does this) so you never type blindly into scrollback.
+                impl_->model.screen.scroll_to_bottom();
                 KeyContext kctx{impl_->model.screen.app_cursor_keys()};
                 KeyBuf kb;
                 std::span<const char> bytes = encode_key(m.event, kctx, kb);
