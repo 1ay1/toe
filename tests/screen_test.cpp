@@ -152,6 +152,58 @@ int main() {
         expect(s.scroll_offset() == 0, "scroll clamps to bottom");
     }
 
+    // ICH inserts blanks at the cursor, shifting the rest right.
+    {
+        term::Screen s{Extent{6, 1}};
+        feed(s, "abcd\x1b[3G\x1b[2@"); // cursor to col 3, insert 2 blanks
+        expect(glyph_at(s, 0, 0) == U'a' && glyph_at(s, 0, 1) == U'b', "ICH keeps prefix");
+        expect(glyph_at(s, 0, 2) == U' ' && glyph_at(s, 0, 3) == U' ', "ICH inserts blanks");
+        expect(glyph_at(s, 0, 4) == U'c', "ICH shifts tail right");
+    }
+
+    // DCH deletes chars at the cursor, shifting the tail left.
+    {
+        term::Screen s{Extent{6, 1}};
+        feed(s, "abcdef\x1b[2G\x1b[2P"); // cursor col 2, delete 2
+        expect(glyph_at(s, 0, 0) == U'a' && glyph_at(s, 0, 1) == U'd', "DCH shifts tail left");
+    }
+
+    // ECH erases n chars in place (no shift).
+    {
+        term::Screen s{Extent{6, 1}};
+        feed(s, "abcdef\x1b[2G\x1b[3X");
+        expect(glyph_at(s, 0, 1) == U' ' && glyph_at(s, 0, 3) == U' ' && glyph_at(s, 0, 4) == U'e',
+               "ECH erases in place");
+    }
+
+    // IL/DL within the scroll region.
+    {
+        term::Screen s{Extent{4, 4}};
+        feed(s, "AAAA\r\nBBBB\r\nCCCC\r\nDDDD"); // 4 rows filled
+        feed(s, "\x1b[1;1H\x1b[1L");             // home, insert 1 line at top
+        expect(glyph_at(s, 0, 0) == U' ', "IL blanks new top line");
+        expect(glyph_at(s, 1, 0) == U'A', "IL pushes content down");
+    }
+
+    // DECSTBM scroll region confines scrolling.
+    {
+        term::Screen s{Extent{4, 4}};
+        feed(s, "\x1b[2;3r");   // region = rows 2..3
+        feed(s, "\x1b[2;1Hxx\r\nyy\r\nzz"); // fill within region, force a scroll
+        // Row 0 (outside region) must be untouched (blank).
+        expect(glyph_at(s, 0, 0) == U' ', "DECSTBM leaves rows above region");
+    }
+
+    // DECSC/DECRC save & restore cursor + pen.
+    {
+        term::Screen s{Extent{8, 4}};
+        feed(s, "\x1b[3;4H\x1b[31m\x1b" "7"); // move, red, DECSC
+        feed(s, "\x1b[1;1H\x1b[0m\x1b" "8Z");  // home, reset, DECRC, print Z
+        expect(glyph_at(s, 2, 3) == U'Z', "DECRC restores cursor position");
+        const auto &cell = s.row(Row{2})[3];
+        expect(std::holds_alternative<term::IndexedColor>(cell.pen.fg), "DECRC restores pen");
+    }
+
     if (failures == 0) {
         std::printf("all screen tests passed\n");
         return 0;

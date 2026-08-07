@@ -50,6 +50,7 @@ enum class Attr : std::uint16_t {
     Reverse = 1u << 5,
     Hidden = 1u << 6,
     Strike = 1u << 7,
+    Overline = 1u << 8,
 };
 
 [[nodiscard]] constexpr Attr operator|(Attr a, Attr b) noexcept {

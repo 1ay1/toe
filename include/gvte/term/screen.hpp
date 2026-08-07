@@ -73,6 +73,17 @@ private:
     void backspace();
     void tab();
     void scroll_up(std::int32_t n);
+    void scroll_down(std::int32_t n);      // SD / reverse scroll within region
+    void insert_lines(std::int32_t n);     // IL
+    void delete_lines(std::int32_t n);     // DL
+    void insert_chars(std::int32_t n);     // ICH
+    void delete_chars(std::int32_t n);     // DCH
+    void erase_chars(std::int32_t n);      // ECH
+    void cursor_tab(std::int32_t n);       // CHT (forward tab stops)
+    void cursor_back_tab(std::int32_t n);  // CBT (backward tab stops)
+    void set_scroll_region(int top, int bottom); // DECSTBM
+    void save_cursor();                    // DECSC / CSI s
+    void restore_cursor();                 // DECRC / CSI u
     void erase_in_display(int mode);
     void erase_in_line(int mode);
     void move_cursor_abs(Row r, Col c);
@@ -86,6 +97,14 @@ private:
     Pen pen_{};
     bool wrap_pending_{false};   // DEC-style deferred wrap at right margin
     std::uint64_t generation_{1};
+
+    // Scroll region (DECSTBM), 0-based inclusive. Defaults to the whole grid.
+    std::int32_t scroll_top_{0};
+    std::int32_t scroll_bottom_{0}; // set to rows-1 in ctor/resize
+
+    // Saved cursor state (DECSC/DECRC).
+    Pos saved_cursor_{};
+    Pen saved_pen_{};
 
     // Scrollback: completed lines that scrolled off the top, newest at back.
     std::deque<std::vector<Cell>> history_{};
