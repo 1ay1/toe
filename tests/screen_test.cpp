@@ -441,6 +441,32 @@ int main() {
         }
     }
 
+    // The alternate screen has NO scrollback: a full-screen app (htop, vim)
+    // repaints by scrolling, and those lines must never leak into history —
+    // otherwise the app's frames are left behind after it exits.
+    {
+        term::Screen s{Extent{10, 4}};
+        // Put a few lines of "shell" output on the primary screen.
+        feed(s, "one\r\ntwo\r\nthree\r\n");
+        const std::int32_t hist_before = s.history_rows();
+        // Enter the alternate screen (as htop does: CSI ?1049h).
+        feed(s, "\x1b[?1049h");
+        expect(s.on_alt_screen(), "CSI ?1049h enters the alt screen");
+        // The app scrolls the full screen many times (its repaint loop).
+        for (int i = 0; i < 50; ++i) feed(s, "\x1b[10S"); // SU 10 == whole screen
+        feed(s, "line\r\nline\r\nline\r\nline\r\n");      // and normal newlines
+        expect(s.history_rows() == hist_before,
+               "alt-screen scrolling does not grow the scrollback");
+        // Leave the alt screen (CSI ?1049l) — primary is restored, history intact.
+        feed(s, "\x1b[?1049l");
+        expect(!s.on_alt_screen(), "CSI ?1049l leaves the alt screen");
+        expect(s.history_rows() == hist_before,
+               "leaving the alt screen leaves the scrollback unchanged");
+        // The restored primary still shows the pre-htop content.
+        expect(s.row(Row{0})[0].cp == U'o' && s.row(Row{0})[1].cp == U'n',
+               "primary buffer restored after leaving alt screen");
+    }
+
     if (failures == 0) {
         std::printf("all screen tests passed\n");
         return 0;

@@ -305,7 +305,12 @@ void Screen::scroll_up(std::int32_t n) {
     const std::size_t stride = static_cast<std::size_t>(size_.cols);
     const bool full_screen = (scroll_top_ == 0 && scroll_bottom_ == size_.rows - 1);
 
-    if (full_screen) {
+    // Lines that scroll off the top of a FULL-screen scroll go into the
+    // scrollback — but ONLY on the primary buffer. The alternate screen (htop,
+    // vim, less, …) has no scrollback: it repaints by scrolling, so pushing its
+    // lines to history would flood the scrollback with the app's frames and
+    // leave them behind after it exits.
+    if (full_screen && !on_alt_) {
         for (std::int32_t i = 0; i < n; ++i) {
             const std::size_t off = stride * static_cast<std::size_t>(i);
             history_.emplace_back(cells_.begin() + static_cast<std::ptrdiff_t>(off),
