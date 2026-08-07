@@ -68,7 +68,10 @@ int main() {
     // A line of text and a red-on-nothing 'X', plus a green-background space.
     std::string_view input = "Hello, GPU!\r\n\x1b[31mXXXX\x1b[0m \x1b[42m \x1b[0m";
     parser.feed(std::span<const char>{input.data(), input.size()},
-                [&](const vt::Action &a) { screen.apply(a); });
+                [&](const vt::Action &a) {
+                    gvte::Cmds out;
+                    screen.apply(a, out);
+                });
 
     renderer->draw(screen, PixelSize{W, H});
     glFinish();

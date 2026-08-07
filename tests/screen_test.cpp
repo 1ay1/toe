@@ -14,11 +14,31 @@ using namespace gvte;
 
 namespace {
 
-// Feed bytes through a fresh parser into `scr`.
+// Feed bytes through a fresh parser into `scr`, discarding effects.
 void feed(term::Screen &scr, std::string_view bytes) {
     vt::Parser p;
     p.feed(std::span<const char>{bytes.data(), bytes.size()},
-           [&](const vt::Action &a) { scr.apply(a); });
+           [&](const vt::Action &a) {
+               gvte::Cmds out;
+               scr.apply(a, out);
+           });
+}
+
+// Feed bytes and return the concatenated WriteChild reply bytes (the terminal's
+// answers to queries), so tests can assert on them directly — the TEA payoff.
+std::string feed_replies(term::Screen &scr, std::string_view bytes) {
+    vt::Parser p;
+    std::string replies;
+    p.feed(std::span<const char>{bytes.data(), bytes.size()}, [&](const vt::Action &a) {
+        gvte::Cmds out;
+        scr.apply(a, out);
+        for (const gvte::Cmd &c : out) {
+            if (const auto *w = std::get_if<gvte::WriteChild>(&c)) {
+                replies += w->bytes;
+            }
+        }
+    });
+    return replies;
 }
 
 int failures = 0;
@@ -312,48 +332,32 @@ int main() {
     }
 
     // Device queries must be answered (fish blocks 10s on an unanswered DA1).
+    // With TEA, replies are WriteChild Cmds we read straight off feed_replies.
     {
         term::Screen s{Extent{80, 24}};
-        std::string replies;
-        s.set_reply([&](std::string_view b) { replies += std::string{b}; });
-
-        feed(s, "\x1b[c"); // DA1
-        expect(replies == "\x1b[?62;1;6;22c", "DA1 primary device attributes reply");
-        replies.clear();
-
-        feed(s, "\x1b[>c"); // DA2
-        expect(replies == "\x1b[>1;95;0c", "DA2 secondary device attributes reply");
-        replies.clear();
-
-        feed(s, "\x1b[5n"); // DSR status
-        expect(replies == "\x1b[0n", "DSR status reply (terminal OK)");
-        replies.clear();
-
+        expect(feed_replies(s, "\x1b[c") == "\x1b[?62;1;6;22c",
+               "DA1 primary device attributes reply");
+        expect(feed_replies(s, "\x1b[>c") == "\x1b[>1;95;0c",
+               "DA2 secondary device attributes reply");
+        expect(feed_replies(s, "\x1b[5n") == "\x1b[0n", "DSR status reply (terminal OK)");
         // CPR: move cursor to row 3 col 7 (1-based CUP), then request position.
-        feed(s, "\x1b[3;7H\x1b[6n");
-        expect(replies == "\x1b[3;7R", "CPR cursor position reply (1-based)");
-
-        replies.clear();
-        feed(s, "\x1b[>0q"); // XTVERSION
-        expect(replies == "\x1bP>|gvte(0.1)\x1b\\", "XTVERSION reply (DCS)");
-
-        replies.clear();
+        expect(feed_replies(s, "\x1b[3;7H\x1b[6n") == "\x1b[3;7R",
+               "CPR cursor position reply (1-based)");
+        expect(feed_replies(s, "\x1b[>0q") == "\x1bP>|gvte(0.1)\x1b\\", "XTVERSION reply (DCS)");
         // XTGETTCAP for 'Co' (colours): 436f hex. Reply advertises 256.
-        feed(s, "\x1bP+q436f\x1b\\");
-        expect(replies == "\x1bP1+r436F=323536\x1b\\", "XTGETTCAP Co -> 256");
+        expect(feed_replies(s, "\x1bP+q436f\x1b\\") == "\x1bP1+r436F=323536\x1b\\",
+               "XTGETTCAP Co -> 256");
     }
 
     // CSI ? u (Kitty keyboard query) must NOT be treated as DECRC restore-cursor
     // — that bug homed the cursor and made fish wipe its greeting.
     {
         term::Screen s{Extent{80, 24}};
-        std::string replies;
-        s.set_reply([&](std::string_view b) { replies += std::string{b}; });
         feed(s, "\x1b[10;5H"); // move cursor to row 10, col 5 (1-based)
-        feed(s, "\x1b[?u");    // Kitty keyboard query
+        const std::string reply = feed_replies(s, "\x1b[?u"); // Kitty keyboard query
         expect(s.cursor().row.get() == 9 && s.cursor().col.get() == 4,
                "CSI ?u does not move the cursor");
-        expect(replies == "\x1b[?0u", "CSI ?u replies with flags=0");
+        expect(reply == "\x1b[?0u", "CSI ?u replies with flags=0");
         // Plain CSI u (DECRC) still restores a saved cursor.
         feed(s, "\x1b[3;3H\x1b" "7\x1b[20;20H\x1b[u"); // move, DECSC via ESC7, move, DECRC
         expect(s.cursor().row.get() == 2 && s.cursor().col.get() == 2,

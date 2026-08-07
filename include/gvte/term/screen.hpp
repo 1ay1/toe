@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "gvte/core/tea.hpp"
 #include "gvte/core/types.hpp"
 #include "gvte/term/cell.hpp"
 #include "gvte/vt/parser.hpp"
@@ -101,13 +102,17 @@ public:
     // Convert a viewport (visible) row to an absolute row, and back.
     [[nodiscard]] std::int64_t viewport_to_abs(std::int32_t vrow) const noexcept;
 
-    // The single reduction step: fold one parser Action into the screen.
-    void apply(const vt::Action &action);
+    // The single reduction step: fold one parser Action into the screen. Any
+    // effects the action demands (query replies, bell, …) are appended to
+    // `out` — the screen performs no I/O itself; it only produces effect data.
+    void apply(const vt::Action &action, Cmds &out);
 
-    // Install a channel the screen uses to answer terminal queries (DA1, DSR,
-    // …): the callback writes the reply bytes back to the child via the PTY.
-    // Query handlers are no-ops until this is set.
-    void set_reply(std::function<void(std::string_view)> reply) { reply_ = std::move(reply); }
+    // Convenience for tests / simple call sites: apply and return the effects.
+    [[nodiscard]] Cmds apply(const vt::Action &action) {
+        Cmds out;
+        apply(action, out);
+        return out;
+    }
 
     // Monotonic damage counter — bumped on any mutation so the renderer can
     // skip re-uploading an unchanged grid.
@@ -163,10 +168,11 @@ private:
     bool wrap_pending_{false};   // DEC-style deferred wrap at right margin
     std::uint64_t generation_{1};
 
-    // Reply channel for query sequences (DA/DSR/…). Empty until set_reply().
-    std::function<void(std::string_view)> reply_{};
-    void reply(std::string_view bytes) const {
-        if (reply_) reply_(bytes);
+    // Transient effect accumulator: valid only for the duration of an apply()
+    // call, so query handlers (csi/esc/dcs) can emit Cmds without an I/O sink.
+    Cmds *pending_{nullptr};
+    void reply(std::string bytes) const {
+        if (pending_) pending_->emplace_back(WriteChild{std::move(bytes)});
     }
 
     // Scroll region (DECSTBM), 0-based inclusive. Defaults to the whole grid.

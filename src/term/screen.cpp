@@ -114,7 +114,8 @@ void Screen::clamp_cursor() noexcept {
 
 // --- the reduction ---------------------------------------------------------
 
-void Screen::apply(const vt::Action &action) {
+void Screen::apply(const vt::Action &action, Cmds &out) {
+    pending_ = &out; // query handlers push effects here for the duration of this call
     std::visit(
         [&](auto &&a) {
             using T = std::decay_t<decltype(a)>;
@@ -134,6 +135,7 @@ void Screen::apply(const vt::Action &action) {
             }
         },
         action);
+    pending_ = nullptr;
 }
 
 void Screen::put(char32_t cp) {
@@ -159,7 +161,9 @@ void Screen::execute(std::uint8_t c0) {
     case 0x0B:                              // VT
     case 0x0C: line_feed(); break;         // FF
     case 0x0D: carriage_return(); break;   // CR
-    case 0x07: break;                       // BEL — audible; no grid effect
+    case 0x07: // BEL
+        if (pending_) pending_->emplace_back(RingBell{});
+        break;
     default: break;
     }
 }

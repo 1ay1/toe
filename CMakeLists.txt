@@ -52,7 +52,8 @@ add_library(gvte
   src/gfx/shader.cpp
   src/gfx/palette.cpp
   src/gfx/renderer.cpp
-  src/term/screen.cpp)
+  src/term/screen.cpp
+  src/term/update.cpp)
 
 target_include_directories(gvte PUBLIC include PRIVATE "${GEN}")
 
@@ -88,7 +89,8 @@ target_include_directories(parser_test PRIVATE include)
 target_compile_options(parser_test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME parser COMMAND parser_test)
 
-add_executable(screen_test tests/screen_test.cpp src/term/screen.cpp)
+add_executable(screen_test tests/screen_test.cpp src/term/screen.cpp
+  src/term/update.cpp)
 target_include_directories(screen_test PRIVATE include)
 target_compile_options(screen_test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME screen COMMAND screen_test)
