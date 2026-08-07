@@ -256,7 +256,8 @@ void Renderer::ensure_buffers() {
     glBindVertexArray(0);
 }
 
-void Renderer::flush(std::size_t count, PixelSize px) {
+void Renderer::flush(std::span<const Instance> insts, PixelSize px) {
+    std::size_t count = insts.size();
     if (count == 0) return;
 
     glBindVertexArray(vao_);
@@ -275,7 +276,7 @@ void Renderer::flush(std::size_t count, PixelSize px) {
             fences_[slot] = nullptr;
         }
         const std::size_t base = static_cast<std::size_t>(slot) * inst_region_bytes_;
-        std::memcpy(inst_map_ + base, instances_.data(), bytes);
+        std::memcpy(inst_map_ + base, insts.data(), bytes);
 
         prog_.use();
         glUniform2f(u_screen_, static_cast<float>(px.w), static_cast<float>(px.h));
@@ -298,7 +299,7 @@ void Renderer::flush(std::size_t count, PixelSize px) {
     if (persistent_) {
         count = inst_region_bytes_ / sizeof(Instance);
         const std::size_t clamped = count * sizeof(Instance);
-        std::memcpy(inst_map_, instances_.data(), clamped);
+        std::memcpy(inst_map_, insts.data(), clamped);
         prog_.use();
         glUniform2f(u_screen_, static_cast<float>(px.w), static_cast<float>(px.h));
         glActiveTexture(GL_TEXTURE0);
@@ -315,7 +316,7 @@ void Renderer::flush(std::size_t count, PixelSize px) {
     }
     glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(inst_bytes_capacity_), nullptr,
                  GL_STREAM_DRAW);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, static_cast<GLsizeiptr>(bytes), instances_.data());
+    glBufferSubData(GL_ARRAY_BUFFER, 0, static_cast<GLsizeiptr>(bytes), insts.data());
 
     prog_.use();
     glUniform2f(u_screen_, static_cast<float>(px.w), static_cast<float>(px.h));
@@ -343,81 +344,81 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on) {
     const bool any_selection = screen.has_selection();
 
     instances_.clear();
-    // One-time growth to the worst case (a bg + a glyph per cell + cursor), so
-    // the per-frame push_backs never reallocate.
-    instances_.reserve(static_cast<std::size_t>(grid.cols) * static_cast<std::size_t>(grid.rows) * 2 + 2);
+    glyphs_.clear();
+    const std::size_t cells_total =
+        static_cast<std::size_t>(grid.cols) * static_cast<std::size_t>(grid.rows);
+    // One-time growth to the worst case so per-frame push_backs never realloc:
+    // bg rects (+cursor) in instances_, one glyph/cell in glyphs_.
+    instances_.reserve(cells_total + 2);
+    glyphs_.reserve(cells_total);
 
-    // Pass 1: background rectangles (only for non-default backgrounds) and the
-    // selection highlight. The selection test — including viewport_to_abs — is
-    // hoisted behind `any_selection`, so ordinary frames pay nothing for it.
-    for (int r = 0; r < grid.rows; ++r) {
-        const auto cells = screen.row(Row{r});
-        const float ry = static_cast<float>(r * ch);
-        const std::int64_t abs_row = any_selection ? screen.viewport_to_abs(r) : 0;
-        for (int c = 0; c < grid.cols; ++c) {
-            const auto &cell = cells[static_cast<std::size_t>(c)];
-            if (any_selection && screen.is_selected(abs_row, c)) {
-                instances_.push_back(rect_inst(static_cast<float>(c * cw), ry,
-                                               static_cast<float>(cw), static_cast<float>(ch),
-                                               66, 84, 112, /*radius=*/0));
-                continue;
-            }
-            const bool reverse = term::has(cell.pen.attr, term::Attr::Reverse);
-            // Fast path: default bg and no reverse — nothing to draw (cleared).
-            if (!reverse && std::holds_alternative<term::DefaultColor>(cell.pen.bg)) {
-                continue;
-            }
-            const term::Color bg = reverse ? cell.pen.fg : cell.pen.bg;
-            const Rgb col = palette_.resolve(bg, /*is_fg=*/reverse);
-            instances_.push_back(rect_inst(static_cast<float>(c * cw), ry, static_cast<float>(cw),
-                                           static_cast<float>(ch), col.r, col.g, col.b,
-                                           /*radius=*/0));
-        }
-    }
-
-    // Pass 2: the block cursor.
+    // Cursor geometry (drawn between bg rects and glyphs so glyphs sit on top).
     const bool cursor_visible =
         cursor_on && screen.cursor_shown() && screen.cursor_visible() && cur.row.get() >= 0 &&
         cur.row.get() < grid.rows && cur.col.get() >= 0 && cur.col.get() < grid.cols;
-    if (cursor_visible) {
-        const Rgb cc = palette_.default_fg();
-        instances_.push_back(rect_inst(static_cast<float>(cur.col.get() * cw),
-                                       static_cast<float>(cur.row.get() * ch),
-                                       static_cast<float>(cw), static_cast<float>(ch),
-                                       cc.r, cc.g, cc.b, /*radius=*/2));
-    }
-
-    // Pass 3: glyphs.
     const int cur_row = cur.row.get();
     const int cur_col = cur.col.get();
+
+    // Single fused walk: emit background rects / selection into instances_ and
+    // glyphs into glyphs_ in one pass over the grid. This halves the grid
+    // iteration and the (out-of-line) screen.row() calls versus two passes, and
+    // touches each cell exactly once for better cache behavior.
     for (int r = 0; r < grid.rows; ++r) {
         const auto cells = screen.row(Row{r});
+        const float ry = static_cast<float>(r * ch);
         const int base_gy = r * ch + ascent;
+        const std::int64_t abs_row = any_selection ? screen.viewport_to_abs(r) : 0;
         const bool row_has_cursor = cursor_visible && r == cur_row;
         for (int c = 0; c < grid.cols; ++c) {
             const auto &cell = cells[static_cast<std::size_t>(c)];
+            const bool selected = any_selection && screen.is_selected(abs_row, c);
+            const bool reverse = term::has(cell.pen.attr, term::Attr::Reverse);
+            const bool on_cursor = row_has_cursor && c == cur_col;
+
+            // --- background rect (selection > reverse > explicit bg) ---
+            if (selected) {
+                instances_.push_back(rect_inst(static_cast<float>(c * cw), ry,
+                                               static_cast<float>(cw), static_cast<float>(ch),
+                                               66, 84, 112, /*radius=*/0));
+            } else if (reverse || !std::holds_alternative<term::DefaultColor>(cell.pen.bg)) {
+                const term::Color bg = reverse ? cell.pen.fg : cell.pen.bg;
+                const Rgb col = palette_.resolve(bg, /*is_fg=*/reverse);
+                instances_.push_back(rect_inst(static_cast<float>(c * cw), ry,
+                                               static_cast<float>(cw), static_cast<float>(ch),
+                                               col.r, col.g, col.b, /*radius=*/0));
+            }
+
+            // --- glyph ---
             const char32_t cp = cell.cp;
             if (cp == U' ' || cp == 0 || cell.spacer()) continue; // blank / wide-spacer
             const GlyphInfo *gi = atlas_.glyph(cp);
             if (!gi || gi->width == 0 || gi->height == 0) continue;
-
-            const bool reverse = term::has(cell.pen.attr, term::Attr::Reverse);
-            const bool on_cursor = row_has_cursor && c == cur_col;
             const Rgb col = on_cursor
                                 ? palette_.resolve(cell.pen.bg, /*is_fg=*/false)
                                 : palette_.resolve(reverse ? cell.pen.bg : cell.pen.fg, !reverse);
-
             const float gx = static_cast<float>(c * cw + gi->bearing_x);
             const float gy = static_cast<float>(base_gy - gi->bearing_y);
-            instances_.push_back(Instance{gx, gy, static_cast<float>(gi->width),
-                                          static_cast<float>(gi->height),
-                                          unorm16(gi->u0), unorm16(gi->v0), unorm16(gi->u1),
-                                          unorm16(gi->v1), col.r, col.g, col.b, 255,
-                                          /*is_glyph=*/1, 0, 0, 0});
+            glyphs_.push_back(Instance{gx, gy, static_cast<float>(gi->width),
+                                       static_cast<float>(gi->height),
+                                       unorm16(gi->u0), unorm16(gi->v0), unorm16(gi->u1),
+                                       unorm16(gi->v1), col.r, col.g, col.b, 255,
+                                       /*is_glyph=*/1, 0, 0, 0});
         }
     }
 
-    flush(instances_.size(), px);
+    // Cursor rect on top of backgrounds, beneath glyphs.
+    if (cursor_visible) {
+        const Rgb cc = palette_.default_fg();
+        instances_.push_back(rect_inst(static_cast<float>(cur_col * cw),
+                                       static_cast<float>(cur_row * ch),
+                                       static_cast<float>(cw), static_cast<float>(ch),
+                                       cc.r, cc.g, cc.b, /*radius=*/2));
+    }
+
+    // Draw backgrounds+cursor first, then glyphs on top — two instanced draws
+    // straight from their own buffers, avoiding a per-frame concat memcpy.
+    flush(instances_, px);
+    flush(glyphs_, px);
 }
 
 } // namespace gvte::gfx

@@ -9,6 +9,7 @@
 #define GVTE_GFX_RENDERER_HPP
 
 #include <cstdint>
+#include <span>
 #include <vector>
 
 #include "gvte/core/types.hpp"
@@ -56,7 +57,7 @@ private:
         : atlas_{std::move(atlas)}, prog_{std::move(prog)} {}
 
     void ensure_buffers();
-    void flush(std::size_t count, PixelSize px);
+    void flush(std::span<const Instance> insts, PixelSize px);
 
     FontAtlas atlas_;
     Palette palette_{};
@@ -72,8 +73,10 @@ private:
     // Persistent-mapped streaming ring (GL 4.4 / GL_ARB_buffer_storage). When
     // available we write instances straight into GPU-visible memory with no
     // glBufferSubData copy, cycling through kRing sub-regions and fencing each
-    // so the CPU never overwrites a region the GPU is still reading.
-    static constexpr int kRing = 3;
+    // so the CPU never overwrites a region the GPU is still reading. We issue
+    // two draws per frame (backgrounds then glyphs), so 4 regions keeps ~2
+    // frames of slack before a slot is reused.
+    static constexpr int kRing = 4;
     bool persistent_{false};
     unsigned char *inst_map_{nullptr};      // base of the persistent mapping
     std::size_t inst_region_bytes_{0};      // capacity of one ring region
@@ -89,6 +92,7 @@ private:
     }
 
     std::vector<Instance> instances_{};
+    std::vector<Instance> glyphs_{}; // scratch for the fused build pass
 };
 
 } // namespace gvte::gfx
