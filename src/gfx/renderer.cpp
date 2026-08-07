@@ -328,6 +328,85 @@ void Renderer::flush(std::span<const Instance> insts, PixelSize px) {
     glBindVertexArray(0);
 }
 
+namespace {
+// Fast row fingerprint. Cells are 16 bytes, 4-byte aligned, so we fold the
+// row as a stream of uint32 words with a wyhash-style multiply-mix — ~4x fewer
+// iterations than a per-byte FNV and far cheaper than the glyph/palette work it
+// lets us skip on unchanged rows.
+inline std::uint64_t mix(std::uint64_t x) noexcept {
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    return x;
+}
+inline void hash_words(std::uint64_t &h, const void *p, std::size_t bytes) noexcept {
+    const auto *w = static_cast<const std::uint32_t *>(p);
+    const std::size_t n = bytes / sizeof(std::uint32_t);
+    for (std::size_t i = 0; i < n; ++i) {
+        h = (h ^ w[i]) * 0x100000001b3ULL;
+    }
+}
+template <class T> inline void hash_val(std::uint64_t &h, const T &v) noexcept {
+    std::uint64_t x = 0;
+    __builtin_memcpy(&x, &v, sizeof(T) < 8 ? sizeof(T) : 8);
+    h = (h ^ x) * 0x100000001b3ULL;
+}
+} // namespace
+
+// Rebuild rows_[r] from the current cell contents unless its fingerprint is
+// unchanged. Dirty rows are (re)built into the row's shadow vectors and
+// appended to the flat draw buffers (instances_ / glyphs_). Clean rows skip all
+// per-cell work and are spliced straight from the shadow. Returns true if the
+// row was rebuilt.
+bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
+                         bool row_has_cursor, int cur_col, std::int64_t abs_row,
+                         bool any_selection) {
+    RowCache &rc = rows_[static_cast<std::size_t>(r)];
+    if (rc.valid && rc.key == key) return false; // clean — shadow already current
+
+    const int cw = cache_cw_, ch = cache_ch_, ascent = cache_ascent_;
+    const auto cells = screen.row(Row{r});
+    const float ry = static_cast<float>(r * ch);
+    const int base_gy = r * ch + ascent;
+    rc.bg.clear();
+    rc.glyphs.clear();
+
+    for (int c = 0; c < cache_cols_; ++c) {
+        const auto &cell = cells[static_cast<std::size_t>(c)];
+        const bool selected = any_selection && screen.is_selected(abs_row, c);
+        const bool reverse = term::has(cell.pen.attr, term::Attr::Reverse);
+        const bool on_cursor = row_has_cursor && c == cur_col;
+
+        if (selected) {
+            rc.bg.push_back(rect_inst(static_cast<float>(c * cw), ry, static_cast<float>(cw),
+                                      static_cast<float>(ch), 66, 84, 112, /*radius=*/0));
+        } else if (reverse || !std::holds_alternative<term::DefaultColor>(cell.pen.bg)) {
+            const term::Color bg = reverse ? cell.pen.fg : cell.pen.bg;
+            const Rgb col = palette_.resolve(bg, /*is_fg=*/reverse);
+            rc.bg.push_back(rect_inst(static_cast<float>(c * cw), ry, static_cast<float>(cw),
+                                      static_cast<float>(ch), col.r, col.g, col.b, /*radius=*/0));
+        }
+
+        const char32_t cp = cell.cp;
+        if (cp == U' ' || cp == 0 || cell.spacer()) continue;
+        const GlyphInfo *gi = atlas_.glyph(cp);
+        if (!gi || gi->width == 0 || gi->height == 0) continue;
+        const Rgb col = on_cursor
+                            ? palette_.resolve(cell.pen.bg, /*is_fg=*/false)
+                            : palette_.resolve(reverse ? cell.pen.bg : cell.pen.fg, !reverse);
+        const float gx = static_cast<float>(c * cw + gi->bearing_x);
+        const float gy = static_cast<float>(base_gy - gi->bearing_y);
+        rc.glyphs.push_back(Instance{gx, gy, static_cast<float>(gi->width),
+                                     static_cast<float>(gi->height),
+                                     unorm16(gi->u0), unorm16(gi->v0), unorm16(gi->u1),
+                                     unorm16(gi->v1), col.r, col.g, col.b, 255,
+                                     /*is_glyph=*/1, 0, 0, 0});
+    }
+    rc.key = key;
+    rc.valid = true;
+    return true;
+}
+
 void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on) {
     const Rgb bgc = palette_.default_bg();
     glClearColor(fr(bgc.r), fr(bgc.g), fr(bgc.b), 1.0f);
@@ -343,80 +422,78 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on) {
     const Pos cur = screen.cursor();
     const bool any_selection = screen.has_selection();
 
-    instances_.clear();
-    glyphs_.clear();
-    const std::size_t cells_total =
-        static_cast<std::size_t>(grid.cols) * static_cast<std::size_t>(grid.rows);
-    // One-time growth to the worst case so per-frame push_backs never realloc:
-    // bg rects (+cursor) in instances_, one glyph/cell in glyphs_.
-    instances_.reserve(cells_total + 2);
-    glyphs_.reserve(cells_total);
-
-    // Cursor geometry (drawn between bg rects and glyphs so glyphs sit on top).
     const bool cursor_visible =
         cursor_on && screen.cursor_shown() && screen.cursor_visible() && cur.row.get() >= 0 &&
         cur.row.get() < grid.rows && cur.col.get() >= 0 && cur.col.get() < grid.cols;
     const int cur_row = cur.row.get();
     const int cur_col = cur.col.get();
 
-    // Single fused walk: emit background rects / selection into instances_ and
-    // glyphs into glyphs_ in one pass over the grid. This halves the grid
-    // iteration and the (out-of-line) screen.row() calls versus two passes, and
-    // touches each cell exactly once for better cache behavior.
+    // Invalidate the whole cache if geometry (grid size / font metrics) moved.
+    if (grid.cols != cache_cols_ || grid.rows != cache_rows_ || cw != cache_cw_ ||
+        ch != cache_ch_ || ascent != cache_ascent_) {
+        rows_.assign(static_cast<std::size_t>(std::max(grid.rows, 0)), RowCache{});
+        for (auto &rc : rows_) {
+            rc.bg.reserve(static_cast<std::size_t>(std::max(grid.cols, 0)));
+            rc.glyphs.reserve(static_cast<std::size_t>(std::max(grid.cols, 0)));
+        }
+        instances_.reserve(static_cast<std::size_t>(grid.cols) *
+                               static_cast<std::size_t>(std::max(grid.rows, 0)) + 2);
+        glyphs_.reserve(static_cast<std::size_t>(grid.cols) *
+                        static_cast<std::size_t>(std::max(grid.rows, 0)));
+        cache_cols_ = grid.cols;
+        cache_rows_ = grid.rows;
+        cache_cw_ = cw;
+        cache_ch_ = ch;
+        cache_ascent_ = ascent;
+    }
+
+    // Rebuild only the rows whose fingerprint changed; the rest keep their
+    // shadow instances untouched. We reassemble the flat draw buffers only when
+    // something actually changed (or on the very first frame).
+    bool any_row_dirty = false;
     for (int r = 0; r < grid.rows; ++r) {
         const auto cells = screen.row(Row{r});
-        const float ry = static_cast<float>(r * ch);
-        const int base_gy = r * ch + ascent;
-        const std::int64_t abs_row = any_selection ? screen.viewport_to_abs(r) : 0;
         const bool row_has_cursor = cursor_visible && r == cur_row;
-        for (int c = 0; c < grid.cols; ++c) {
-            const auto &cell = cells[static_cast<std::size_t>(c)];
-            const bool selected = any_selection && screen.is_selected(abs_row, c);
-            const bool reverse = term::has(cell.pen.attr, term::Attr::Reverse);
-            const bool on_cursor = row_has_cursor && c == cur_col;
+        const std::int64_t abs_row = any_selection ? screen.viewport_to_abs(r) : 0;
 
-            // --- background rect (selection > reverse > explicit bg) ---
-            if (selected) {
-                instances_.push_back(rect_inst(static_cast<float>(c * cw), ry,
-                                               static_cast<float>(cw), static_cast<float>(ch),
-                                               66, 84, 112, /*radius=*/0));
-            } else if (reverse || !std::holds_alternative<term::DefaultColor>(cell.pen.bg)) {
-                const term::Color bg = reverse ? cell.pen.fg : cell.pen.bg;
-                const Rgb col = palette_.resolve(bg, /*is_fg=*/reverse);
-                instances_.push_back(rect_inst(static_cast<float>(c * cw), ry,
-                                               static_cast<float>(cw), static_cast<float>(ch),
-                                               col.r, col.g, col.b, /*radius=*/0));
+        // Fingerprint everything that changes this row's pixels: the raw cells,
+        // plus cursor column (only when the cursor is on this row) and, when a
+        // selection is active, which columns of this row are selected.
+        std::uint64_t key = 0xcbf29ce484222325ULL;
+        hash_words(key, cells.data(), static_cast<std::size_t>(grid.cols) * sizeof(term::Cell));
+        if (row_has_cursor) hash_val(key, cur_col);
+        else                hash_val(key, -1);
+        if (any_selection) {
+            for (int c = 0; c < grid.cols; ++c) {
+                if (screen.is_selected(abs_row, c)) hash_val(key, c);
             }
+        }
+        key = mix(key);
 
-            // --- glyph ---
-            const char32_t cp = cell.cp;
-            if (cp == U' ' || cp == 0 || cell.spacer()) continue; // blank / wide-spacer
-            const GlyphInfo *gi = atlas_.glyph(cp);
-            if (!gi || gi->width == 0 || gi->height == 0) continue;
-            const Rgb col = on_cursor
-                                ? palette_.resolve(cell.pen.bg, /*is_fg=*/false)
-                                : palette_.resolve(reverse ? cell.pen.bg : cell.pen.fg, !reverse);
-            const float gx = static_cast<float>(c * cw + gi->bearing_x);
-            const float gy = static_cast<float>(base_gy - gi->bearing_y);
-            glyphs_.push_back(Instance{gx, gy, static_cast<float>(gi->width),
-                                       static_cast<float>(gi->height),
-                                       unorm16(gi->u0), unorm16(gi->v0), unorm16(gi->u1),
-                                       unorm16(gi->v1), col.r, col.g, col.b, 255,
-                                       /*is_glyph=*/1, 0, 0, 0});
+        any_row_dirty |= build_row(screen, r, key, row_has_cursor, cur_col, abs_row, any_selection);
+    }
+
+    // Reassemble the flat draw buffers only when a row changed. Clean frames
+    // (only reached when the host detected damage elsewhere) reuse the buffers
+    // already staged — no per-row copies at all.
+    if (any_row_dirty || instances_.empty()) {
+        instances_.clear();
+        glyphs_.clear();
+        for (int r = 0; r < grid.rows; ++r) {
+            const RowCache &rc = rows_[static_cast<std::size_t>(r)];
+            instances_.insert(instances_.end(), rc.bg.begin(), rc.bg.end());
+            glyphs_.insert(glyphs_.end(), rc.glyphs.begin(), rc.glyphs.end());
+        }
+        // Cursor rect sits above backgrounds, beneath glyphs.
+        if (cursor_visible) {
+            const Rgb cc = palette_.default_fg();
+            instances_.push_back(rect_inst(static_cast<float>(cur_col * cw),
+                                           static_cast<float>(cur_row * ch),
+                                           static_cast<float>(cw), static_cast<float>(ch),
+                                           cc.r, cc.g, cc.b, /*radius=*/2));
         }
     }
 
-    // Cursor rect on top of backgrounds, beneath glyphs.
-    if (cursor_visible) {
-        const Rgb cc = palette_.default_fg();
-        instances_.push_back(rect_inst(static_cast<float>(cur_col * cw),
-                                       static_cast<float>(cur_row * ch),
-                                       static_cast<float>(cw), static_cast<float>(ch),
-                                       cc.r, cc.g, cc.b, /*radius=*/2));
-    }
-
-    // Draw backgrounds+cursor first, then glyphs on top — two instanced draws
-    // straight from their own buffers, avoiding a per-frame concat memcpy.
     flush(instances_, px);
     flush(glyphs_, px);
 }

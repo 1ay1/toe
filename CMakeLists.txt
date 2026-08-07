@@ -100,6 +100,10 @@ add_executable(render_test tests/render_test.cpp)
 target_link_libraries(render_test PRIVATE gvte)
 add_test(NAME render COMMAND render_test)
 
+add_executable(cache_test tests/cache_test.cpp)
+target_link_libraries(cache_test PRIVATE gvte)
+add_test(NAME cache COMMAND cache_test)
+
 add_executable(tea_test tests/tea_test.cpp)
 target_link_libraries(tea_test PRIVATE gvte)
 add_test(NAME tea COMMAND tea_test)

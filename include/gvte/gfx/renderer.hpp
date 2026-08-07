@@ -59,6 +59,29 @@ private:
     void ensure_buffers();
     void flush(std::span<const Instance> insts, PixelSize px);
 
+    // --- per-row damage cache ------------------------------------------------
+    // State-of-the-art incremental rebuild. draw() is only called when the
+    // screen's generation advanced, but usually only a handful of rows actually
+    // changed (a keystroke, a cursor move, one scrolled line). We keep each
+    // viewport row's built instances plus a 64-bit key that fingerprints
+    // everything affecting that row's pixels; on a frame we rebuild ONLY the
+    // rows whose key changed and reuse the rest verbatim — skipping the glyph
+    // lookups, palette resolves and push_backs for the unchanged majority.
+    struct RowCache {
+        std::uint64_t key{0};              // fingerprint of cells + render state
+        bool valid{false};
+        std::vector<Instance> bg;          // background / selection rects
+        std::vector<Instance> glyphs;      // textured glyph quads
+    };
+    std::vector<RowCache> rows_{};
+    // Geometry the cache was built against; a change invalidates everything.
+    int cache_cols_{-1}, cache_rows_{-1}, cache_cw_{0}, cache_ch_{0}, cache_ascent_{0};
+    // Build (or reuse) one row's instances into rows_[r]. Returns true if the
+    // row was rebuilt (its key changed).
+    bool build_row(const term::Screen &screen, int r, std::uint64_t key,
+                   bool row_has_cursor, int cur_col, std::int64_t abs_row,
+                   bool any_selection);
+
     FontAtlas atlas_;
     Palette palette_{};
     Program prog_;
