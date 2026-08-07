@@ -75,6 +75,18 @@ public:
     // needn't reach into the runtime itself.
     void run(const Cmds &cmds);
 
+    // Drain whatever child output is already readable on the PTY, folding it
+    // into the grid, WITHOUT blocking. Returns false if the child has hung up.
+    // The host calls this right after writing input so the child's echo lands
+    // in the SAME frame it renders — collapsing local-echo latency from two
+    // vsync intervals to one. Idempotent and cheap when nothing is pending.
+    bool pump_output();
+
+    // True when the last drain hit its per-call budget and the child still has
+    // output queued. The host should render + poll input, then loop again
+    // WITHOUT sleeping (the PTY fd is still readable) to keep a flood flowing.
+    [[nodiscard]] bool output_pending() const noexcept;
+
     // Scrollback: move the view by `lines` (positive = up/into history).
     void scroll(int lines);
     void scroll_to_bottom();

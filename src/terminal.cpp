@@ -86,8 +86,22 @@ struct Session::Impl {
 
     // Drain child output through the pure reducer, interpreting effects.
     // Returns false when the child has hung up (the transition trigger).
+    //
+    // Bounded per call: under a flood (`yes`, `cat huge`) an unbounded drain
+    // would feed megabytes to the parser before returning, freezing input and
+    // redraw for the duration. We cap each call to a byte budget and set
+    // `more_pending` when the PTY still had data, so the host can render an
+    // intermediate frame and process input, then come straight back (the fd
+    // stays readable, so the loop won't sleep). This keeps the UI responsive
+    // and shows progressive output no matter how fast the app writes.
+    bool more_pending = false;
     bool drain() {
+        // ~2 MiB/frame: plenty to keep throughput high, small enough that a
+        // flood still yields to input + a redraw at well over 60 fps.
+        constexpr std::size_t kBudget = 2u * 1024 * 1024;
         std::array<char, 16384> buf{};
+        std::size_t consumed = 0;
+        more_pending = false;
         for (;;) {
             auto n = pty.read(std::span<char>{buf});
             if (!n) {
@@ -98,6 +112,11 @@ struct Session::Impl {
             }
             Cmds effects = term::feed_output(model, std::string_view{buf.data(), *n});
             interpret(effects);
+            consumed += *n;
+            if (consumed >= kBudget) {
+                more_pending = true; // yield: let the host render + poll input
+                return true;
+            }
         }
     }
 };
@@ -172,6 +191,10 @@ Cmds Session::update(const Msg &msg) {
 }
 
 void Session::run(const Cmds &cmds) { impl_->interpret(cmds); }
+
+bool Session::pump_output() { return impl_->drain(); }
+
+bool Session::output_pending() const noexcept { return impl_->more_pending; }
 
 void Session::scroll(int lines) { impl_->model.screen.scroll(lines); }
 void Session::scroll_to_bottom() { impl_->model.screen.scroll_to_bottom(); }
