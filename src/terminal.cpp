@@ -7,6 +7,7 @@
 #include "gvte/terminal.hpp"
 
 #include <array>
+#include <optional>
 #include <algorithm>
 #include <cstdlib>
 #include <span>
@@ -20,6 +21,35 @@
 
 namespace gvte {
 
+namespace {
+// Decode a base64 string (OSC 52 payload). Invalid chars are skipped; returns
+// the decoded bytes.
+std::string decode_base64(std::string_view in) {
+    auto val = [](char c) -> int {
+        if (c >= 'A' && c <= 'Z') return c - 'A';
+        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+        if (c >= '0' && c <= '9') return c - '0' + 52;
+        if (c == '+') return 62;
+        if (c == '/') return 63;
+        return -1;
+    };
+    std::string out;
+    int buf = 0, bits = 0;
+    for (char c : in) {
+        if (c == '=') break;
+        const int v = val(c);
+        if (v < 0) continue;
+        buf = (buf << 6) | v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(static_cast<char>((buf >> bits) & 0xFF));
+        }
+    }
+    return out;
+}
+} // namespace
+
 // ---------------------------------------------------------------------------
 // The live engine. Only reachable through a Session, which only exists while
 // the child is alive — so every field here is valid by construction.
@@ -31,6 +61,7 @@ struct Session::Impl {
     gfx::Renderer renderer;
     Pty pty;
     std::string title{"gvte"};
+    std::optional<std::string> clipboard_request{};
     int cell_w;
     int cell_h;
 
@@ -55,10 +86,19 @@ struct Session::Impl {
             screen.scroll_to_bottom();
             parser.feed(std::span<const char>{buf.data(), *n}, [&](const vt::Action &a) {
                 if (auto *osc = std::get_if<vt::OscDispatch>(&a)) {
-                    // OSC 0/2 ; <title>  sets the window title.
                     std::string_view d = osc->data;
                     if (d.size() > 2 && (d.starts_with("0;") || d.starts_with("2;"))) {
+                        // OSC 0/2 ; <title>  sets the window title.
                         title = std::string{d.substr(2)};
+                    } else if (d.starts_with("52;")) {
+                        // OSC 52 ; <selection> ; <base64>  sets the clipboard.
+                        const auto semi = d.find(';', 3);
+                        if (semi != std::string_view::npos) {
+                            std::string_view b64 = d.substr(semi + 1);
+                            if (b64 != "?") { // '?' is a read request; we only set
+                                clipboard_request = decode_base64(b64);
+                            }
+                        }
                     }
                 } else {
                     screen.apply(a);
@@ -102,6 +142,16 @@ void Session::select_begin(int vrow, int col, int mode) {
 void Session::select_extend(int vrow, int col) {
     const std::int64_t abs = impl_->screen.viewport_to_abs(vrow);
     impl_->screen.selection_extend({abs, col});
+}
+
+void Session::select_word(int vrow, int col) {
+    const std::int64_t abs = impl_->screen.viewport_to_abs(vrow);
+    impl_->screen.selection_word({abs, col});
+}
+
+void Session::select_line(int vrow, int col) {
+    const std::int64_t abs = impl_->screen.viewport_to_abs(vrow);
+    impl_->screen.selection_line({abs, col});
 }
 
 void Session::select_clear() { impl_->screen.selection_clear(); }
@@ -211,6 +261,13 @@ int Session::cell_width() const noexcept { return impl_->cell_w; }
 int Session::cell_height() const noexcept { return impl_->cell_h; }
 bool Session::bracketed_paste() const noexcept { return impl_->screen.bracketed_paste(); }
 bool Session::on_alt_screen() const noexcept { return impl_->screen.on_alt_screen(); }
+
+std::optional<std::string> Session::take_clipboard_request() {
+    if (!impl_->clipboard_request) return std::nullopt;
+    std::optional<std::string> req = std::move(impl_->clipboard_request);
+    impl_->clipboard_request.reset();
+    return req;
+}
 
 // ---------------------------------------------------------------------------
 // Terminal — construction and the single transition.

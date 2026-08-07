@@ -283,6 +283,34 @@ int main() {
         expect(!s.has_selection() && s.selected_text().empty(), "selection cleared");
     }
 
+    // Double-click word selection expands over word chars.
+    {
+        term::Screen s{Extent{20, 1}};
+        feed(s, "foo bar/baz qux");
+        s.selection_word(term::Screen::AbsPos{0, 5}); // inside 'bar/baz'
+        expect(s.selected_text() == "bar/baz", "word select spans word punctuation");
+        s.selection_word(term::Screen::AbsPos{0, 1}); // inside 'foo'
+        expect(s.selected_text() == "foo", "word select stops at space");
+    }
+
+    // Triple-click / line selection grabs the whole row.
+    {
+        term::Screen s{Extent{20, 1}};
+        feed(s, "hello there");
+        s.selection_line(term::Screen::AbsPos{0, 3});
+        expect(s.selected_text() == "hello there", "line select grabs whole row");
+    }
+
+    // Custom tab stops: HTS sets, TBC clears, tab honors them.
+    {
+        term::Screen s{Extent{40, 1}};
+        // Clear all default stops, set one at column 5, then TAB from col 0.
+        feed(s, "\x1b[3g");            // TBC 3: clear all
+        feed(s, "\x1b[6G\x1bH");       // move to col 6 (1-based), HTS sets stop there
+        feed(s, "\x1b[1G\tX");         // home, TAB, print X
+        expect(glyph_at(s, 0, 5) == U'X', "TAB honors custom stop at col 5");
+    }
+
     if (failures == 0) {
         std::printf("all screen tests passed\n");
         return 0;

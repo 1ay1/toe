@@ -81,6 +81,10 @@ public:
     void selection_begin(AbsPos p, SelectMode mode);
     // Extend the active selection to p (e.g. mouse-drag).
     void selection_extend(AbsPos p);
+    // Select the whole word under an absolute position (double-click).
+    void selection_word(AbsPos p);
+    // Select the whole line at an absolute position (triple-click).
+    void selection_line(AbsPos p);
     // Clear the selection.
     void selection_clear();
     [[nodiscard]] bool has_selection() const noexcept { return sel_mode_ != SelectMode::none; }
@@ -127,6 +131,10 @@ private:
     void erase_chars(std::int32_t n);      // ECH
     void cursor_tab(std::int32_t n);       // CHT (forward tab stops)
     void cursor_back_tab(std::int32_t n);  // CBT (backward tab stops)
+    void set_tab_stop();                   // HTS (set tab at cursor col)
+    void clear_tab_stop(int mode);         // TBC (0 = at cursor, 3 = all)
+    [[nodiscard]] std::int32_t next_tab_stop(std::int32_t col) const noexcept;
+    [[nodiscard]] std::int32_t prev_tab_stop(std::int32_t col) const noexcept;
     void set_scroll_region(int top, int bottom); // DECSTBM
     void save_cursor();                    // DECSC / CSI s
     void restore_cursor();                 // DECRC / CSI u
@@ -165,6 +173,9 @@ private:
     // Saved primary-screen state while the alternate screen is active.
     std::vector<Cell> saved_primary_{};
     Pos saved_primary_cursor_{};
+
+    // Tab stops: one flag per column (default every 8th).
+    std::vector<bool> tab_stops_{};
 
     // Selection state, in absolute (history-aware) coordinates.
     SelectMode sel_mode_{SelectMode::none};

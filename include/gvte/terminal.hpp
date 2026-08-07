@@ -14,6 +14,7 @@
 #define GVTE_TERMINAL_HPP
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -68,6 +69,8 @@ public:
     // character, 1 line, 2 block.
     void select_begin(int vrow, int col, int mode);
     void select_extend(int vrow, int col);
+    void select_word(int vrow, int col);   // double-click: whole word
+    void select_line(int vrow, int col);   // triple-click: whole line
     void select_clear();
     [[nodiscard]] bool has_selection() const noexcept;
     [[nodiscard]] std::string selected_text() const;
@@ -97,6 +100,11 @@ public:
     // Terminal modes the host may need to honor.
     [[nodiscard]] bool bracketed_paste() const noexcept;
     [[nodiscard]] bool on_alt_screen() const noexcept;
+
+    // OSC 52: an app may ask to set the system clipboard. If one is pending,
+    // returns the UTF-8 text and clears the request; else returns nullopt. The
+    // host is expected to poll this each frame and forward to its clipboard.
+    [[nodiscard]] std::optional<std::string> take_clipboard_request();
 
 private:
     friend class Terminal;

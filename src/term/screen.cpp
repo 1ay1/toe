@@ -20,6 +20,10 @@ int param_raw(std::span<const int> p, std::size_t i, int def) {
 Screen::Screen(Extent size) : size_{size}, cells_(size.area()) {
     scroll_top_ = 0;
     scroll_bottom_ = size_.rows - 1;
+    tab_stops_.assign(static_cast<std::size_t>(std::max(size_.cols, 1)), false);
+    for (std::int32_t c = 0; c < size_.cols; c += 8) {
+        tab_stops_[static_cast<std::size_t>(c)] = true;
+    }
 }
 
 std::size_t Screen::index(Row r, Col c) const noexcept {
@@ -94,6 +98,11 @@ void Screen::resize(Extent size) {
     // A resize resets the scroll region to the full screen (xterm behavior).
     scroll_top_ = 0;
     scroll_bottom_ = size_.rows - 1;
+    // Rebuild default tab stops for the new width.
+    tab_stops_.assign(static_cast<std::size_t>(std::max(size_.cols, 1)), false);
+    for (std::int32_t c = 0; c < size_.cols; c += 8) {
+        tab_stops_[static_cast<std::size_t>(c)] = true;
+    }
     clamp_cursor();
     touch();
 }
@@ -177,10 +186,45 @@ void Screen::backspace() {
 }
 
 void Screen::tab() {
-    // Advance to the next multiple-of-8 column, clamped to the last column.
-    const std::int32_t next = ((cursor_.col.get() / 8) + 1) * 8;
+    const std::int32_t next = next_tab_stop(cursor_.col.get());
     cursor_.col = Col{std::min(next, size_.cols - 1)};
     touch();
+}
+
+std::int32_t Screen::next_tab_stop(std::int32_t col) const noexcept {
+    for (std::int32_t c = col + 1; c < size_.cols; ++c) {
+        if (c < static_cast<std::int32_t>(tab_stops_.size()) && tab_stops_[static_cast<std::size_t>(c)]) {
+            return c;
+        }
+    }
+    return size_.cols - 1;
+}
+
+std::int32_t Screen::prev_tab_stop(std::int32_t col) const noexcept {
+    for (std::int32_t c = col - 1; c > 0; --c) {
+        if (c < static_cast<std::int32_t>(tab_stops_.size()) && tab_stops_[static_cast<std::size_t>(c)]) {
+            return c;
+        }
+    }
+    return 0;
+}
+
+void Screen::set_tab_stop() {
+    const std::int32_t c = cursor_.col.get();
+    if (c >= 0 && c < static_cast<std::int32_t>(tab_stops_.size())) {
+        tab_stops_[static_cast<std::size_t>(c)] = true;
+    }
+}
+
+void Screen::clear_tab_stop(int mode) {
+    if (mode == 3) {
+        std::fill(tab_stops_.begin(), tab_stops_.end(), false);
+    } else { // mode 0: clear the stop at the cursor column
+        const std::int32_t c = cursor_.col.get();
+        if (c >= 0 && c < static_cast<std::int32_t>(tab_stops_.size())) {
+            tab_stops_[static_cast<std::size_t>(c)] = false;
+        }
+    }
 }
 
 // Scroll the region [scroll_top_, scroll_bottom_] up by n rows. Rows leaving
@@ -296,8 +340,7 @@ void Screen::cursor_tab(std::int32_t n) {
 
 void Screen::cursor_back_tab(std::int32_t n) {
     for (std::int32_t i = 0; i < n && cursor_.col.get() > 0; ++i) {
-        const std::int32_t prev = ((cursor_.col.get() - 1) / 8) * 8;
-        cursor_.col = Col{std::max(prev, 0)};
+        cursor_.col = Col{prev_tab_stop(cursor_.col.get())};
     }
     touch();
 }
@@ -459,6 +502,7 @@ void Screen::csi(const vt::CsiDispatch &d) {
     case 'T': scroll_down(param_or(p, 0, 1)); break;       // SD
     case 'I': cursor_tab(param_or(p, 0, 1)); break;        // CHT
     case 'Z': cursor_back_tab(param_or(p, 0, 1)); break;   // CBT
+    case 'g': clear_tab_stop(param_raw(p, 0, 0)); break;   // TBC
     case 'd': move_cursor_abs(Row{param_or(p, 0, 1) - 1}, cursor_.col); break; // VPA
     case 'r': // DECSTBM (set scroll region) — ignore private '?' variants
         if (!d.private_marker) set_scroll_region(param_raw(p, 0, 0), param_raw(p, 1, 0));
@@ -495,6 +539,7 @@ void Screen::esc(const vt::EscDispatch &d) {
         case '7': save_cursor(); return;    // DECSC
         case '8': restore_cursor(); return; // DECRC
         case 'D': line_feed(); return;      // IND (index)
+        case 'H': set_tab_stop(); return;   // HTS (set tab stop)
         case 'M': // RI (reverse index)
             if (cursor_.row.get() == scroll_top_) {
                 scroll_down(1);
@@ -603,6 +648,51 @@ void Screen::selection_begin(AbsPos p, SelectMode mode) {
 void Screen::selection_extend(AbsPos p) {
     if (sel_mode_ == SelectMode::none) return;
     sel_active_ = p;
+    touch();
+}
+
+namespace {
+// A codepoint that counts as part of a "word" for double-click selection:
+// alphanumerics plus a few path/URL-ish punctuation characters.
+bool is_word_cp(char32_t cp) {
+    if (cp == U' ' || cp == 0) return false;
+    if ((cp >= U'0' && cp <= U'9') || (cp >= U'A' && cp <= U'Z') ||
+        (cp >= U'a' && cp <= U'z') || cp >= 0x80) {
+        return true;
+    }
+    switch (cp) {
+    case U'_': case U'-': case U'.': case U'/': case U'~': case U':':
+    case U'@': case U'+': case U'=': case U'%': case U'#':
+        return true;
+    default:
+        return false;
+    }
+}
+} // namespace
+
+void Screen::selection_word(AbsPos p) {
+    auto word_at = [&](std::int32_t col) {
+        const Cell *c = cell_at_abs(p.row, col);
+        return c && is_word_cp(c->cp);
+    };
+    if (!word_at(p.col)) {
+        // Not on a word: fall back to a single-cell character selection.
+        selection_begin(p, SelectMode::character);
+        return;
+    }
+    std::int32_t lo = p.col, hi = p.col;
+    while (lo > 0 && word_at(lo - 1)) --lo;
+    while (hi < size_.cols - 1 && word_at(hi + 1)) ++hi;
+    sel_mode_ = SelectMode::character;
+    sel_anchor_ = AbsPos{p.row, lo};
+    sel_active_ = AbsPos{p.row, hi};
+    touch();
+}
+
+void Screen::selection_line(AbsPos p) {
+    sel_mode_ = SelectMode::line;
+    sel_anchor_ = AbsPos{p.row, 0};
+    sel_active_ = AbsPos{p.row, size_.cols - 1};
     touch();
 }
 
