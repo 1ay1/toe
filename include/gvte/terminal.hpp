@@ -20,6 +20,7 @@
 #include <variant>
 #include <vector>
 
+#include "gvte/core/tea.hpp"
 #include "gvte/core/types.hpp"
 #include "gvte/input.hpp"
 
@@ -59,6 +60,17 @@ public:
     void resize(PixelSize px);
     void send_key(const KeyEvent &ev);
     void send_text(std::string_view utf8);
+
+    // --- The Elm Architecture entry point ----------------------------------
+    // The single, pure-ish transition: fold a Msg into the terminal and return
+    // the effects it demands (bytes to the child, clipboard/title changes, …).
+    // The host is expected to interpret the returned Cmds via run(). Every
+    // other input method below is a thin convenience over update().
+    [[nodiscard]] Cmds update(const Msg &msg);
+
+    // Execute a batch of Cmds (the impure interpreter). Host convenience so it
+    // needn't reach into the runtime itself.
+    void run(const Cmds &cmds);
 
     // Scrollback: move the view by `lines` (positive = up/into history).
     void scroll(int lines);

@@ -108,6 +108,78 @@ void Session::resize(PixelSize px) {
 
 void Session::send_text(std::string_view utf8) { (void)impl_->pty.write(utf8); }
 
+// --- pure input encoding ---------------------------------------------------
+namespace {
+
+// Encode a key event to the bytes a terminal sends the child. Pure: no I/O.
+std::string encode_key(const KeyEvent &ev) {
+    if (const auto *t = std::get_if<TextInput>(&ev.key)) {
+        if (ev.mods.ctrl && t->utf8.size() == 1) {
+            const char c = t->utf8[0];
+            if (c >= 'a' && c <= 'z') return std::string(1, static_cast<char>(c - 'a' + 1));
+            if (c >= 'A' && c <= 'Z') return std::string(1, static_cast<char>(c - 'A' + 1));
+        }
+        return t->utf8;
+    }
+    switch (std::get<SpecialKey>(ev.key)) {
+    case SpecialKey::Enter: return "\r";
+    case SpecialKey::Backspace: return "\x7f";
+    case SpecialKey::Tab: return "\t";
+    case SpecialKey::Escape: return "\x1b";
+    case SpecialKey::Up: return "\x1b[A";
+    case SpecialKey::Down: return "\x1b[B";
+    case SpecialKey::Right: return "\x1b[C";
+    case SpecialKey::Left: return "\x1b[D";
+    case SpecialKey::Home: return "\x1b[H";
+    case SpecialKey::End: return "\x1b[F";
+    case SpecialKey::PageUp: return "\x1b[5~";
+    case SpecialKey::PageDown: return "\x1b[6~";
+    case SpecialKey::Delete: return "\x1b[3~";
+    case SpecialKey::Insert: return "\x1b[2~";
+    }
+    return {};
+}
+
+} // namespace
+
+// --- The Elm Architecture: update + interpreter ----------------------------
+Cmds Session::update(const Msg &msg) {
+    Cmds out;
+    std::visit(
+        [&](auto &&m) {
+            using T = std::decay_t<decltype(m)>;
+            if constexpr (std::is_same_v<T, ChildOutput>) {
+                Cmds fx = term::feed_output(impl_->model, m.bytes);
+                out.insert(out.end(), std::make_move_iterator(fx.begin()),
+                           std::make_move_iterator(fx.end()));
+            } else if constexpr (std::is_same_v<T, Key>) {
+                std::string bytes = encode_key(m.event);
+                if (!bytes.empty()) out.emplace_back(WriteChild{std::move(bytes)});
+            } else if constexpr (std::is_same_v<T, Paste>) {
+                if (impl_->model.screen.bracketed_paste()) {
+                    out.emplace_back(WriteChild{"\x1b[200~" + m.text + "\x1b[201~"});
+                } else {
+                    out.emplace_back(WriteChild{m.text});
+                }
+            } else if constexpr (std::is_same_v<T, Resized>) {
+                const Extent ng = impl_->renderer.cells_for(m.pixels);
+                if (ng.cols != impl_->grid.cols || ng.rows != impl_->grid.rows) {
+                    impl_->grid = ng;
+                    impl_->model.screen.resize(ng);
+                    out.emplace_back(ResizePty{ng});
+                }
+            } else if constexpr (std::is_same_v<T, ChildExited>) {
+                out.emplace_back(Quit{m.code});
+            }
+            // Mouse/Tick Msgs are routed by the host via the dedicated helpers
+            // for now; they can migrate into update() the same way.
+        },
+        msg);
+    return out;
+}
+
+void Session::run(const Cmds &cmds) { impl_->interpret(cmds); }
+
 void Session::scroll(int lines) { impl_->model.screen.scroll(lines); }
 void Session::scroll_to_bottom() { impl_->model.screen.scroll_to_bottom(); }
 
@@ -188,50 +260,9 @@ void Session::report_mouse(MouseEvent kind, int button, int col, int row, bool s
     (void)impl_->pty.write(seq);
 }
 
-void Session::send_key(const KeyEvent &ev) {
-    // Text branch: forward the UTF-8 as-is (Ctrl-<letter> is folded to a C0
-    // control below only for the special-less letter case a host may send).
-    if (const auto *t = std::get_if<TextInput>(&ev.key)) {
-        if (ev.mods.ctrl && t->utf8.size() == 1) {
-            const char c = t->utf8[0];
-            if (c >= 'a' && c <= 'z') {
-                const char ctl = static_cast<char>(c - 'a' + 1);
-                (void)impl_->pty.write(std::string_view{&ctl, 1});
-                return;
-            }
-            if (c >= 'A' && c <= 'Z') {
-                const char ctl = static_cast<char>(c - 'A' + 1);
-                (void)impl_->pty.write(std::string_view{&ctl, 1});
-                return;
-            }
-        }
-        (void)impl_->pty.write(t->utf8);
-        return;
-    }
-
-    // Special-key branch: map to its escape/control sequence. A switch over the
-    // scoped enum is exhaustive — adding a SpecialKey without handling it is a
-    // -Wswitch warning, so no key can be silently dropped.
-    const SpecialKey sk = std::get<SpecialKey>(ev.key);
-    std::string_view bytes;
-    switch (sk) {
-    case SpecialKey::Enter: bytes = "\r"; break;
-    case SpecialKey::Backspace: bytes = "\x7f"; break;
-    case SpecialKey::Tab: bytes = "\t"; break;
-    case SpecialKey::Escape: bytes = "\x1b"; break;
-    case SpecialKey::Up: bytes = "\x1b[A"; break;
-    case SpecialKey::Down: bytes = "\x1b[B"; break;
-    case SpecialKey::Right: bytes = "\x1b[C"; break;
-    case SpecialKey::Left: bytes = "\x1b[D"; break;
-    case SpecialKey::Home: bytes = "\x1b[H"; break;
-    case SpecialKey::End: bytes = "\x1b[F"; break;
-    case SpecialKey::PageUp: bytes = "\x1b[5~"; break;
-    case SpecialKey::PageDown: bytes = "\x1b[6~"; break;
-    case SpecialKey::Delete: bytes = "\x1b[3~"; break;
-    case SpecialKey::Insert: bytes = "\x1b[2~"; break;
-    }
-    (void)impl_->pty.write(bytes);
-}
+// send_key is now a thin convenience over the TEA pipeline: build a Key Msg,
+// let update() produce the WriteChild Cmd, and run() interpret it.
+void Session::send_key(const KeyEvent &ev) { run(update(Key{ev})); }
 
 Extent Session::grid_size() const noexcept { return impl_->grid; }
 Pos Session::cursor() const noexcept { return impl_->model.screen.cursor(); }
