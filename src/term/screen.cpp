@@ -154,6 +154,10 @@ namespace {
 int char_width(char32_t cp) {
     if (cp == 0) return 0;
     if (cp < 0x20) return 0; // controls never occupy a cell here
+    // ASCII printables (the overwhelming majority of terminal output) are
+    // always single-width — skip the expensive libc wcwidth() table lookup,
+    // which otherwise dominates parse time under a flood of plain text.
+    if (cp < 0x7f) return 1;
     static const bool locale_set = [] {
         std::setlocale(LC_CTYPE, "");
         return true;
