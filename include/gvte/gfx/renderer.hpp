@@ -40,18 +40,19 @@ public:
 
 private:
     // One instance: a colored (and optionally textured) quad in pixel space.
-    // Packed to 32 bytes so streaming a full screen moves half the bytes:
     //   rect   16B  x,y,w,h in pixels (float — needs sub-pixel precision)
-    //   uv      8B  u0,v0,u1,v1 as normalized u16 (atlas coords in [0,1])
+    //   uv     16B  u0,v0,u1,v1 as float (atlas coords in [0,1]) — float, not
+    //              packed u16: normalized-u16 UVs sampled the wrong atlas texel
+    //              on some drivers and rendered glyphs as solid blocks.
     //   color   4B  r,g,b,_ as normalized u8
     //   flags   4B  is_glyph (u8), radius-in-px (u8), 2B pad
     struct Instance {
         float x, y, w, h;                    // pixel rect
-        std::uint16_t u0, v0, u1, v1;        // atlas UVs, normalized u16
+        float u0, v0, u1, v1;                // atlas UVs in [0,1]
         std::uint8_t r, g, b, a;             // color, normalized u8
         std::uint8_t is_glyph, radius, pad0, pad1;
     };
-    static_assert(sizeof(Instance) == 32, "Instance must stay 32 bytes");
+    static_assert(sizeof(Instance) == 40, "Instance layout drifted");
 
     explicit Renderer(FontAtlas &&atlas, Program &&prog)
         : atlas_{std::move(atlas)}, prog_{std::move(prog)} {}

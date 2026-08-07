@@ -73,7 +73,7 @@ int main() {
                     screen.apply(a, out);
                 });
 
-    renderer->draw(screen, PixelSize{W, H});
+    renderer->draw(screen, PixelSize{W, H}, /*cursor_on=*/false);
     glFinish();
 
     // Read back.
@@ -103,11 +103,42 @@ int main() {
     std::printf("bg_ok=%d nonbg=%zu redish=%zu greenish=%zu (cell %dx%d, grid %dx%d)\n",
                 bg_ok, nonbg, redish, greenish, cw, ch, grid.cols, grid.rows);
 
+    // Block-vs-glyph guard: a correctly-rendered glyph covers only PART of its
+    // cell; if the atlas sample or UVs collapse, every glyph fills its whole
+    // cell as a solid block (the exact symptom of the packed-UV regression).
+    // Scan every cell in the grid and find the single densest one. Text glyphs
+    // (even 'X'/'M'/'@') never fill a cell; a solid block is ~100%. We ignore
+    // the explicit green-background cell (\x1b[42m) which legitimately fills.
+    int worst_cell_cov = 0;
+    for (int gr = 0; gr < grid.rows; ++gr) {
+        for (int gc = 0; gc < grid.cols; ++gc) {
+            int cov = 0, tot = 0, greenbg = 0;
+            for (int y = gr * ch; y < (gr + 1) * ch && y < H; ++y) {
+                for (int x = gc * cw; x < (gc + 1) * cw && x < W; ++x) {
+                    ++tot;
+                    auto c = at(x, y);
+                    const bool isbg = (c[0] == 23 && c[1] == 23 && c[2] == 28);
+                    if (!isbg) ++cov;
+                    if (c[1] > 100 && c[0] < 100 && c[2] < 100) ++greenbg; // green fill
+                }
+            }
+            if (tot == 0 || greenbg * 2 > tot) continue; // skip the green-bg cell
+            const int pct = 100 * cov / tot;
+            if (pct > worst_cell_cov) worst_cell_cov = pct;
+        }
+    }
+    std::printf("densest glyph cell coverage = %d%% (a solid block would be ~100%%)\n",
+                worst_cell_cov);
+
     int fails = 0;
     if (!bg_ok) { std::printf("FAIL background color\n"); ++fails; }
     if (nonbg < 200) { std::printf("FAIL glyph coverage too low\n"); ++fails; }
     if (redish < 5) { std::printf("FAIL red SGR glyphs missing\n"); ++fails; }
     if (greenish < 5) { std::printf("FAIL green SGR background missing\n"); ++fails; }
+    if (worst_cell_cov >= 70) {
+        std::printf("FAIL glyphs render as solid blocks (is_glyph/UV/atlas-sample bug)\n");
+        ++fails;
+    }
 
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &tex);

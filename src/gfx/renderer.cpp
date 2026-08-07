@@ -101,13 +101,6 @@ const std::array<float, 256> &fr_table() {
 }
 inline float fr(std::uint8_t v) noexcept { return fr_table()[v]; }
 
-// Convert a float atlas coord in [0,1] to a normalized u16.
-inline std::uint16_t unorm16(float f) noexcept {
-    if (f < 0.0f) f = 0.0f;
-    if (f > 1.0f) f = 1.0f;
-    return static_cast<std::uint16_t>(f * 65535.0f + 0.5f);
-}
-
 } // namespace
 
 Result<Renderer> Renderer::create(FontAtlas &&atlas) {
@@ -187,27 +180,29 @@ Extent Renderer::cells_for(PixelSize px) const noexcept {
 void Renderer::setup_instance_attribs() {
     const GLsizei stride = sizeof(Instance);
     auto off = [](std::size_t n) { return reinterpret_cast<void *>(n); };
-    // Packed layout: rect 4xf32 @0, uv 4xu16(norm) @16, color 4xu8(norm) @24,
-    // is_glyph u8(norm) @28, radius u8(raw) @29.
+    // Packed layout: rect 4xf32 @0, uv 4xf32 @16, color 4xu8(norm) @32,
+    // is_glyph u8(norm) @36, radius u8(raw) @37.
     // aRect (loc1)
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, stride, off(0));
     glVertexAttribDivisor(1, 1);
-    // aUV (loc2) — u16 normalized -> [0,1]
+    // aUV (loc2) — float atlas coords in [0,1]
     glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 4, GL_UNSIGNED_SHORT, GL_TRUE, stride, off(16));
+    glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, stride, off(16));
     glVertexAttribDivisor(2, 1);
     // aColor (loc3) — 3 of the 4 packed u8, normalized -> [0,1]
     glEnableVertexAttribArray(3);
-    glVertexAttribPointer(3, 3, GL_UNSIGNED_BYTE, GL_TRUE, stride, off(24));
+    glVertexAttribPointer(3, 3, GL_UNSIGNED_BYTE, GL_TRUE, stride, off(32));
     glVertexAttribDivisor(3, 1);
-    // aIsGlyph (loc4) — u8 normalized (0/255 -> 0.0/1.0)
+    // aIsGlyph (loc4) — u8 raw 0/1 as float (UNnormalized: normalized would map
+    // 1 -> 1/255 ≈ 0.004, failing the shader's `> 0.5` test and rendering every
+    // glyph as a solid rect).
     glEnableVertexAttribArray(4);
-    glVertexAttribPointer(4, 1, GL_UNSIGNED_BYTE, GL_TRUE, stride, off(28));
+    glVertexAttribPointer(4, 1, GL_UNSIGNED_BYTE, GL_FALSE, stride, off(36));
     glVertexAttribDivisor(4, 1);
     // aRadius (loc5) — u8 raw px value as float (unnormalized)
     glEnableVertexAttribArray(5);
-    glVertexAttribPointer(5, 1, GL_UNSIGNED_BYTE, GL_FALSE, stride, off(29));
+    glVertexAttribPointer(5, 1, GL_UNSIGNED_BYTE, GL_FALSE, stride, off(37));
     glVertexAttribDivisor(5, 1);
 }
 
@@ -222,6 +217,7 @@ void Renderer::ensure_buffers() {
     glBufferData(GL_ARRAY_BUFFER, sizeof(kQuad), kQuad, GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
+    glVertexAttribDivisor(0, 0); // per-VERTEX (the unit-quad corner), not per-instance
 
     glGenBuffers(1, &inst_vbo_);
     glBindBuffer(GL_ARRAY_BUFFER, inst_vbo_);
@@ -437,8 +433,8 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
         const float gy = static_cast<float>(base_gy - gi->bearing_y);
         rc.glyphs.push_back(Instance{gx, gy, static_cast<float>(gi->width),
                                      static_cast<float>(gi->height),
-                                     unorm16(gi->u0), unorm16(gi->v0), unorm16(gi->u1),
-                                     unorm16(gi->v1), col.r, col.g, col.b, 255,
+                                     gi->u0, gi->v0, gi->u1, gi->v1,
+                                     col.r, col.g, col.b, 255,
                                      /*is_glyph=*/1, 0, 0, 0});
     }
     rc.key = key;
