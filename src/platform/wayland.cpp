@@ -403,8 +403,8 @@ void WaylandSurface::poll_events(const std::function<void(const Event &)> &sink)
 
 } // namespace
 
-// Backend entry point (Wayland only for now; X11 added behind the same call).
-Result<std::unique_ptr<Surface>> open_surface(std::string_view title, PixelSize initial) {
+// Exposed to the backend selector in surface.cpp.
+Result<std::unique_ptr<Surface>> open_wayland_surface(std::string_view title, PixelSize initial) {
     auto ws = WaylandSurface::open(title, initial);
     if (!ws) {
         return std::unexpected(ws.error());

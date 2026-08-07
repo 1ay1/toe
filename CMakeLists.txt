@@ -19,6 +19,7 @@ pkg_check_modules(FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
 pkg_check_modules(EGL REQUIRED IMPORTED_TARGET egl)
 pkg_check_modules(WAYLAND REQUIRED IMPORTED_TARGET wayland-client wayland-egl wayland-cursor)
 pkg_check_modules(XKB REQUIRED IMPORTED_TARGET xkbcommon)
+pkg_check_modules(X11 REQUIRED IMPORTED_TARGET x11 x11-xcb xcb xkbcommon-x11)
 
 # --- generate xdg-shell protocol from wayland-protocols -------------------
 find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
@@ -42,7 +43,9 @@ add_custom_command(
 add_library(gvte
   src/terminal.cpp
   src/pty/pty.cpp
+  src/platform/surface.cpp
   src/platform/wayland.cpp
+  src/platform/x11.cpp
   "${GEN}/xdg-shell-protocol.c"
   "${GEN}/xdg-shell-client-protocol.h"
   src/gfx/font.cpp
@@ -64,6 +67,7 @@ target_link_libraries(gvte PUBLIC
   PkgConfig::EGL
   PkgConfig::WAYLAND
   PkgConfig::XKB
+  PkgConfig::X11
   util)  # forkpty
 
 add_library(gvte::gvte ALIAS gvte)
