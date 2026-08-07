@@ -34,6 +34,12 @@ public:
 
     void swap() override;
     [[nodiscard]] PixelSize pixel_size() const override { return size_; }
+    void set_title(std::string_view title) override {
+        if (display_ && window_) {
+            XStoreName(display_, static_cast<Window>(window_), std::string{title}.c_str());
+            XFlush(display_);
+        }
+    }
     void poll_events(const std::function<void(const Event &)> &sink) override;
     [[nodiscard]] bool should_close() const override { return closed_; }
 

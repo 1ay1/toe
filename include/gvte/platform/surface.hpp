@@ -53,6 +53,9 @@ public:
     // Current drawable size in pixels.
     [[nodiscard]] virtual PixelSize pixel_size() const = 0;
 
+    // Update the window/toplevel title (from OSC 0/2).
+    virtual void set_title(std::string_view title) = 0;
+
     // Drain pending native events, invoking `sink` for each translated Event.
     // Non-blocking: returns after dispatching whatever is queued.
     virtual void poll_events(const std::function<void(const Event &)> &sink) = 0;

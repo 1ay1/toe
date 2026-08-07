@@ -37,6 +37,11 @@ public:
 
     void swap() override;
     [[nodiscard]] PixelSize pixel_size() const override { return size_; }
+    void set_title(std::string_view title) override {
+        if (toplevel_) {
+            xdg_toplevel_set_title(toplevel_, std::string{title}.c_str());
+        }
+    }
     void poll_events(const std::function<void(const Event &)> &sink) override;
     [[nodiscard]] bool should_close() const override { return closed_; }
 
