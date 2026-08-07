@@ -572,4 +572,115 @@ void Screen::apply_sgr(std::span<const int> params) {
     }
 }
 
+// --- selection -------------------------------------------------------------
+
+std::int64_t Screen::viewport_to_abs(std::int32_t vrow) const noexcept {
+    // The visible window's top is scroll_offset_ rows above the live grid top.
+    const std::int64_t live_top = static_cast<std::int64_t>(history_.size());
+    return live_top - scroll_offset_ + vrow;
+}
+
+const Cell *Screen::cell_at_abs(std::int64_t abs_row, std::int32_t col) const noexcept {
+    if (col < 0 || col >= size_.cols) return nullptr;
+    const std::int64_t hist = static_cast<std::int64_t>(history_.size());
+    if (abs_row < 0) return nullptr;
+    if (abs_row < hist) {
+        const auto &line = history_[static_cast<std::size_t>(abs_row)];
+        return &line[static_cast<std::size_t>(col)];
+    }
+    const std::int64_t live = abs_row - hist;
+    if (live >= size_.rows) return nullptr;
+    return &cells_[index(Row{static_cast<std::int32_t>(live)}, Col{col})];
+}
+
+void Screen::selection_begin(AbsPos p, SelectMode mode) {
+    sel_mode_ = mode;
+    sel_anchor_ = p;
+    sel_active_ = p;
+    touch();
+}
+
+void Screen::selection_extend(AbsPos p) {
+    if (sel_mode_ == SelectMode::none) return;
+    sel_active_ = p;
+    touch();
+}
+
+void Screen::selection_clear() {
+    if (sel_mode_ != SelectMode::none) {
+        sel_mode_ = SelectMode::none;
+        touch();
+    }
+}
+
+std::pair<Screen::AbsPos, Screen::AbsPos> Screen::selection_span() const noexcept {
+    AbsPos a = sel_anchor_, b = sel_active_;
+    if (b < a) std::swap(a, b);
+    return {a, b};
+}
+
+bool Screen::is_selected(std::int64_t abs_row, std::int32_t col) const noexcept {
+    if (sel_mode_ == SelectMode::none) return false;
+    const auto [a, b] = selection_span();
+
+    if (sel_mode_ == SelectMode::line) {
+        return abs_row >= a.row && abs_row <= b.row;
+    }
+    if (sel_mode_ == SelectMode::block) {
+        const std::int32_t lo = std::min(a.col, b.col);
+        const std::int32_t hi = std::max(a.col, b.col);
+        return abs_row >= a.row && abs_row <= b.row && col >= lo && col <= hi;
+    }
+    // character mode: a contiguous run from a to b.
+    if (abs_row < a.row || abs_row > b.row) return false;
+    const std::int32_t start = (abs_row == a.row) ? a.col : 0;
+    const std::int32_t end = (abs_row == b.row) ? b.col : size_.cols - 1;
+    return col >= start && col <= end;
+}
+
+std::string Screen::selected_text() const {
+    if (sel_mode_ == SelectMode::none) return {};
+    const auto [a, b] = selection_span();
+    std::string out;
+
+    for (std::int64_t r = a.row; r <= b.row; ++r) {
+        std::int32_t start = 0, end = size_.cols - 1;
+        if (sel_mode_ == SelectMode::character) {
+            if (r == a.row) start = a.col;
+            if (r == b.row) end = b.col;
+        } else if (sel_mode_ == SelectMode::block) {
+            start = std::min(a.col, b.col);
+            end = std::max(a.col, b.col);
+        }
+
+        // Collect the row, trimming trailing blanks for tidy copies.
+        std::string line;
+        for (std::int32_t c = start; c <= end && c < size_.cols; ++c) {
+            const Cell *cell = cell_at_abs(r, c);
+            const char32_t cp = cell ? cell->cp : U' ';
+            // Encode the codepoint as UTF-8.
+            if (cp < 0x80) {
+                line.push_back(static_cast<char>(cp));
+            } else if (cp < 0x800) {
+                line.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+                line.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+            } else if (cp < 0x10000) {
+                line.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+                line.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+                line.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+            } else {
+                line.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+                line.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+                line.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+                line.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+            }
+        }
+        // Trim trailing spaces on each line.
+        while (!line.empty() && line.back() == ' ') line.pop_back();
+        out += line;
+        if (r != b.row) out.push_back('\n');
+    }
+    return out;
+}
+
 } // namespace gvte::term

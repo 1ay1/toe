@@ -240,6 +240,49 @@ int main() {
         expect(s.mouse_mode() == term::Screen::MouseMode::off, "?1000l disables mouse");
     }
 
+    // Selection: character mode spanning part of one row.
+    {
+        term::Screen s{Extent{10, 2}};
+        feed(s, "hello world"); // 'hello worl' row0, 'd' wraps to row1
+        using AbsPos = term::Screen::AbsPos;
+        s.selection_begin(AbsPos{0, 0}, term::Screen::SelectMode::character);
+        s.selection_extend(AbsPos{0, 4}); // select 'hello'
+        expect(s.has_selection(), "selection active");
+        expect(s.is_selected(0, 2) && !s.is_selected(0, 5), "char selection bounds");
+        expect(s.selected_text() == "hello", "char selection text");
+    }
+
+    // Selection: line mode grabs the whole row (trailing blanks trimmed).
+    {
+        term::Screen s{Extent{10, 2}};
+        feed(s, "abc\r\ndef");
+        using AbsPos = term::Screen::AbsPos;
+        s.selection_begin(AbsPos{0, 1}, term::Screen::SelectMode::line);
+        expect(s.selected_text() == "abc", "line selection trims blanks");
+        expect(s.is_selected(0, 9), "line selection spans full width");
+    }
+
+    // Selection: block mode is a rectangular column range.
+    {
+        term::Screen s{Extent{6, 3}};
+        feed(s, "12345\r\nabcde\r\nZZZZZ");
+        using AbsPos = term::Screen::AbsPos;
+        s.selection_begin(AbsPos{0, 1}, term::Screen::SelectMode::block);
+        s.selection_extend(AbsPos{1, 3}); // cols 1..3, rows 0..1
+        expect(s.is_selected(0, 2) && s.is_selected(1, 3) && !s.is_selected(2, 2),
+               "block selection rectangle");
+        expect(s.selected_text() == "234\nbcd", "block selection text");
+    }
+
+    // Clearing a selection.
+    {
+        term::Screen s{Extent{4, 1}};
+        feed(s, "test");
+        s.selection_begin(term::Screen::AbsPos{0, 0}, term::Screen::SelectMode::line);
+        s.selection_clear();
+        expect(!s.has_selection() && s.selected_text().empty(), "selection cleared");
+    }
+
     if (failures == 0) {
         std::printf("all screen tests passed\n");
         return 0;

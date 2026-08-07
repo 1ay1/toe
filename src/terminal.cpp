@@ -91,6 +91,22 @@ void Session::send_text(std::string_view utf8) { (void)impl_->pty.write(utf8); }
 void Session::scroll(int lines) { impl_->screen.scroll(lines); }
 void Session::scroll_to_bottom() { impl_->screen.scroll_to_bottom(); }
 
+void Session::select_begin(int vrow, int col, int mode) {
+    using SM = term::Screen::SelectMode;
+    const SM m = (mode == 1) ? SM::line : (mode == 2) ? SM::block : SM::character;
+    const std::int64_t abs = impl_->screen.viewport_to_abs(vrow);
+    impl_->screen.selection_begin({abs, col}, m);
+}
+
+void Session::select_extend(int vrow, int col) {
+    const std::int64_t abs = impl_->screen.viewport_to_abs(vrow);
+    impl_->screen.selection_extend({abs, col});
+}
+
+void Session::select_clear() { impl_->screen.selection_clear(); }
+bool Session::has_selection() const noexcept { return impl_->screen.has_selection(); }
+std::string Session::selected_text() const { return impl_->screen.selected_text(); }
+
 void Session::send_key(const KeyEvent &ev) {
     // Text branch: forward the UTF-8 as-is (Ctrl-<letter> is folded to a C0
     // control below only for the special-less letter case a host may send).

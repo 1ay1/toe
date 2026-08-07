@@ -217,8 +217,18 @@ void Renderer::draw(const term::Screen &screen, PixelSize px) {
     // Pass 1: background rectangles (only for non-default backgrounds).
     for (int r = 0; r < grid.rows; ++r) {
         const auto cells = screen.row(Row{r});
+        const std::int64_t abs_row = screen.viewport_to_abs(r);
         for (int c = 0; c < grid.cols; ++c) {
             const auto &cell = cells[static_cast<std::size_t>(c)];
+            const bool selected = screen.is_selected(abs_row, c);
+            if (selected) {
+                // Selection highlight: a subtle blue-grey wash behind the cell.
+                instances_.push_back(Instance{static_cast<float>(c * cw),
+                                              static_cast<float>(r * ch), static_cast<float>(cw),
+                                              static_cast<float>(ch), 0, 0, 0, 0, 0.26f, 0.33f,
+                                              0.44f, 0.0f, 0.0f});
+                continue;
+            }
             const bool reverse = term::has(cell.pen.attr, term::Attr::Reverse);
             term::Color bg = reverse ? cell.pen.fg : cell.pen.bg;
             if (std::holds_alternative<term::DefaultColor>(bg) && !reverse) {

@@ -12,6 +12,8 @@
 #include <cstdint>
 #include <deque>
 #include <span>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "gvte/core/types.hpp"
@@ -60,6 +62,38 @@ public:
     [[nodiscard]] bool mouse_sgr() const noexcept { return mouse_sgr_; }
     // Bracketed paste (CSI ?2004): wrap pasted text in ESC[200~ / ESC[201~.
     [[nodiscard]] bool bracketed_paste() const noexcept { return bracketed_paste_; }
+
+    // --- selection ---------------------------------------------------------
+    // Selection granularity. Char = arbitrary span; Line = whole rows; Block =
+    // rectangular column range.
+    enum class SelectMode { none, character, line, block };
+
+    // An absolute grid position: row is measured from the oldest history line
+    // (history row 0), so a selection survives scrolling. Live grid row r maps
+    // to absolute row history_rows() + r.
+    struct AbsPos {
+        std::int64_t row = 0;
+        std::int32_t col = 0;
+        constexpr auto operator<=>(const AbsPos &) const = default;
+    };
+
+    // Begin a selection at an absolute position (e.g. mouse-down).
+    void selection_begin(AbsPos p, SelectMode mode);
+    // Extend the active selection to p (e.g. mouse-drag).
+    void selection_extend(AbsPos p);
+    // Clear the selection.
+    void selection_clear();
+    [[nodiscard]] bool has_selection() const noexcept { return sel_mode_ != SelectMode::none; }
+    [[nodiscard]] SelectMode selection_mode() const noexcept { return sel_mode_; }
+
+    // True if the cell at absolute (row,col) is within the current selection.
+    [[nodiscard]] bool is_selected(std::int64_t abs_row, std::int32_t col) const noexcept;
+
+    // Extract the selected text as UTF-8 (trailing blanks trimmed per line).
+    [[nodiscard]] std::string selected_text() const;
+
+    // Convert a viewport (visible) row to an absolute row, and back.
+    [[nodiscard]] std::int64_t viewport_to_abs(std::int32_t vrow) const noexcept;
 
     // The single reduction step: fold one parser Action into the screen.
     void apply(const vt::Action &action);
@@ -131,6 +165,16 @@ private:
     // Saved primary-screen state while the alternate screen is active.
     std::vector<Cell> saved_primary_{};
     Pos saved_primary_cursor_{};
+
+    // Selection state, in absolute (history-aware) coordinates.
+    SelectMode sel_mode_{SelectMode::none};
+    AbsPos sel_anchor_{};
+    AbsPos sel_active_{};
+
+    // Normalized [begin, end] of the current selection (begin <= end).
+    [[nodiscard]] std::pair<AbsPos, AbsPos> selection_span() const noexcept;
+    // Fetch the cell at an absolute row/col (history or live), or nullptr.
+    [[nodiscard]] const Cell *cell_at_abs(std::int64_t abs_row, std::int32_t col) const noexcept;
 
     // Scrollback: completed lines that scrolled off the top, newest at back.
     std::deque<std::vector<Cell>> history_{};

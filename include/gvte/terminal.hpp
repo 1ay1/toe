@@ -63,6 +63,15 @@ public:
     void scroll(int lines);
     void scroll_to_bottom();
 
+    // --- selection ---------------------------------------------------------
+    // Begin/extend a selection at a VISIBLE cell (viewport row/col). mode: 0
+    // character, 1 line, 2 block.
+    void select_begin(int vrow, int col, int mode);
+    void select_extend(int vrow, int col);
+    void select_clear();
+    [[nodiscard]] bool has_selection() const noexcept;
+    [[nodiscard]] std::string selected_text() const;
+
     [[nodiscard]] Extent grid_size() const noexcept;
     [[nodiscard]] Pos cursor() const noexcept;
     [[nodiscard]] std::string window_title() const;
