@@ -13,20 +13,26 @@ namespace gvte::gfx {
 namespace {
 
 // Vertex shader: a unit quad [0,1]^2, offset+scaled by per-instance pixel rect,
-// projected to clip space via a screen-size uniform. Per-instance UVs and color
-// pass through to the fragment stage.
+// projected to clip space via a screen-size uniform. It also forwards the
+// fragment's local position within the rect (in pixels, centered) so the
+// fragment stage can evaluate a signed-distance function for rounded corners
+// — the GPUI technique: describe primitives on the CPU, shape them on the GPU.
 constexpr const char *kVert = R"(#version 330 core
 layout(location = 0) in vec2 aCorner;   // unit quad corner
 layout(location = 1) in vec4 aRect;      // x,y,w,h in pixels
 layout(location = 2) in vec4 aUV;        // u0,v0,u1,v1
 layout(location = 3) in vec3 aColor;
-layout(location = 4) in float aIsGlyph;
+layout(location = 4) in float aIsGlyph;  // 1 glyph, 0 rect
+layout(location = 5) in float aRadius;   // corner radius in px (rects only)
 
 uniform vec2 uScreen;                    // viewport size in pixels
 
 out vec2 vUV;
 out vec3 vColor;
 out float vIsGlyph;
+out vec2 vLocal;      // position within the rect, centered, in px
+out vec2 vHalf;       // half-extent of the rect, in px
+out float vRadius;
 
 void main() {
     vec2 px = aRect.xy + aCorner * aRect.zw;
@@ -36,26 +42,47 @@ void main() {
     vUV = mix(aUV.xy, aUV.zw, aCorner);
     vColor = aColor;
     vIsGlyph = aIsGlyph;
+    vHalf = aRect.zw * 0.5;
+    vLocal = (aCorner - 0.5) * aRect.zw;  // [-half, +half]
+    vRadius = aRadius;
 }
 )";
 
-// Fragment shader: solid fill for background quads; for glyphs, sample the R8
-// atlas as coverage (alpha) and blend the text color over.
+// Fragment shader: glyphs sample the R8 atlas as coverage; rects are filled
+// with an anti-aliased rounded-box signed-distance function (radius 0 gives a
+// crisp axis-aligned rectangle, so ordinary backgrounds cost nothing extra).
 constexpr const char *kFrag = R"(#version 330 core
 in vec2 vUV;
 in vec3 vColor;
 in float vIsGlyph;
+in vec2 vLocal;
+in vec2 vHalf;
+in float vRadius;
 
 uniform sampler2D uAtlas;
 
 out vec4 FragColor;
+
+// Signed distance to a rounded box centered at the origin.
+float sd_round_box(vec2 p, vec2 half_ext, float r) {
+    vec2 q = abs(p) - half_ext + r;
+    return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
+}
 
 void main() {
     if (vIsGlyph > 0.5) {
         float a = texture(uAtlas, vUV).r;
         FragColor = vec4(vColor, a);
     } else {
-        FragColor = vec4(vColor, 1.0);
+        if (vRadius > 0.0) {
+            float d = sd_round_box(vLocal, vHalf, vRadius);
+            float a = 1.0 - smoothstep(-0.75, 0.75, d);
+            FragColor = vec4(vColor, a);
+        } else {
+            // Sharp rect: full coverage, no edge softening (avoids seams
+            // between tiled background cells).
+            FragColor = vec4(vColor, 1.0);
+        }
     }
 }
 )";
@@ -126,7 +153,7 @@ void Renderer::ensure_buffers() {
 
     const GLsizei stride = sizeof(Instance);
     auto off = [](std::size_t n) { return reinterpret_cast<void *>(n); };
-    // aRect (loc1), aUV (loc2), aColor (loc3), aIsGlyph (loc4)
+    // aRect (loc1), aUV (loc2), aColor (loc3), aIsGlyph (loc4), aRadius (loc5)
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, stride, off(0));
     glVertexAttribDivisor(1, 1);
@@ -139,6 +166,9 @@ void Renderer::ensure_buffers() {
     glEnableVertexAttribArray(4);
     glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, stride, off(11 * sizeof(float)));
     glVertexAttribDivisor(4, 1);
+    glEnableVertexAttribArray(5);
+    glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, stride, off(12 * sizeof(float)));
+    glVertexAttribDivisor(5, 1);
 
     glBindVertexArray(0);
 }
@@ -180,6 +210,7 @@ void Renderer::draw(const term::Screen &screen, PixelSize px) {
     const int ch = atlas_.cell_height();
     const int ascent = atlas_.ascent();
     const Extent grid = screen.size();
+    const Pos cur = screen.cursor();
 
     instances_.clear();
 
@@ -196,11 +227,25 @@ void Renderer::draw(const term::Screen &screen, PixelSize px) {
             const Rgb col = palette_.resolve(bg, /*is_fg=*/reverse);
             instances_.push_back(Instance{static_cast<float>(c * cw), static_cast<float>(r * ch),
                                           static_cast<float>(cw), static_cast<float>(ch), 0, 0, 0, 0,
-                                          fr(col.r), fr(col.g), fr(col.b), 0.0f});
+                                          fr(col.r), fr(col.g), fr(col.b), 0.0f, 0.0f});
         }
     }
 
-    // Pass 2: glyphs.
+    // Pass 2: the block cursor — a solid rect in the foreground color at the
+    // cursor cell. The glyph beneath it (pass 3) is drawn in the background
+    // color so it reads as inverted video.
+    const bool cursor_visible =
+        cur.row.get() >= 0 && cur.row.get() < grid.rows && cur.col.get() >= 0 &&
+        cur.col.get() < grid.cols;
+    if (cursor_visible) {
+        const Rgb cc = palette_.default_fg();
+        instances_.push_back(Instance{static_cast<float>(cur.col.get() * cw),
+                                      static_cast<float>(cur.row.get() * ch),
+                                      static_cast<float>(cw), static_cast<float>(ch), 0, 0, 0, 0,
+                                      fr(cc.r), fr(cc.g), fr(cc.b), 0.0f, 2.0f});
+    }
+
+    // Pass 3: glyphs.
     for (int r = 0; r < grid.rows; ++r) {
         const auto cells = screen.row(Row{r});
         for (int c = 0; c < grid.cols; ++c) {
@@ -210,13 +255,21 @@ void Renderer::draw(const term::Screen &screen, PixelSize px) {
             if (!gi || gi->width == 0 || gi->height == 0) continue;
 
             const bool reverse = term::has(cell.pen.attr, term::Attr::Reverse);
-            const Rgb col = palette_.resolve(reverse ? cell.pen.bg : cell.pen.fg, !reverse);
+            const bool on_cursor =
+                cursor_visible && r == cur.row.get() && c == cur.col.get();
+            // On the cursor cell, invert: draw the glyph in the background color.
+            Rgb col;
+            if (on_cursor) {
+                col = palette_.resolve(cell.pen.bg, /*is_fg=*/false);
+            } else {
+                col = palette_.resolve(reverse ? cell.pen.bg : cell.pen.fg, !reverse);
+            }
 
             const float gx = static_cast<float>(c * cw + gi->bearing_x);
             const float gy = static_cast<float>(r * ch + ascent - gi->bearing_y);
             instances_.push_back(Instance{gx, gy, static_cast<float>(gi->width),
                                           static_cast<float>(gi->height), gi->u0, gi->v0, gi->u1,
-                                          gi->v1, fr(col.r), fr(col.g), fr(col.b), 1.0f});
+                                          gi->v1, fr(col.r), fr(col.g), fr(col.b), 1.0f, 0.0f});
         }
     }
 

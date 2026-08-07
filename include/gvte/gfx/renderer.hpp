@@ -43,7 +43,8 @@ private:
         float x, y, w, h;     // pixel rect
         float u0, v0, u1, v1; // atlas UVs (bg quads use 0s)
         float r, g, b;        // color
-        float is_glyph;       // 1.0 for textured glyph, 0.0 for solid bg
+        float is_glyph;       // 1.0 for textured glyph, 0.0 for solid rect
+        float radius;         // corner radius in px (rects only; 0 = sharp)
     };
 
     explicit Renderer(FontAtlas &&atlas, Program &&prog)
