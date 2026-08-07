@@ -40,6 +40,8 @@ public:
 
     void swap() override;
     [[nodiscard]] PixelSize pixel_size() const override { return size_; }
+    [[nodiscard]] int event_fd() const override { return wl_display_get_fd(display_); }
+    void flush() override { wl_display_flush(display_); }
     void set_title(std::string_view title) override {
         if (toplevel_) {
             xdg_toplevel_set_title(toplevel_, std::string{title}.c_str());
@@ -496,10 +498,17 @@ void WaylandSurface::swap() {
 
 void WaylandSurface::poll_events(const std::function<void(const Event &)> &sink) {
     sink_ = &sink;
-    // Dispatch whatever is already queued, then flush + read new events without
-    // blocking, so the render loop keeps running.
+    // Dispatch anything already decoded, then read whatever is on the socket
+    // (non-blocking) and dispatch that too. The host is expected to have polled
+    // the fd, so a read here won't block meaningfully; prepare_read/read_events
+    // is the race-free way to pull new events after a poll wakeup.
     wl_display_dispatch_pending(display_);
+    while (wl_display_prepare_read(display_) != 0) {
+        wl_display_dispatch_pending(display_);
+    }
     wl_display_flush(display_);
+    wl_display_read_events(display_);
+    wl_display_dispatch_pending(display_);
     sink_ = nullptr;
 }
 

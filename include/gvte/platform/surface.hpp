@@ -91,6 +91,15 @@ public:
     // Non-blocking: returns after dispatching whatever is queued.
     virtual void poll_events(const std::function<void(const Event &)> &sink) = 0;
 
+    // The file descriptor the windowing connection multiplexes on (Wayland
+    // display fd / X11 connection fd). A host can poll() this together with the
+    // PTY fd to block idle instead of busy-spinning. -1 if none.
+    [[nodiscard]] virtual int event_fd() const = 0;
+
+    // Flush any buffered outgoing protocol requests before blocking on the fd
+    // (Wayland requires this so the compositor sees pending commits).
+    virtual void flush() {}
+
     // True once the compositor/server has closed the connection.
     [[nodiscard]] virtual bool should_close() const = 0;
 };

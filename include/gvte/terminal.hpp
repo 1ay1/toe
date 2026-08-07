@@ -14,6 +14,7 @@
 #define GVTE_TERMINAL_HPP
 
 #include <memory>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -108,6 +109,15 @@ public:
     [[nodiscard]] std::string window_title() const;
     [[nodiscard]] int cell_width() const noexcept;
     [[nodiscard]] int cell_height() const noexcept;
+
+    // Monotonic damage counter: bumped on every state change that affects the
+    // rendered output. A host renders only when this differs from the value it
+    // last drew — no wasted frames when the terminal is idle.
+    [[nodiscard]] std::uint64_t generation() const noexcept;
+
+    // The child PTY's file descriptor. A host polls this alongside the surface
+    // event fd to block idle instead of busy-spinning.
+    [[nodiscard]] int pty_fd() const noexcept;
 
     // Terminal modes the host may need to honor.
     [[nodiscard]] bool bracketed_paste() const noexcept;

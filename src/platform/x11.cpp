@@ -37,6 +37,8 @@ public:
 
     void swap() override;
     [[nodiscard]] PixelSize pixel_size() const override { return size_; }
+    [[nodiscard]] int event_fd() const override { return xcb_get_file_descriptor(xcb_); }
+    void flush() override { xcb_flush(xcb_); }
     void set_title(std::string_view title) override {
         if (display_ && window_) {
             XStoreName(display_, static_cast<Window>(window_), std::string{title}.c_str());
