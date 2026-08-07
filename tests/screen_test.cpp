@@ -119,6 +119,39 @@ int main() {
         expect(cell.pen == term::Pen{}, "SGR reset");
     }
 
+    // Scrollback: rows that scroll off the top land in history.
+    {
+        term::Screen s{Extent{4, 2}}; // 2 visible rows
+        feed(s, "AAA\r\nBBB\r\nCCC\r\n"); // 3 CRLFs -> 2 lines scrolled to history
+        expect(s.history_rows() == 2, "history accrues scrolled lines");
+        // Live view shows the newest content at the bottom.
+        expect(glyph_at(s, 0, 0) == U'C', "live view bottom-anchored");
+    }
+
+    // Scroll back reveals history; scroll to bottom restores live view.
+    {
+        term::Screen s{Extent{4, 2}};
+        feed(s, "one\r\ntwo\r\nsix\r\n"); // history: 'one','two'; live top: 'six'
+        s.scroll(1); // reveal one history row at the top of the viewport
+        expect(s.scroll_offset() == 1, "scroll offset advances");
+        expect(glyph_at(s, 0, 0) == U't', "scrolled view shows history (two)");
+        expect(!s.cursor_visible(), "cursor hidden while scrolled back");
+        s.scroll_to_bottom();
+        expect(s.scroll_offset() == 0, "scroll_to_bottom resets offset");
+        expect(s.cursor_visible(), "cursor visible at bottom");
+    }
+
+    // New output snaps the view back to the live bottom is a Terminal-level
+    // behavior; here we assert scroll clamps to available history.
+    {
+        term::Screen s{Extent{4, 2}};
+        feed(s, "x\r\ny\r\nz\r\n"); // 2 history rows
+        s.scroll(100); // over-scroll
+        expect(s.scroll_offset() == s.history_rows(), "scroll clamps to history");
+        s.scroll(-100);
+        expect(s.scroll_offset() == 0, "scroll clamps to bottom");
+    }
+
     if (failures == 0) {
         std::printf("all screen tests passed\n");
         return 0;

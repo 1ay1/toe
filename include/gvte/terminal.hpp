@@ -59,6 +59,10 @@ public:
     void send_key(const KeyEvent &ev);
     void send_text(std::string_view utf8);
 
+    // Scrollback: move the view by `lines` (positive = up/into history).
+    void scroll(int lines);
+    void scroll_to_bottom();
+
     [[nodiscard]] Extent grid_size() const noexcept;
     [[nodiscard]] Pos cursor() const noexcept;
     [[nodiscard]] std::string window_title() const;

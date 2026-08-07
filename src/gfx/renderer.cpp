@@ -235,8 +235,8 @@ void Renderer::draw(const term::Screen &screen, PixelSize px) {
     // cursor cell. The glyph beneath it (pass 3) is drawn in the background
     // color so it reads as inverted video.
     const bool cursor_visible =
-        cur.row.get() >= 0 && cur.row.get() < grid.rows && cur.col.get() >= 0 &&
-        cur.col.get() < grid.cols;
+        screen.cursor_visible() && cur.row.get() >= 0 && cur.row.get() < grid.rows &&
+        cur.col.get() >= 0 && cur.col.get() < grid.cols;
     if (cursor_visible) {
         const Rgb cc = palette_.default_fg();
         instances_.push_back(Instance{static_cast<float>(cur.col.get() * cw),

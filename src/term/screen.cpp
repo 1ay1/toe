@@ -37,8 +37,40 @@ const Cell &Screen::at(Row r, Col c) const {
 }
 
 std::span<const Cell> Screen::row(Row r) const {
+    // Viewport row r (0 = top of visible area). When scrolled back by
+    // scroll_offset_ rows, the first scroll_offset_ viewport rows are drawn
+    // from history; the remainder from the top of the live grid.
+    const std::int32_t vr = r.get();
+    if (scroll_offset_ > 0) {
+        // Index into history: the visible window starts scroll_offset_ rows
+        // above the live grid's top.
+        const std::int32_t hist_start =
+            static_cast<std::int32_t>(history_.size()) - scroll_offset_;
+        const std::int32_t hist_index = hist_start + vr;
+        if (hist_index >= 0 && hist_index < static_cast<std::int32_t>(history_.size())) {
+            return std::span<const Cell>{history_[static_cast<std::size_t>(hist_index)].data(),
+                                         static_cast<std::size_t>(size_.cols)};
+        }
+        // Past the end of history -> into the live grid.
+        const std::int32_t live_row = hist_index - static_cast<std::int32_t>(history_.size());
+        const std::size_t base = index(Row{live_row}, Col{0});
+        return std::span<const Cell>{cells_.data() + base, static_cast<std::size_t>(size_.cols)};
+    }
     const std::size_t base = index(r, Col{0});
     return std::span<const Cell>{cells_.data() + base, static_cast<std::size_t>(size_.cols)};
+}
+
+void Screen::scroll(std::int32_t delta) {
+    const std::int32_t max = static_cast<std::int32_t>(history_.size());
+    scroll_offset_ = std::clamp(scroll_offset_ + delta, 0, max);
+    touch();
+}
+
+void Screen::scroll_to_bottom() {
+    if (scroll_offset_ != 0) {
+        scroll_offset_ = 0;
+        touch();
+    }
 }
 
 void Screen::resize(Extent size) {
@@ -147,7 +179,19 @@ void Screen::tab() {
 
 void Screen::scroll_up(std::int32_t n) {
     n = std::clamp(n, 0, size_.rows);
+    if (n == 0) return;
     const std::size_t stride = static_cast<std::size_t>(size_.cols);
+
+    // Push the top `n` rows into scrollback history before they're overwritten.
+    for (std::int32_t i = 0; i < n; ++i) {
+        std::vector<Cell> line(cells_.begin() + static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(i)),
+                               cells_.begin() + static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(i + 1)));
+        history_.push_back(std::move(line));
+    }
+    while (history_.size() > max_history_) {
+        history_.pop_front();
+    }
+
     // Shift rows [n, rows) to [0, rows-n).
     std::move(cells_.begin() + static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)),
               cells_.end(), cells_.begin());

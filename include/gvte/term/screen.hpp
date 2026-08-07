@@ -9,6 +9,8 @@
 #ifndef GVTE_TERM_SCREEN_HPP
 #define GVTE_TERM_SCREEN_HPP
 
+#include <cstdint>
+#include <deque>
 #include <span>
 #include <vector>
 
@@ -28,8 +30,24 @@ public:
     [[nodiscard]] Extent size() const noexcept { return size_; }
     [[nodiscard]] Pos cursor() const noexcept { return cursor_; }
 
-    // Read-only access to a row's cells, for the renderer.
+    // Read-only access to a row's cells, for the renderer. When scrolled back,
+    // the top rows come from history; the request is always in viewport
+    // coordinates (row 0 = top of the visible area).
     [[nodiscard]] std::span<const Cell> row(Row r) const;
+
+    // --- scrollback --------------------------------------------------------
+    // How many history rows exist above the live view.
+    [[nodiscard]] std::int32_t history_rows() const noexcept {
+        return static_cast<std::int32_t>(history_.size());
+    }
+    // Current scroll position: 0 = live (bottom), up to history_rows().
+    [[nodiscard]] std::int32_t scroll_offset() const noexcept { return scroll_offset_; }
+    // Scroll by `delta` rows (positive = into history / up). Clamped.
+    void scroll(std::int32_t delta);
+    // Jump back to the live view.
+    void scroll_to_bottom();
+    // True when the cursor is within the currently-visible region.
+    [[nodiscard]] bool cursor_visible() const noexcept { return scroll_offset_ == 0; }
 
     // The single reduction step: fold one parser Action into the screen.
     void apply(const vt::Action &action);
@@ -63,11 +81,16 @@ private:
     void touch() noexcept { ++generation_; }
 
     Extent size_{};
-    std::vector<Cell> cells_{}; // row-major, size_.area() cells
+    std::vector<Cell> cells_{}; // row-major, size_.area() cells (the live grid)
     Pos cursor_{};
     Pen pen_{};
     bool wrap_pending_{false};   // DEC-style deferred wrap at right margin
     std::uint64_t generation_{1};
+
+    // Scrollback: completed lines that scrolled off the top, newest at back.
+    std::deque<std::vector<Cell>> history_{};
+    std::int32_t scroll_offset_{0};                 // rows scrolled into history
+    std::size_t max_history_{10000};                // ring-buffer cap
 };
 
 } // namespace gvte::term

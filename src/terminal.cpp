@@ -49,6 +49,9 @@ struct Session::Impl {
             if (*n == 0) {
                 return true; // nothing pending right now
             }
+            // New output arrived: snap the view back to the live bottom, the
+            // conventional behavior so output isn't missed while scrolled up.
+            screen.scroll_to_bottom();
             parser.feed(std::span<const char>{buf.data(), *n}, [&](const vt::Action &a) {
                 if (auto *osc = std::get_if<vt::OscDispatch>(&a)) {
                     // OSC 0/2 ; <title>  sets the window title.
@@ -84,6 +87,9 @@ void Session::resize(PixelSize px) {
 }
 
 void Session::send_text(std::string_view utf8) { (void)impl_->pty.write(utf8); }
+
+void Session::scroll(int lines) { impl_->screen.scroll(lines); }
+void Session::scroll_to_bottom() { impl_->screen.scroll_to_bottom(); }
 
 void Session::send_key(const KeyEvent &ev) {
     // Text branch: forward the UTF-8 as-is (Ctrl-<letter> is folded to a C0
