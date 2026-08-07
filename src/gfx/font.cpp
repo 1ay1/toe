@@ -72,10 +72,22 @@ Result<FontAtlas> FontAtlas::create(std::string family, int pixel_size) {
     a.ft_ = ft;
     a.face_ = face;
 
-    // Cell metrics from the face's global metrics (26.6 fixed-point -> px).
-    a.cell_w_ = static_cast<int>(face->size->metrics.max_advance >> 6);
+    // Cell metrics. For a monospace grid the cell width is the advance of a
+    // representative glyph, NOT face->metrics.max_advance (which reflects the
+    // widest possible glyph, e.g. wide CJK, and would over-space the grid).
+    // Measure the advance of 'M' (or space) directly.
     a.cell_h_ = static_cast<int>(face->size->metrics.height >> 6);
     a.ascent_ = static_cast<int>(face->size->metrics.ascender >> 6);
+
+    int advance = 0;
+    if (FT_Load_Char(face, U'M', FT_LOAD_DEFAULT) == 0) {
+        advance = static_cast<int>(face->glyph->advance.x >> 6);
+    }
+    if (advance <= 0 && FT_Load_Char(face, U' ', FT_LOAD_DEFAULT) == 0) {
+        advance = static_cast<int>(face->glyph->advance.x >> 6);
+    }
+    a.cell_w_ = advance;
+
     if (a.cell_w_ <= 0) a.cell_w_ = pixel_size / 2 + 1;
     if (a.cell_h_ <= 0) a.cell_h_ = pixel_size + 2;
 
@@ -86,8 +98,10 @@ Result<FontAtlas> FontAtlas::create(std::string family, int pixel_size) {
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, a.atlas_dim_, a.atlas_dim_, 0, GL_RED, GL_UNSIGNED_BYTE,
                  nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    // Glyph coverage textures are single-channel; nearest-neighbour keeps
+    // small text crisp (linear blurs sub-pixel glyph edges).
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
