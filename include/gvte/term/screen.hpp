@@ -42,12 +42,24 @@ public:
     }
     // Current scroll position: 0 = live (bottom), up to history_rows().
     [[nodiscard]] std::int32_t scroll_offset() const noexcept { return scroll_offset_; }
-    // Scroll by `delta` rows (positive = into history / up). Clamped.
+    // Scroll by `delta` rows (positive = up/into history). Clamped.
     void scroll(std::int32_t delta);
     // Jump back to the live view.
     void scroll_to_bottom();
     // True when the cursor is within the currently-visible region.
     [[nodiscard]] bool cursor_visible() const noexcept { return scroll_offset_ == 0; }
+
+    // --- modes -------------------------------------------------------------
+    // Whether the text cursor should be drawn (DECTCEM, CSI ?25 h/l).
+    [[nodiscard]] bool cursor_shown() const noexcept { return cursor_shown_; }
+    // Whether the alternate screen is active (no scrollback while on it).
+    [[nodiscard]] bool on_alt_screen() const noexcept { return on_alt_; }
+    // Mouse tracking mode requested by the app (CSI ?1000/1002/1003 + ?1006).
+    enum class MouseMode { off, x10, normal, button, any };
+    [[nodiscard]] MouseMode mouse_mode() const noexcept { return mouse_mode_; }
+    [[nodiscard]] bool mouse_sgr() const noexcept { return mouse_sgr_; }
+    // Bracketed paste (CSI ?2004): wrap pasted text in ESC[200~ / ESC[201~.
+    [[nodiscard]] bool bracketed_paste() const noexcept { return bracketed_paste_; }
 
     // The single reduction step: fold one parser Action into the screen.
     void apply(const vt::Action &action);
@@ -84,6 +96,9 @@ private:
     void set_scroll_region(int top, int bottom); // DECSTBM
     void save_cursor();                    // DECSC / CSI s
     void restore_cursor();                 // DECRC / CSI u
+    void set_private_mode(int mode, bool set); // CSI ? Pm h/l
+    void enter_alt_screen();
+    void leave_alt_screen();
     void erase_in_display(int mode);
     void erase_in_line(int mode);
     void move_cursor_abs(Row r, Col c);
@@ -105,6 +120,17 @@ private:
     // Saved cursor state (DECSC/DECRC).
     Pos saved_cursor_{};
     Pen saved_pen_{};
+
+    // Terminal modes (DEC private).
+    bool cursor_shown_{true};
+    bool on_alt_{false};
+    bool bracketed_paste_{false};
+    bool mouse_sgr_{false};
+    MouseMode mouse_mode_{MouseMode::off};
+
+    // Saved primary-screen state while the alternate screen is active.
+    std::vector<Cell> saved_primary_{};
+    Pos saved_primary_cursor_{};
 
     // Scrollback: completed lines that scrolled off the top, newest at back.
     std::deque<std::vector<Cell>> history_{};

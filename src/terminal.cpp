@@ -141,6 +141,8 @@ Pos Session::cursor() const noexcept { return impl_->screen.cursor(); }
 std::string Session::window_title() const { return impl_->title; }
 int Session::cell_width() const noexcept { return impl_->cell_w; }
 int Session::cell_height() const noexcept { return impl_->cell_h; }
+bool Session::bracketed_paste() const noexcept { return impl_->screen.bracketed_paste(); }
+bool Session::on_alt_screen() const noexcept { return impl_->screen.on_alt_screen(); }
 
 // ---------------------------------------------------------------------------
 // Terminal — construction and the single transition.

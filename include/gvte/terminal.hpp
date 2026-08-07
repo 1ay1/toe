@@ -69,6 +69,10 @@ public:
     [[nodiscard]] int cell_width() const noexcept;
     [[nodiscard]] int cell_height() const noexcept;
 
+    // Terminal modes the host may need to honor.
+    [[nodiscard]] bool bracketed_paste() const noexcept;
+    [[nodiscard]] bool on_alt_screen() const noexcept;
+
 private:
     friend class Terminal;
     struct Impl;

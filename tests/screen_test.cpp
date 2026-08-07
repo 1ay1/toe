@@ -204,6 +204,42 @@ int main() {
         expect(std::holds_alternative<term::IndexedColor>(cell.pen.fg), "DECRC restores pen");
     }
 
+    // DECTCEM: CSI ?25 l hides the cursor, h shows it.
+    {
+        term::Screen s{Extent{4, 2}};
+        expect(s.cursor_shown(), "cursor shown by default");
+        feed(s, "\x1b[?25l");
+        expect(!s.cursor_shown(), "?25l hides cursor");
+        feed(s, "\x1b[?25h");
+        expect(s.cursor_shown(), "?25h shows cursor");
+    }
+
+    // Alternate screen (?1049): content is swapped out and restored on exit.
+    {
+        term::Screen s{Extent{6, 2}};
+        feed(s, "primary");                 // 'primar' fills row 0, 'y' wraps
+        feed(s, "\x1b[?1049h");             // enter alt screen (blank)
+        expect(s.on_alt_screen(), "?1049h enters alt screen");
+        expect(glyph_at(s, 0, 0) == U' ', "alt screen starts blank");
+        feed(s, "\x1b[HALT");               // draw on alt screen
+        expect(glyph_at(s, 0, 0) == U'A', "alt screen accepts drawing");
+        feed(s, "\x1b[?1049l");             // leave -> primary restored
+        expect(!s.on_alt_screen(), "?1049l leaves alt screen");
+        expect(glyph_at(s, 0, 0) == U'p', "primary content restored");
+    }
+
+    // Bracketed paste + mouse mode flags.
+    {
+        term::Screen s{Extent{4, 2}};
+        feed(s, "\x1b[?2004h");
+        expect(s.bracketed_paste(), "?2004h enables bracketed paste");
+        feed(s, "\x1b[?1000h\x1b[?1006h");
+        expect(s.mouse_mode() == term::Screen::MouseMode::normal && s.mouse_sgr(),
+               "?1000h + ?1006h set mouse tracking");
+        feed(s, "\x1b[?1000l");
+        expect(s.mouse_mode() == term::Screen::MouseMode::off, "?1000l disables mouse");
+    }
+
     if (failures == 0) {
         std::printf("all screen tests passed\n");
         return 0;

@@ -328,6 +328,67 @@ void Screen::restore_cursor() {
     touch();
 }
 
+// CSI ? Pm h / l — DEC private mode set/reset.
+void Screen::set_private_mode(int mode, bool set) {
+    switch (mode) {
+    case 25: // DECTCEM — show/hide cursor.
+        cursor_shown_ = set;
+        break;
+    case 1000: // X11 mouse: report button press/release.
+        mouse_mode_ = set ? MouseMode::normal : MouseMode::off;
+        break;
+    case 1002: // button-event tracking (drag).
+        mouse_mode_ = set ? MouseMode::button : MouseMode::off;
+        break;
+    case 1003: // any-event tracking (motion).
+        mouse_mode_ = set ? MouseMode::any : MouseMode::off;
+        break;
+    case 1006: // SGR extended mouse coordinates.
+        mouse_sgr_ = set;
+        break;
+    case 2004: // bracketed paste.
+        bracketed_paste_ = set;
+        break;
+    case 1047: // alternate screen buffer (no clear-on-enter).
+    case 1049: // alternate screen + save/restore cursor (the common one).
+    case 47:   // legacy alternate screen.
+        if (set) {
+            enter_alt_screen();
+        } else {
+            leave_alt_screen();
+        }
+        break;
+    default:
+        break; // unhandled private mode
+    }
+    touch();
+}
+
+void Screen::enter_alt_screen() {
+    if (on_alt_) return;
+    saved_primary_ = cells_;             // stash the primary buffer
+    saved_primary_cursor_ = cursor_;
+    std::fill(cells_.begin(), cells_.end(), Cell{}); // alt screen starts blank
+    cursor_ = Pos{};
+    scroll_offset_ = 0;                  // alt screen has no scrollback
+    scroll_top_ = 0;
+    scroll_bottom_ = size_.rows - 1;
+    on_alt_ = true;
+    touch();
+}
+
+void Screen::leave_alt_screen() {
+    if (!on_alt_) return;
+    if (saved_primary_.size() == cells_.size()) {
+        cells_ = saved_primary_;         // restore the primary buffer
+    }
+    cursor_ = saved_primary_cursor_;
+    saved_primary_.clear();
+    on_alt_ = false;
+    clamp_cursor();
+    touch();
+}
+
 void Screen::move_cursor_abs(Row r, Col c) {
     wrap_pending_ = false;
     cursor_.row = Row{std::clamp(r.get(), 0, size_.rows - 1)};
@@ -404,6 +465,16 @@ void Screen::csi(const vt::CsiDispatch &d) {
         break;
     case 's': save_cursor(); break;    // ANSI.SYS save cursor
     case 'u': restore_cursor(); break; // ANSI.SYS restore cursor
+    case 'h': // SM / DECSET — set mode(s)
+        if (d.private_marker) {
+            for (int m : p) set_private_mode(m, true);
+        }
+        break;
+    case 'l': // RM / DECRST — reset mode(s)
+        if (d.private_marker) {
+            for (int m : p) set_private_mode(m, false);
+        }
+        break;
     case 'm': apply_sgr(p); break;                          // SGR
     default: break; // unhandled — silently ignore for now
     }
