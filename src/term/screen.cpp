@@ -507,8 +507,20 @@ void Screen::csi(const vt::CsiDispatch &d) {
     case 'r': // DECSTBM (set scroll region) — ignore private '?' variants
         if (!d.private_marker) set_scroll_region(param_raw(p, 0, 0), param_raw(p, 1, 0));
         break;
-    case 's': save_cursor(); break;    // ANSI.SYS save cursor
-    case 'u': restore_cursor(); break; // ANSI.SYS restore cursor
+    case 's':
+        if (!d.private_marker) save_cursor(); // ANSI.SYS save cursor
+        break;
+    case 'u':
+        if (d.private_marker && d.marker == '?') {
+            // CSI ? u — Kitty keyboard protocol: query current flags. We don't
+            // implement progressive enhancement, so report flags = 0.
+            reply("\x1b[?0u");
+        } else if (!d.private_marker) {
+            restore_cursor(); // ANSI.SYS / DECRC restore cursor
+        }
+        // CSI = u (push), CSI < u (pop), CSI > u (set): Kitty flag changes we
+        // don't implement — ignore rather than mistaking them for cursor ops.
+        break;
     case 'h': // SM / DECSET — set mode(s)
         if (d.private_marker) {
             for (int m : p) set_private_mode(m, true);

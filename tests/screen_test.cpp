@@ -334,6 +334,23 @@ int main() {
         expect(replies == "\x1b[3;7R", "CPR cursor position reply (1-based)");
     }
 
+    // CSI ? u (Kitty keyboard query) must NOT be treated as DECRC restore-cursor
+    // — that bug homed the cursor and made fish wipe its greeting.
+    {
+        term::Screen s{Extent{80, 24}};
+        std::string replies;
+        s.set_reply([&](std::string_view b) { replies += std::string{b}; });
+        feed(s, "\x1b[10;5H"); // move cursor to row 10, col 5 (1-based)
+        feed(s, "\x1b[?u");    // Kitty keyboard query
+        expect(s.cursor().row.get() == 9 && s.cursor().col.get() == 4,
+               "CSI ?u does not move the cursor");
+        expect(replies == "\x1b[?0u", "CSI ?u replies with flags=0");
+        // Plain CSI u (DECRC) still restores a saved cursor.
+        feed(s, "\x1b[3;3H\x1b" "7\x1b[20;20H\x1b[u"); // move, DECSC via ESC7, move, DECRC
+        expect(s.cursor().row.get() == 2 && s.cursor().col.get() == 2,
+               "plain CSI u still restores cursor");
+    }
+
     if (failures == 0) {
         std::printf("all screen tests passed\n");
         return 0;
