@@ -259,8 +259,27 @@ void Parser::step(std::uint8_t b, Sink &sink) {
 
 template <typename Sink>
 void Parser::feed(std::span<const char> bytes, Sink &&sink) {
-    for (char c : bytes) {
-        step(static_cast<std::uint8_t>(c), sink);
+    const auto *p = reinterpret_cast<const std::uint8_t *>(bytes.data());
+    const auto *const end = p + bytes.size();
+    while (p < end) {
+        // Ground-state fast path: the overwhelmingly common case is a run of
+        // ordinary printable bytes (plain text, and the ASCII inside escape-
+        // heavy output). When we're in Ground with no partial UTF-8 sequence,
+        // scan the whole printable-ASCII run at once and emit it directly,
+        // skipping the per-byte ESC guard + state switch of step(). Anything
+        // else (control, ESC, or a UTF-8 lead byte >= 0x80) drops back to the
+        // full state machine for a single byte, then we resume scanning.
+        if (state_ == State::Ground && utf8_remaining_ == 0) {
+            const std::uint8_t *run = p;
+            while (p < end && *p >= 0x20 && *p < 0x7F) {
+                ++p;
+            }
+            for (; run < p; ++run) {
+                sink(Action{Print{static_cast<char32_t>(*run)}});
+            }
+            if (p == end) break;
+        }
+        step(*p++, sink);
     }
 }
 
