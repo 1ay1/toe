@@ -50,13 +50,23 @@ int main() {
         [&](const vt::Action& act){ gvte::Cmds out; s.apply(act,out); }); };
 
     // A sequence of mutations, rendering the warm renderer after each so its
-    // cache is exercised incrementally.
+    // cache is exercised incrementally. Deliberately covers the ops that bypass
+    // the per-cell write funnel (scroll, insert/delete lines, erase-display,
+    // alt-screen swap) — exactly where a missed per-row damage stamp would
+    // leave the cache stale.
     std::vector<std::string> steps = {
         "hello \x1b[31mworld\x1b[0m",
         "\r\n\x1b[32msecond line\x1b[0m",
         "\r\nthird\r\nfourth\r\n",
         "\x1b[1;1Hchanged top",           // cursor jump + overwrite row 0
         "\x1b[5;5Hmid\x1b[44m block\x1b[0m",
+        // Fill past the bottom so the region scrolls (content shifts up).
+        "\x1b[20;1Hbottom\r\nscroll me 1\r\nscroll me 2\r\nscroll me 3",
+        "\x1b[3;1H\x1b[Linserted line via IL",   // DL/IL path
+        "\x1b[4;1H\x1b[Mdeleted line via DL",
+        "\x1b[?1049h",                    // enter alt screen
+        "\x1b[Halt screen \x1b[35mcontent\x1b[0m\r\nalt row 2",
+        "\x1b[?1049l",                    // leave alt screen (restore primary)
         "\x1b[2J\x1b[Hcleared and rewritten\r\nline b\r\nline c",
     };
     for (auto& st : steps) { feed(st); (void)render_to_pixels(*warm, s, W, H, fbo); }

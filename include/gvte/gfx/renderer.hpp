@@ -107,6 +107,19 @@ private:
     void *fences_[kRing]{};                  // GLsync per region (opaque here)
     void setup_instance_attribs();
 
+    // Remember the last two batches' draw parameters so a clean frame (nothing
+    // changed) can re-issue the exact same draws without re-uploading a single
+    // byte or touching a fence — the GPU buffers already hold the right data.
+    struct DrawCall { std::uint32_t first{0}; std::uint32_t count{0}; };
+    DrawCall last_draws_[2]{};
+    int last_draw_n_{0};
+    bool redraw_from_cache(PixelSize px); // returns false if no cached draws yet
+    // Cache the last uniform/texture state so repeated flushes in a frame (and
+    // across static frames) skip redundant GL calls.
+    float u_px_w_{-1.0f}, u_px_h_{-1.0f};
+    std::uint32_t bound_tex_{0};
+    void bind_common(PixelSize px);
+
     // Packed-instance builders (colors are raw bytes; the shader normalizes).
     static Instance rect_inst(float x, float y, float w, float h,
                               std::uint8_t r, std::uint8_t g, std::uint8_t b,

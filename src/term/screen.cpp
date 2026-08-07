@@ -22,6 +22,7 @@ int param_raw(std::span<const int> p, std::size_t i, int def) {
 Screen::Screen(Extent size) : size_{size}, cells_(size.area()) {
     scroll_top_ = 0;
     scroll_bottom_ = size_.rows - 1;
+    row_epoch_.assign(static_cast<std::size_t>(std::max(size_.rows, 0)), 0);
     tab_stops_.assign(static_cast<std::size_t>(std::max(size_.cols, 1)), false);
     for (std::int32_t c = 0; c < size_.cols; c += 8) {
         tab_stops_[static_cast<std::size_t>(c)] = true;
@@ -36,6 +37,10 @@ std::size_t Screen::index(Row r, Col c) const noexcept {
 Cell &Screen::at(Row r, Col c) {
     assert(r.get() >= 0 && r.get() < size_.rows);
     assert(c.get() >= 0 && c.get() < size_.cols);
+    // Non-const access is the write funnel: stamp the row's damage epoch so the
+    // renderer knows it changed. (Over-stamping on the rare non-const read is
+    // harmless — it only costs one extra row rebuild.)
+    stamp(r.get());
     return cells_[index(r, c)];
 }
 
@@ -106,6 +111,8 @@ void Screen::resize(Extent size) {
         tab_stops_[static_cast<std::size_t>(c)] = true;
     }
     clamp_cursor();
+    row_epoch_.assign(static_cast<std::size_t>(std::max(size_.rows, 0)), 0);
+    stamp_all();
     touch();
 }
 
@@ -313,6 +320,7 @@ void Screen::scroll_up(std::int32_t n) {
                                           stride * static_cast<std::size_t>(scroll_bottom_ + 1));
     std::move(top + static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)), bot, top);
     std::fill(bot - static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)), bot, Cell{});
+    stamp_all();
     touch();
 }
 
@@ -329,6 +337,7 @@ void Screen::scroll_down(std::int32_t n) {
     std::move_backward(top, bot - static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)),
                        bot);
     std::fill(top, top + static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)), Cell{});
+    stamp_all();
     touch();
 }
 
@@ -346,6 +355,7 @@ void Screen::insert_lines(std::int32_t n) {
                        bot);
     std::fill(cur, cur + static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)), Cell{});
     cursor_.col = Col{0};
+    stamp_all();
     touch();
 }
 
@@ -361,6 +371,7 @@ void Screen::delete_lines(std::int32_t n) {
     std::move(cur + static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)), bot, cur);
     std::fill(bot - static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)), bot, Cell{});
     cursor_.col = Col{0};
+    stamp_all();
     touch();
 }
 
@@ -484,6 +495,7 @@ void Screen::enter_alt_screen() {
     scroll_top_ = 0;
     scroll_bottom_ = size_.rows - 1;
     on_alt_ = true;
+    stamp_all();
     touch();
 }
 
@@ -496,6 +508,7 @@ void Screen::leave_alt_screen() {
     saved_primary_.clear();
     on_alt_ = false;
     clamp_cursor();
+    stamp_all();
     touch();
 }
 
@@ -538,6 +551,7 @@ void Screen::erase_in_display(int mode) {
     case 2: // entire screen
     case 3:
         std::fill(cells_.begin(), cells_.end(), Cell{});
+        stamp_all();
         break;
     default: break;
     }
@@ -720,6 +734,7 @@ void Screen::esc(const vt::EscDispatch &d) {
             wrap_pending_ = false;
             scroll_top_ = 0;
             scroll_bottom_ = size_.rows - 1;
+            stamp_all();
             touch();
             return;
         case '7': save_cursor(); return;    // DECSC

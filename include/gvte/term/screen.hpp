@@ -123,6 +123,18 @@ public:
     // skip re-uploading an unchanged grid.
     [[nodiscard]] std::uint64_t generation() const noexcept { return generation_; }
 
+    // Per-row damage token for the renderer's cache. Returns a 64-bit value
+    // that changes iff viewport row `vrow`'s displayed content changed since
+    // last frame — letting the renderer skip re-fingerprinting untouched rows.
+    // Returns 0 ("unknown — please rehash") when scrolled into history, where
+    // the fast path isn't worth the complexity. Live rows carry a per-row epoch
+    // bumped by every mutation that writes them.
+    [[nodiscard]] std::uint64_t row_version(std::int32_t vrow) const noexcept {
+        if (scroll_offset_ != 0) return 0;
+        if (vrow < 0 || vrow >= size_.rows) return 0;
+        return row_epoch_[static_cast<std::size_t>(vrow)];
+    }
+
 private:
     // --- bounds-checked cell access (the only raw indexing in the class) ---
     [[nodiscard]] Cell &at(Row r, Col c);
@@ -165,6 +177,22 @@ private:
     void apply_sgr(std::span<const int> params);
     void clamp_cursor() noexcept;
     void touch() noexcept { ++generation_; }
+
+    // --- per-row damage epochs (renderer cache fast-path) ------------------
+    // Each live grid row carries a 64-bit epoch drawn from a monotonic global
+    // sequence; a write to the row stamps it with a fresh value. The renderer
+    // reads row_version() to skip re-fingerprinting rows that didn't change.
+    std::vector<std::uint64_t> row_epoch_{};
+    std::uint64_t epoch_seq_{1};
+    void stamp(std::int32_t live_row) noexcept {
+        if (live_row >= 0 && live_row < static_cast<std::int32_t>(row_epoch_.size()))
+            row_epoch_[static_cast<std::size_t>(live_row)] = ++epoch_seq_;
+    }
+    void stamp_all() noexcept {
+        const std::uint64_t base = ++epoch_seq_;
+        for (auto &e : row_epoch_) e = base;
+        epoch_seq_ += row_epoch_.size();
+    }
 
     Extent size_{};
     std::vector<Cell> cells_{}; // row-major, size_.area() cells (the live grid)

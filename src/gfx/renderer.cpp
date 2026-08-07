@@ -256,6 +256,46 @@ void Renderer::ensure_buffers() {
     glBindVertexArray(0);
 }
 
+// Bind program + uniforms + atlas texture, skipping GL calls whose value is
+// unchanged from the last flush/redraw (the program and screen size rarely
+// move; the atlas texture never rebinds mid-run).
+void Renderer::bind_common(PixelSize px) {
+    prog_.use();
+    const float w = static_cast<float>(px.w), h = static_cast<float>(px.h);
+    if (w != u_px_w_ || h != u_px_h_) {
+        glUniform2f(u_screen_, w, h);
+        u_px_w_ = w;
+        u_px_h_ = h;
+    }
+    const std::uint32_t tex = atlas_.texture();
+    if (tex != bound_tex_) {
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glUniform1i(u_atlas_, 0);
+        bound_tex_ = tex;
+    }
+}
+
+// Clean-frame fast path: nothing about the grid changed since the last draw,
+// so the persistent buffer still holds the exact instances we need. Re-issue
+// the same draw calls with zero uploads, zero fences, zero memcpy — just the
+// GL state + draw commands. Falls back (returns false) if we have no persistent
+// mapping or no recorded draws yet.
+bool Renderer::redraw_from_cache(PixelSize px) {
+    if (!persistent_ || last_draw_n_ == 0) return false;
+    glBindVertexArray(vao_);
+    glBindBuffer(GL_ARRAY_BUFFER, inst_vbo_);
+    bind_common(px);
+    for (int i = 0; i < last_draw_n_; ++i) {
+        const DrawCall &d = last_draws_[i];
+        if (d.count == 0) continue;
+        glDrawArraysInstancedBaseInstance(GL_TRIANGLE_STRIP, 0, 4,
+                                          static_cast<GLsizei>(d.count), d.first);
+    }
+    glBindVertexArray(0);
+    return true;
+}
+
 void Renderer::flush(std::span<const Instance> insts, PixelSize px) {
     std::size_t count = insts.size();
     if (count == 0) return;
@@ -278,17 +318,16 @@ void Renderer::flush(std::span<const Instance> insts, PixelSize px) {
         const std::size_t base = static_cast<std::size_t>(slot) * inst_region_bytes_;
         std::memcpy(inst_map_ + base, insts.data(), bytes);
 
-        prog_.use();
-        glUniform2f(u_screen_, static_cast<float>(px.w), static_cast<float>(px.h));
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, atlas_.texture());
-        glUniform1i(u_atlas_, 0);
+        bind_common(px);
 
         // Point the instanced attributes at this region's slice.
         const GLuint first = static_cast<GLuint>(base / sizeof(Instance));
         glDrawArraysInstancedBaseInstance(GL_TRIANGLE_STRIP, 0, 4,
                                           static_cast<GLsizei>(count), first);
         fences_[slot] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        // Remember this draw so a later clean frame can replay it verbatim.
+        if (last_draw_n_ < 2)
+            last_draws_[last_draw_n_++] = {first, static_cast<std::uint32_t>(count)};
         glBindVertexArray(0);
         return;
     }
@@ -450,25 +489,42 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on) {
     // Rebuild only the rows whose fingerprint changed; the rest keep their
     // shadow instances untouched. We reassemble the flat draw buffers only when
     // something actually changed (or on the very first frame).
+    //
+    // The fast path is the whole game: the Screen stamps a per-row damage epoch
+    // on every write, so for an unchanged row we take its row_version() token
+    // as the cache key WITHOUT touching a single cell — no hashing, no read of
+    // screen.row(). That collapses an idle/typing frame from O(cells) to
+    // O(rows) with a ~2ns-per-row array compare. We fall back to fingerprinting
+    // the actual cells only when the epoch is unavailable (scrolled into
+    // history, token 0) or a selection is active (selection isn't part of the
+    // cell epoch), which are the rare interactive cases.
     bool any_row_dirty = false;
     for (int r = 0; r < grid.rows; ++r) {
-        const auto cells = screen.row(Row{r});
         const bool row_has_cursor = cursor_visible && r == cur_row;
         const std::int64_t abs_row = any_selection ? screen.viewport_to_abs(r) : 0;
 
-        // Fingerprint everything that changes this row's pixels: the raw cells,
-        // plus cursor column (only when the cursor is on this row) and, when a
-        // selection is active, which columns of this row are selected.
-        std::uint64_t key = 0xcbf29ce484222325ULL;
-        hash_words(key, cells.data(), static_cast<std::size_t>(grid.cols) * sizeof(term::Cell));
-        if (row_has_cursor) hash_val(key, cur_col);
-        else                hash_val(key, -1);
-        if (any_selection) {
-            for (int c = 0; c < grid.cols; ++c) {
-                if (screen.is_selected(abs_row, c)) hash_val(key, c);
+        std::uint64_t key;
+        const std::uint64_t ver = any_selection ? 0 : screen.row_version(r);
+        if (ver != 0) {
+            // Fast path: fold the cursor column into the epoch token so a cursor
+            // move on this row still invalidates it. Tag the high bit so an
+            // epoch value can never collide with a hashed key (which is mixed).
+            key = (ver << 1) ^ (row_has_cursor ? (static_cast<std::uint64_t>(cur_col) + 1) : 0);
+            key |= 0x8000000000000000ULL;
+        } else {
+            // Fallback: fingerprint the row's cells + cursor + selection.
+            const auto cells = screen.row(Row{r});
+            std::uint64_t h = 0xcbf29ce484222325ULL;
+            hash_words(h, cells.data(), static_cast<std::size_t>(grid.cols) * sizeof(term::Cell));
+            if (row_has_cursor) hash_val(h, cur_col);
+            else                hash_val(h, -1);
+            if (any_selection) {
+                for (int c = 0; c < grid.cols; ++c) {
+                    if (screen.is_selected(abs_row, c)) hash_val(h, c);
+                }
             }
+            key = mix(h) & 0x7fffffffffffffffULL; // clear tag bit: distinct from epoch keys
         }
-        key = mix(key);
 
         any_row_dirty |= build_row(screen, r, key, row_has_cursor, cur_col, abs_row, any_selection);
     }
@@ -494,6 +550,14 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on) {
         }
     }
 
+    if (!any_row_dirty && redraw_from_cache(px)) {
+        // Nothing changed: the GPU buffers already hold this exact frame. We
+        // replayed the recorded draws with zero uploads / fences / memcpy.
+        return;
+    }
+
+    // Dirty frame: re-stage both batches (this also re-records the draw calls).
+    last_draw_n_ = 0;
     flush(instances_, px);
     flush(glyphs_, px);
 }
