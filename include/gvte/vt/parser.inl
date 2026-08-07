@@ -64,8 +64,11 @@ void Parser::ground_byte(std::uint8_t b, Sink &sink) {
 
 template <typename Sink>
 void Parser::step(std::uint8_t b, Sink &sink) {
-    // ESC (0x1B) aborts most states and restarts a sequence.
-    if (b == 0x1B && state_ != State::OscString) {
+    // ESC (0x1B) aborts most states and restarts a sequence. OSC and DCS
+    // strings are terminated BY ESC (as part of ST, ESC \), so they handle it
+    // themselves rather than aborting.
+    if (b == 0x1B && state_ != State::OscString && state_ != State::DcsPassthrough &&
+        state_ != State::DcsIgnore) {
         state_ = State::Escape;
         return;
     }
@@ -86,6 +89,12 @@ void Parser::step(std::uint8_t b, Sink &sink) {
             state_ = State::CsiEntry;
         } else if (b == ']') {
             state_ = State::OscString;
+        } else if (b == 'P') { // DCS (Device Control String)
+            dcs_prefix_.clear();
+            dcs_data_.clear();
+            dcs_saw_esc_ = false;
+            params_.clear();
+            state_ = State::DcsEntry;
         } else if (b >= 0x20 && b <= 0x2F) { // intermediate
             intermediates_.push_back(static_cast<char>(b));
             state_ = State::EscapeIntermediate;
@@ -194,6 +203,55 @@ void Parser::step(std::uint8_t b, Sink &sink) {
             state_ = State::Ground;
         } else if (b >= 0x20) {
             osc_.push_back(static_cast<char>(b));
+        }
+        break;
+
+    case State::DcsEntry:
+        // Collect params, intermediates and the final byte that selects the DCS
+        // kind (e.g. "+q" for XTGETTCAP, "$q" for DECRQSS). The prefix is the
+        // intermediate(s) + final; everything after is passthrough data.
+        if ((b >= 0x30 && b <= 0x39) || b == ';' || b == ':' ||
+            (b >= 0x3C && b <= 0x3F)) {
+            dcs_prefix_.push_back(static_cast<char>(b)); // params folded into prefix
+        } else if (b >= 0x20 && b <= 0x2F) {             // intermediate
+            dcs_prefix_.push_back(static_cast<char>(b));
+        } else if (b >= 0x40 && b <= 0x7E) {             // final -> passthrough
+            dcs_prefix_.push_back(static_cast<char>(b));
+            state_ = State::DcsPassthrough;
+        } else if (b == 0x1B) {
+            dcs_saw_esc_ = true;
+            state_ = State::DcsPassthrough;
+        } else {
+            state_ = State::DcsIgnore;
+        }
+        break;
+
+    case State::DcsPassthrough:
+        if (dcs_saw_esc_) {
+            // Completing ST: ESC \ finishes the DCS.
+            if (b == '\\') {
+                sink(Action{DcsDispatch{dcs_prefix_, dcs_data_}});
+            }
+            dcs_saw_esc_ = false;
+            state_ = State::Ground;
+        } else if (b == 0x1B) {
+            dcs_saw_esc_ = true;
+        } else if (b == 0x9C) { // 8-bit ST
+            sink(Action{DcsDispatch{dcs_prefix_, dcs_data_}});
+            state_ = State::Ground;
+        } else {
+            dcs_data_.push_back(static_cast<char>(b));
+        }
+        break;
+
+    case State::DcsIgnore:
+        if (b == 0x1B) {
+            dcs_saw_esc_ = true;
+        } else if (dcs_saw_esc_ && b == '\\') {
+            dcs_saw_esc_ = false;
+            state_ = State::Ground;
+        } else {
+            dcs_saw_esc_ = false;
         }
         break;
     }

@@ -101,6 +101,23 @@ struct Session::Impl {
                                 clipboard_request = decode_base64(b64);
                             }
                         }
+                    } else if (d == "11;?" || d.starts_with("11;?")) {
+                        // OSC 11 ; ?  queries the default background colour.
+                        // Reply: OSC 11 ; rgb:RRRR/GGGG/BBBB ST (16-bit each).
+                        const Rgb bg = cfg.default_bg;
+                        char rep[64];
+                        std::snprintf(rep, sizeof rep,
+                                      "\x1b]11;rgb:%02x%02x/%02x%02x/%02x%02x\x1b\\", bg.r, bg.r,
+                                      bg.g, bg.g, bg.b, bg.b);
+                        (void)pty.write(rep);
+                    } else if (d == "10;?" || d.starts_with("10;?")) {
+                        // OSC 10 ; ?  queries the default foreground colour.
+                        const Rgb fg = cfg.default_fg;
+                        char rep[64];
+                        std::snprintf(rep, sizeof rep,
+                                      "\x1b]10;rgb:%02x%02x/%02x%02x/%02x%02x\x1b\\", fg.r, fg.r,
+                                      fg.g, fg.g, fg.b, fg.b);
+                        (void)pty.write(rep);
                     }
                 } else {
                     screen.apply(a);

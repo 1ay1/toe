@@ -124,6 +124,7 @@ private:
     void execute(std::uint8_t c0);   // handle a C0 control
     void csi(const vt::CsiDispatch &d);
     void esc(const vt::EscDispatch &d);
+    void dcs(std::string_view prefix, std::string_view data);
 
     void line_feed();
     void carriage_return();

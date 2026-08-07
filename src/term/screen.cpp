@@ -127,7 +127,10 @@ void Screen::apply(const vt::Action &action) {
             } else if constexpr (std::is_same_v<T, vt::EscDispatch>) {
                 esc(a);
             } else if constexpr (std::is_same_v<T, vt::OscDispatch>) {
-                // OSC (title etc.) — not reflected in the grid; ignored here.
+                // OSC (title, clipboard, colour queries) is handled by the
+                // owning Terminal (which knows the palette); ignored here.
+            } else if constexpr (std::is_same_v<T, vt::DcsDispatch>) {
+                dcs(a.prefix, a.data);
             }
         },
         action);
@@ -559,8 +562,87 @@ void Screen::csi(const vt::CsiDispatch &d) {
             }
         }
         break;
+    case 'q': // XTVERSION: CSI > 0 q  -> report name+version as a DCS string.
+        if (d.private_marker && d.marker == '>') {
+            // DCS > | gvte(0.1) ST
+            reply("\x1bP>|gvte(0.1)\x1b\\");
+        }
+        break;
     case 'm': apply_sgr(p); break;                          // SGR
     default: break; // unhandled — silently ignore for now
+    }
+}
+
+// XTGETTCAP (DCS + q ...): the app asks for terminfo capabilities by hex-
+// encoded name. We answer a small, high-value subset so shells stop probing.
+void Screen::dcs(std::string_view prefix, std::string_view data) {
+    if (prefix != "+q") {
+        return; // only XTGETTCAP is answered; DECRQSS etc. are ignored for now
+    }
+
+    auto from_hex = [](std::string_view hex) {
+        std::string out;
+        for (std::size_t i = 0; i + 1 < hex.size(); i += 2) {
+            auto nib = [](char c) -> int {
+                if (c >= '0' && c <= '9') return c - '0';
+                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                return 0;
+            };
+            out.push_back(static_cast<char>((nib(hex[i]) << 4) | nib(hex[i + 1])));
+        }
+        return out;
+    };
+    auto to_hex = [](std::string_view s) {
+        static const char *h = "0123456789ABCDEF";
+        std::string out;
+        for (char sc : s) {
+            const unsigned char c = static_cast<unsigned char>(sc);
+            out.push_back(h[c >> 4]);
+            out.push_back(h[c & 0xF]);
+        }
+        return out;
+    };
+
+    // The payload is a ';'-separated list of hex-encoded capability names.
+    std::size_t start = 0;
+    while (start <= data.size()) {
+        const std::size_t semi = data.find(';', start);
+        std::string_view tok =
+            data.substr(start, semi == std::string_view::npos ? std::string_view::npos
+                                                              : semi - start);
+        if (!tok.empty()) {
+            const std::string name = from_hex(tok);
+            // Known caps we can honestly answer.
+            std::string value;
+            bool known = true;
+            if (name == "Co" || name == "colors") {
+                value = "256"; // number of colours
+            } else if (name == "TN" || name == "name") {
+                value = "xterm-256color";
+            } else if (name == "RGB") {
+                value = "8/8/8"; // direct-colour depth
+            } else {
+                known = false;
+            }
+            if (known) {
+                // DCS 1 + r <name-hex> = <value-hex> ST
+                std::string r = "\x1bP1+r";
+                r += to_hex(name);
+                r += '=';
+                r += to_hex(value);
+                r += "\x1b\\";
+                reply(r);
+            } else {
+                // DCS 0 + r <name-hex> ST  (unknown/invalid)
+                std::string r = "\x1bP0+r";
+                r += to_hex(name);
+                r += "\x1b\\";
+                reply(r);
+            }
+        }
+        if (semi == std::string_view::npos) break;
+        start = semi + 1;
     }
 }
 

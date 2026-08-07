@@ -332,6 +332,15 @@ int main() {
         // CPR: move cursor to row 3 col 7 (1-based CUP), then request position.
         feed(s, "\x1b[3;7H\x1b[6n");
         expect(replies == "\x1b[3;7R", "CPR cursor position reply (1-based)");
+
+        replies.clear();
+        feed(s, "\x1b[>0q"); // XTVERSION
+        expect(replies == "\x1bP>|gvte(0.1)\x1b\\", "XTVERSION reply (DCS)");
+
+        replies.clear();
+        // XTGETTCAP for 'Co' (colours): 436f hex. Reply advertises 256.
+        feed(s, "\x1bP+q436f\x1b\\");
+        expect(replies == "\x1bP1+r436F=323536\x1b\\", "XTGETTCAP Co -> 256");
     }
 
     // CSI ? u (Kitty keyboard query) must NOT be treated as DECRC restore-cursor

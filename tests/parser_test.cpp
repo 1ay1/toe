@@ -51,6 +51,12 @@ std::string trace(std::string_view input) {
                     out += "OSC[";
                     out += std::string{x.data};
                     out += "]";
+                } else if constexpr (std::is_same_v<T, DcsDispatch>) {
+                    out += "DCS[";
+                    out += std::string{x.prefix};
+                    out += ',';
+                    out += std::string{x.data};
+                    out += "]";
                 }
             },
             a);
@@ -108,6 +114,12 @@ int main() {
 
     // Mixed stream.
     check("a\x1b[32mb", "P(97)CSI[32m]P(98)", "mixed");
+
+    // DCS: ESC P + q 436f ST (XTGETTCAP for 'Co'), ST = ESC backslash.
+    check("\x1bP+q436f\x1b\\", "DCS[+q,436f]", "dcs xtgettcap");
+
+    // DCS with a $ intermediate ($q = DECRQSS); the query 'm' is the payload.
+    check("\x1bP$qm\x1b\\", "DCS[$q,m]", "dcs decrqss prefix");
 
     std::printf("all parser tests passed\n");
     return 0;

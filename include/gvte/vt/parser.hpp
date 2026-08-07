@@ -53,7 +53,15 @@ struct OscDispatch {
     std::string_view data;
 };
 
-using Action = std::variant<Print, Execute, CsiDispatch, EscDispatch, OscDispatch>;
+// A completed DCS (Device Control String), e.g. ESC P + q <hex> ST for
+// XTGETTCAP. `prefix` is the intermediate/final that selects the DCS kind
+// (e.g. "+q"), `data` is the payload up to ST.
+struct DcsDispatch {
+    std::string_view prefix; // intermediates + final byte, e.g. "+q", "$q"
+    std::string_view data;   // payload between the final and ST
+};
+
+using Action = std::variant<Print, Execute, CsiDispatch, EscDispatch, OscDispatch, DcsDispatch>;
 
 // --- the parser ------------------------------------------------------------
 class Parser {
@@ -74,6 +82,9 @@ private:
         CsiIntermediate,
         CsiIgnore,
         OscString,
+        DcsEntry,        // just saw ESC P
+        DcsPassthrough,  // collecting the DCS payload until ST
+        DcsIgnore,
         // UTF-8 continuation is handled inline in Ground via utf8_.
     };
 
@@ -98,6 +109,11 @@ private:
 
     // OSC accumulation
     std::string osc_{};
+
+    // DCS accumulation
+    std::string dcs_prefix_{}; // intermediates + final selecting the DCS kind
+    std::string dcs_data_{};   // payload until ST
+    bool dcs_saw_esc_{false};  // saw ESC inside DCS (waiting for the ST '\\')
 
     // UTF-8 decoding of printable text in Ground.
     char32_t utf8_cp_{0};
