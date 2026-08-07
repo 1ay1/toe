@@ -14,6 +14,7 @@
 #define GVTE_GFX_FONT_HPP
 
 #include <cstdint>
+#include <array>
 #include <string>
 #include <unordered_map>
 
@@ -48,7 +49,28 @@ public:
 
     // Look up (rasterizing + packing on first use) the glyph for a codepoint.
     // Returns nullptr only if the codepoint has no glyph in the face.
-    const GlyphInfo *glyph(char32_t cp);
+    const GlyphInfo *glyph(char32_t cp) {
+        // Fast path: Latin-1 lives in a flat array — an index, no hashing. This
+        // is the overwhelmingly common case (ASCII text) and the renderer's
+        // hottest lookup.
+        if (cp < kFastCount) {
+            FastSlot &s = fast_[cp];
+            if (s.state == FastSlot::Ready) return &s.info;
+            if (s.state == FastSlot::Missing) return nullptr;
+            const GlyphInfo *gi = rasterize(cp);
+            if (gi) {
+                s.info = *gi;
+                s.state = FastSlot::Ready;
+                return &s.info;
+            }
+            s.state = FastSlot::Missing;
+            return nullptr;
+        }
+        if (auto it = cache_.find(cp); it != cache_.end()) {
+            return &it->second;
+        }
+        return rasterize(cp);
+    }
 
     // The GL atlas texture id (GL_R8), for binding by the renderer.
     [[nodiscard]] std::uint32_t texture() const noexcept { return tex_; }
@@ -79,6 +101,15 @@ private:
     int cell_w_{0}, cell_h_{0}, ascent_{0};
 
     std::unordered_map<char32_t, GlyphInfo> cache_{};
+
+    // Flat cache for Latin-1 codepoints — the renderer's hot path. Indexed
+    // directly by codepoint, so no hashing on ASCII text.
+    static constexpr char32_t kFastCount = 256;
+    struct FastSlot {
+        enum State : std::uint8_t { Empty, Ready, Missing } state = Empty;
+        GlyphInfo info{};
+    };
+    std::array<FastSlot, kFastCount> fast_{};
 };
 
 } // namespace gvte::gfx

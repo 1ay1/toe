@@ -8,6 +8,7 @@
 #define GVTE_GFX_PALETTE_HPP
 
 #include <array>
+#include <variant>
 
 #include "gvte/core/types.hpp"
 #include "gvte/term/cell.hpp"
@@ -25,8 +26,19 @@ public:
     [[nodiscard]] Rgb default_bg() const noexcept { return bg_; }
 
     // Resolve a terminal Color to concrete RGB. `is_fg` selects which default
-    // to substitute for DefaultColor.
-    [[nodiscard]] Rgb resolve(const term::Color &c, bool is_fg) const noexcept;
+    // to substitute for DefaultColor. Inline + branch-on-index (not std::visit)
+    // — this is the renderer's hottest per-cell call, so it must inline into
+    // the draw loop.
+    [[nodiscard]] Rgb resolve(const term::Color &c, bool is_fg) const noexcept {
+        switch (c.index()) {
+        case 1: // IndexedColor
+            return table_[std::get_if<term::IndexedColor>(&c)->index];
+        case 2: // TrueColor
+            return std::get_if<term::TrueColor>(&c)->rgb;
+        default: // DefaultColor (0) or valueless
+            return is_fg ? fg_ : bg_;
+        }
+    }
 
 private:
     std::array<Rgb, 256> table_{};

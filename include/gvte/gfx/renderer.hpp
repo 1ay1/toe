@@ -56,11 +56,13 @@ private:
     FontAtlas atlas_;
     Palette palette_{};
     Program prog_;
+    int u_screen_{-1}; // cached glGetUniformLocation results (per-frame lookups
+    int u_atlas_{-1};  // into the driver were a measurable cost)
 
     std::uint32_t vao_{0};
     std::uint32_t quad_vbo_{0};
     std::uint32_t inst_vbo_{0};
-    std::size_t inst_capacity_{0};
+    std::size_t inst_bytes_capacity_{0};
 
     std::vector<Instance> instances_{};
 };

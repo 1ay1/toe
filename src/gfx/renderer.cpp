@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <utility>
+#include <array>
 
 #include <epoxy/gl.h>
 
@@ -87,7 +88,16 @@ void main() {
 }
 )";
 
-float fr(std::uint8_t v) { return static_cast<float>(v) / 255.0f; }
+// Byte -> normalized float, via a 256-entry table (no per-cell division).
+const std::array<float, 256> &fr_table() {
+    static const std::array<float, 256> t = [] {
+        std::array<float, 256> a{};
+        for (int i = 0; i < 256; ++i) a[static_cast<std::size_t>(i)] = static_cast<float>(i) / 255.0f;
+        return a;
+    }();
+    return t;
+}
+inline float fr(std::uint8_t v) noexcept { return fr_table()[v]; }
 
 } // namespace
 
@@ -97,6 +107,8 @@ Result<Renderer> Renderer::create(FontAtlas &&atlas) {
         return std::unexpected(prog.error());
     }
     Renderer r{std::move(atlas), std::move(*prog)};
+    r.u_screen_ = r.prog_.uniform("uScreen");
+    r.u_atlas_ = r.prog_.uniform("uAtlas");
     r.ensure_buffers();
     return r;
 }
@@ -109,8 +121,9 @@ Renderer::~Renderer() {
 
 Renderer::Renderer(Renderer &&o) noexcept
     : atlas_{std::move(o.atlas_)}, palette_{o.palette_}, prog_{std::move(o.prog_)},
+      u_screen_{o.u_screen_}, u_atlas_{o.u_atlas_},
       vao_{std::exchange(o.vao_, 0)}, quad_vbo_{std::exchange(o.quad_vbo_, 0)},
-      inst_vbo_{std::exchange(o.inst_vbo_, 0)}, inst_capacity_{o.inst_capacity_},
+      inst_vbo_{std::exchange(o.inst_vbo_, 0)}, inst_bytes_capacity_{o.inst_bytes_capacity_},
       instances_{std::move(o.instances_)} {}
 
 Renderer &Renderer::operator=(Renderer &&o) noexcept {
@@ -124,7 +137,7 @@ Renderer &Renderer::operator=(Renderer &&o) noexcept {
         vao_ = std::exchange(o.vao_, 0);
         quad_vbo_ = std::exchange(o.quad_vbo_, 0);
         inst_vbo_ = std::exchange(o.inst_vbo_, 0);
-        inst_capacity_ = o.inst_capacity_;
+        inst_bytes_capacity_ = o.inst_bytes_capacity_;
         instances_ = std::move(o.instances_);
     }
     return *this;
@@ -179,21 +192,26 @@ void Renderer::flush(std::size_t count, PixelSize px) {
     glBindVertexArray(vao_);
     glBindBuffer(GL_ARRAY_BUFFER, inst_vbo_);
     const std::size_t bytes = count * sizeof(Instance);
-    if (count > inst_capacity_) {
-        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(bytes), instances_.data(),
-                     GL_DYNAMIC_DRAW);
-        inst_capacity_ = count;
+    if (bytes > inst_bytes_capacity_) {
+        // Grow (and reserve headroom so this is rare). Fresh storage — no old
+        // contents to preserve.
+        inst_bytes_capacity_ = bytes + bytes / 2;
+        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(inst_bytes_capacity_), nullptr,
+                     GL_STREAM_DRAW);
     } else {
-        glBufferSubData(GL_ARRAY_BUFFER, 0, static_cast<GLsizeiptr>(bytes), instances_.data());
+        // Orphan the previous frame's storage so the driver hands us a fresh
+        // block instead of stalling until the last draw finishes reading it.
+        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(inst_bytes_capacity_), nullptr,
+                     GL_STREAM_DRAW);
     }
+    glBufferSubData(GL_ARRAY_BUFFER, 0, static_cast<GLsizeiptr>(bytes), instances_.data());
 
     prog_.use();
-    glUniform2f(prog_.uniform("uScreen"), static_cast<float>(px.w), static_cast<float>(px.h));
+    glUniform2f(u_screen_, static_cast<float>(px.w), static_cast<float>(px.h));
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, atlas_.texture());
-    glUniform1i(prog_.uniform("uAtlas"), 0);
+    glUniform1i(u_atlas_, 0);
 
-    while (glGetError() != GL_NO_ERROR) { /* drain stale errors */ }
     glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, static_cast<GLsizei>(count));
     glBindVertexArray(0);
 }
@@ -211,73 +229,75 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on) {
     const int ascent = atlas_.ascent();
     const Extent grid = screen.size();
     const Pos cur = screen.cursor();
+    const bool any_selection = screen.has_selection();
 
     instances_.clear();
+    // One-time growth to the worst case (a bg + a glyph per cell + cursor), so
+    // the per-frame push_backs never reallocate.
+    instances_.reserve(static_cast<std::size_t>(grid.cols) * static_cast<std::size_t>(grid.rows) * 2 + 2);
 
-    // Pass 1: background rectangles (only for non-default backgrounds).
+    // Pass 1: background rectangles (only for non-default backgrounds) and the
+    // selection highlight. The selection test — including viewport_to_abs — is
+    // hoisted behind `any_selection`, so ordinary frames pay nothing for it.
     for (int r = 0; r < grid.rows; ++r) {
         const auto cells = screen.row(Row{r});
-        const std::int64_t abs_row = screen.viewport_to_abs(r);
+        const float ry = static_cast<float>(r * ch);
+        const std::int64_t abs_row = any_selection ? screen.viewport_to_abs(r) : 0;
         for (int c = 0; c < grid.cols; ++c) {
             const auto &cell = cells[static_cast<std::size_t>(c)];
-            const bool selected = screen.is_selected(abs_row, c);
-            if (selected) {
-                // Selection highlight: a subtle blue-grey wash behind the cell.
-                instances_.push_back(Instance{static_cast<float>(c * cw),
-                                              static_cast<float>(r * ch), static_cast<float>(cw),
+            if (any_selection && screen.is_selected(abs_row, c)) {
+                instances_.push_back(Instance{static_cast<float>(c * cw), ry, static_cast<float>(cw),
                                               static_cast<float>(ch), 0, 0, 0, 0, 0.26f, 0.33f,
                                               0.44f, 0.0f, 0.0f});
                 continue;
             }
             const bool reverse = term::has(cell.pen.attr, term::Attr::Reverse);
-            term::Color bg = reverse ? cell.pen.fg : cell.pen.bg;
-            if (std::holds_alternative<term::DefaultColor>(bg) && !reverse) {
-                continue; // default bg already cleared
+            // Fast path: default bg and no reverse — nothing to draw (cleared).
+            if (!reverse && std::holds_alternative<term::DefaultColor>(cell.pen.bg)) {
+                continue;
             }
+            const term::Color bg = reverse ? cell.pen.fg : cell.pen.bg;
             const Rgb col = palette_.resolve(bg, /*is_fg=*/reverse);
-            instances_.push_back(Instance{static_cast<float>(c * cw), static_cast<float>(r * ch),
-                                          static_cast<float>(cw), static_cast<float>(ch), 0, 0, 0, 0,
-                                          fr(col.r), fr(col.g), fr(col.b), 0.0f, 0.0f});
+            instances_.push_back(Instance{static_cast<float>(c * cw), ry, static_cast<float>(cw),
+                                          static_cast<float>(ch), 0, 0, 0, 0, fr(col.r), fr(col.g),
+                                          fr(col.b), 0.0f, 0.0f});
         }
     }
 
-    // Pass 2: the block cursor — a solid rect in the foreground color at the
-    // cursor cell. The glyph beneath it (pass 3) is drawn in the background
-    // color so it reads as inverted video.
+    // Pass 2: the block cursor.
     const bool cursor_visible =
         cursor_on && screen.cursor_shown() && screen.cursor_visible() && cur.row.get() >= 0 &&
         cur.row.get() < grid.rows && cur.col.get() >= 0 && cur.col.get() < grid.cols;
     if (cursor_visible) {
         const Rgb cc = palette_.default_fg();
         instances_.push_back(Instance{static_cast<float>(cur.col.get() * cw),
-                                      static_cast<float>(cur.row.get() * ch),
-                                      static_cast<float>(cw), static_cast<float>(ch), 0, 0, 0, 0,
-                                      fr(cc.r), fr(cc.g), fr(cc.b), 0.0f, 2.0f});
+                                      static_cast<float>(cur.row.get() * ch), static_cast<float>(cw),
+                                      static_cast<float>(ch), 0, 0, 0, 0, fr(cc.r), fr(cc.g),
+                                      fr(cc.b), 0.0f, 2.0f});
     }
 
     // Pass 3: glyphs.
+    const int cur_row = cur.row.get();
+    const int cur_col = cur.col.get();
     for (int r = 0; r < grid.rows; ++r) {
         const auto cells = screen.row(Row{r});
+        const int base_gy = r * ch + ascent;
+        const bool row_has_cursor = cursor_visible && r == cur_row;
         for (int c = 0; c < grid.cols; ++c) {
             const auto &cell = cells[static_cast<std::size_t>(c)];
-            if (cell.spacer()) continue; // trailing half of a wide glyph
-            if (cell.cp == U' ' || cell.cp == 0) continue;
-            const GlyphInfo *gi = atlas_.glyph(cell.cp);
+            const char32_t cp = cell.cp;
+            if (cp == U' ' || cp == 0 || cell.spacer()) continue; // blank / wide-spacer
+            const GlyphInfo *gi = atlas_.glyph(cp);
             if (!gi || gi->width == 0 || gi->height == 0) continue;
 
             const bool reverse = term::has(cell.pen.attr, term::Attr::Reverse);
-            const bool on_cursor =
-                cursor_visible && r == cur.row.get() && c == cur.col.get();
-            // On the cursor cell, invert: draw the glyph in the background color.
-            Rgb col;
-            if (on_cursor) {
-                col = palette_.resolve(cell.pen.bg, /*is_fg=*/false);
-            } else {
-                col = palette_.resolve(reverse ? cell.pen.bg : cell.pen.fg, !reverse);
-            }
+            const bool on_cursor = row_has_cursor && c == cur_col;
+            const Rgb col = on_cursor
+                                ? palette_.resolve(cell.pen.bg, /*is_fg=*/false)
+                                : palette_.resolve(reverse ? cell.pen.bg : cell.pen.fg, !reverse);
 
             const float gx = static_cast<float>(c * cw + gi->bearing_x);
-            const float gy = static_cast<float>(r * ch + ascent - gi->bearing_y);
+            const float gy = static_cast<float>(base_gy - gi->bearing_y);
             instances_.push_back(Instance{gx, gy, static_cast<float>(gi->width),
                                           static_cast<float>(gi->height), gi->u0, gi->v0, gi->u1,
                                           gi->v1, fr(col.r), fr(col.g), fr(col.b), 1.0f, 0.0f});

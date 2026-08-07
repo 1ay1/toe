@@ -31,19 +31,4 @@ Palette::Palette() {
     }
 }
 
-Rgb Palette::resolve(const term::Color &c, bool is_fg) const noexcept {
-    return std::visit(
-        [&](auto &&x) -> Rgb {
-            using T = std::decay_t<decltype(x)>;
-            if constexpr (std::is_same_v<T, term::DefaultColor>) {
-                return is_fg ? fg_ : bg_;
-            } else if constexpr (std::is_same_v<T, term::IndexedColor>) {
-                return table_[x.index];
-            } else if constexpr (std::is_same_v<T, term::TrueColor>) {
-                return x.rgb;
-            }
-        },
-        c);
-}
-
 } // namespace gvte::gfx

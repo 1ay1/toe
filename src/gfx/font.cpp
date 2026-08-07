@@ -144,6 +144,7 @@ FontAtlas::FontAtlas(FontAtlas &&o) noexcept
       tex_{std::exchange(o.tex_, 0)}, atlas_dim_{o.atlas_dim_}, pen_x_{o.pen_x_}, pen_y_{o.pen_y_},
       shelf_h_{o.shelf_h_}, cell_w_{o.cell_w_}, cell_h_{o.cell_h_}, ascent_{o.ascent_},
       cache_{std::move(o.cache_)} {
+    fast_ = o.fast_;
     o.fallback_faces_.clear();
 }
 
@@ -164,6 +165,7 @@ FontAtlas &FontAtlas::operator=(FontAtlas &&o) noexcept {
         cell_h_ = o.cell_h_;
         ascent_ = o.ascent_;
         cache_ = std::move(o.cache_);
+        fast_ = o.fast_;
     }
     return *this;
 }
@@ -189,13 +191,6 @@ void FontAtlas::destroy() noexcept {
         FT_Done_FreeType(static_cast<FT_Library>(ft_));
         ft_ = nullptr;
     }
-}
-
-const GlyphInfo *FontAtlas::glyph(char32_t cp) {
-    if (auto it = cache_.find(cp); it != cache_.end()) {
-        return &it->second;
-    }
-    return rasterize(cp);
 }
 
 // Pick the FT_Face that actually contains `cp`: the primary if it has the
