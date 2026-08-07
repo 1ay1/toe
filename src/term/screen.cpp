@@ -381,6 +381,9 @@ void Screen::restore_cursor() {
 // CSI ? Pm h / l — DEC private mode set/reset.
 void Screen::set_private_mode(int mode, bool set) {
     switch (mode) {
+    case 1: // DECCKM — application cursor keys.
+        app_cursor_keys_ = set;
+        break;
     case 25: // DECTCEM — show/hide cursor.
         cursor_shown_ = set;
         break;
@@ -666,6 +669,8 @@ void Screen::esc(const vt::EscDispatch &d) {
         case '8': restore_cursor(); return; // DECRC
         case 'D': line_feed(); return;      // IND (index)
         case 'H': set_tab_stop(); return;   // HTS (set tab stop)
+        case '=': app_keypad_ = true; return;  // DECKPAM (application keypad)
+        case '>': app_keypad_ = false; return; // DECKPNM (normal keypad)
         case 'M': // RI (reverse index)
             if (cursor_.row.get() == scroll_top_) {
                 scroll_down(1);

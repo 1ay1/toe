@@ -52,6 +52,7 @@ add_library(gvte
   src/gfx/shader.cpp
   src/gfx/palette.cpp
   src/gfx/renderer.cpp
+  src/input/keymap.cpp
   src/term/screen.cpp
   src/term/update.cpp)
 
@@ -89,8 +90,8 @@ target_include_directories(parser_test PRIVATE include)
 target_compile_options(parser_test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME parser COMMAND parser_test)
 
-add_executable(screen_test tests/screen_test.cpp src/term/screen.cpp
-  src/term/update.cpp)
+add_executable(screen_test tests/screen_test.cpp
+  src/term/screen.cpp)
 target_include_directories(screen_test PRIVATE include)
 target_compile_options(screen_test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME screen COMMAND screen_test)
@@ -102,3 +103,8 @@ add_test(NAME render COMMAND render_test)
 add_executable(tea_test tests/tea_test.cpp)
 target_link_libraries(tea_test PRIVATE gvte)
 add_test(NAME tea COMMAND tea_test)
+
+add_executable(keymap_test tests/keymap_test.cpp src/input/keymap.cpp)
+target_include_directories(keymap_test PRIVATE include)
+target_compile_options(keymap_test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME keymap COMMAND keymap_test)

@@ -5,6 +5,7 @@
 // machine whose sole transition is poll().
 
 #include "gvte/terminal.hpp"
+#include "gvte/input/keymap.hpp"
 
 #include <array>
 #include <cstdio>
@@ -44,17 +45,30 @@ struct Session::Impl {
         : model(std::move(c), g), renderer(std::move(r)), pty(std::move(p)), grid(g), cell_w(cw),
           cell_h(ch) {}
 
-    // The Cmd interpreter — the sole side-effecting code in the core. Every
-    // effect the pure update produced is performed here.
+    // The Cmd interpreter — the sole side-effecting code in the core. Runs of
+    // WriteChild bytes are coalesced into ONE pty.write() so a burst of input
+    // (fast typing, a multi-key sequence, a paste) costs a single syscall.
+    std::string write_batch_; // reused; never shrinks -> no per-call alloc
     void interpret(const Cmds &cmds) {
+        write_batch_.clear();
+        auto flush = [&] {
+            if (!write_batch_.empty()) {
+                (void)pty.write(write_batch_);
+                write_batch_.clear();
+            }
+        };
         for (const Cmd &c : cmds) {
+            if (const auto *w = std::get_if<WriteChild>(&c)) {
+                write_batch_ += w->bytes; // accumulate; flush lazily
+                continue;
+            }
+            // Any non-write effect must observe writes already issued in order.
+            flush();
             std::visit(
                 [&](auto &&e) {
                     using T = std::decay_t<decltype(e)>;
-                    if constexpr (std::is_same_v<T, WriteChild>) {
-                        (void)pty.write(e.bytes);
-                    } else if constexpr (std::is_same_v<T, SetClipboard>) {
-                        clipboard_request = e.text; // host pulls this and sets the OS clipboard
+                    if constexpr (std::is_same_v<T, SetClipboard>) {
+                        clipboard_request = e.text;
                     } else if constexpr (std::is_same_v<T, SetTitle>) {
                         // title lives in the model; nothing extra to do here.
                     } else if constexpr (std::is_same_v<T, ResizePty>) {
@@ -67,6 +81,7 @@ struct Session::Impl {
                 },
                 c);
         }
+        flush();
     }
 
     // Drain child output through the pure reducer, interpreting effects.
@@ -109,38 +124,9 @@ void Session::resize(PixelSize px) {
 void Session::send_text(std::string_view utf8) { (void)impl_->pty.write(utf8); }
 
 // --- pure input encoding ---------------------------------------------------
-namespace {
-
-// Encode a key event to the bytes a terminal sends the child. Pure: no I/O.
-std::string encode_key(const KeyEvent &ev) {
-    if (const auto *t = std::get_if<TextInput>(&ev.key)) {
-        if (ev.mods.ctrl && t->utf8.size() == 1) {
-            const char c = t->utf8[0];
-            if (c >= 'a' && c <= 'z') return std::string(1, static_cast<char>(c - 'a' + 1));
-            if (c >= 'A' && c <= 'Z') return std::string(1, static_cast<char>(c - 'A' + 1));
-        }
-        return t->utf8;
-    }
-    switch (std::get<SpecialKey>(ev.key)) {
-    case SpecialKey::Enter: return "\r";
-    case SpecialKey::Backspace: return "\x7f";
-    case SpecialKey::Tab: return "\t";
-    case SpecialKey::Escape: return "\x1b";
-    case SpecialKey::Up: return "\x1b[A";
-    case SpecialKey::Down: return "\x1b[B";
-    case SpecialKey::Right: return "\x1b[C";
-    case SpecialKey::Left: return "\x1b[D";
-    case SpecialKey::Home: return "\x1b[H";
-    case SpecialKey::End: return "\x1b[F";
-    case SpecialKey::PageUp: return "\x1b[5~";
-    case SpecialKey::PageDown: return "\x1b[6~";
-    case SpecialKey::Delete: return "\x1b[3~";
-    case SpecialKey::Insert: return "\x1b[2~";
-    }
-    return {};
-}
-
-} // namespace
+// Key encoding lives in gvte/input/keymap.cpp: a zero-allocation, fixed-buffer
+// encoder covering the full modifier matrix, function keys, Alt/Meta and the
+// application-cursor-keys mode. update() just supplies the terminal context.
 
 // --- The Elm Architecture: update + interpreter ----------------------------
 Cmds Session::update(const Msg &msg) {
@@ -153,8 +139,12 @@ Cmds Session::update(const Msg &msg) {
                 out.insert(out.end(), std::make_move_iterator(fx.begin()),
                            std::make_move_iterator(fx.end()));
             } else if constexpr (std::is_same_v<T, Key>) {
-                std::string bytes = encode_key(m.event);
-                if (!bytes.empty()) out.emplace_back(WriteChild{std::move(bytes)});
+                KeyContext kctx{impl_->model.screen.app_cursor_keys()};
+                KeyBuf kb;
+                std::span<const char> bytes = encode_key(m.event, kctx, kb);
+                if (!bytes.empty()) {
+                    out.emplace_back(WriteChild{std::string(bytes.data(), bytes.size())});
+                }
             } else if constexpr (std::is_same_v<T, Paste>) {
                 if (impl_->model.screen.bracketed_paste()) {
                     out.emplace_back(WriteChild{"\x1b[200~" + m.text + "\x1b[201~"});

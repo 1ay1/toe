@@ -65,6 +65,11 @@ public:
     [[nodiscard]] bool mouse_sgr() const noexcept { return mouse_sgr_; }
     // Bracketed paste (CSI ?2004): wrap pasted text in ESC[200~ / ESC[201~.
     [[nodiscard]] bool bracketed_paste() const noexcept { return bracketed_paste_; }
+    // DECCKM (CSI ?1): cursor/nav keys send SS3 (ESC O A) instead of CSI
+    // (ESC [ A). vim/less/readline toggle this.
+    [[nodiscard]] bool app_cursor_keys() const noexcept { return app_cursor_keys_; }
+    // DECKPAM/DECKPNM (ESC =/ESC >): application keypad mode.
+    [[nodiscard]] bool app_keypad() const noexcept { return app_keypad_; }
 
     // --- selection ---------------------------------------------------------
     // Selection granularity. Char = arbitrary span; Line = whole rows; Block =
@@ -187,6 +192,8 @@ private:
     bool cursor_shown_{true};
     bool on_alt_{false};
     bool bracketed_paste_{false};
+    bool app_cursor_keys_{false};
+    bool app_keypad_{false};
     bool mouse_sgr_{false};
     MouseMode mouse_mode_{MouseMode::off};
 
