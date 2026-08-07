@@ -72,6 +72,22 @@ public:
     [[nodiscard]] bool has_selection() const noexcept;
     [[nodiscard]] std::string selected_text() const;
 
+    // --- mouse reporting ---------------------------------------------------
+    // True when the running app has requested mouse tracking (?1000/1002/1003).
+    // While true, the host should forward pointer events to the app via
+    // report_mouse() instead of doing local selection.
+    [[nodiscard]] bool wants_mouse() const noexcept;
+    // Does the app want reports for pure motion (?1003) / drags (?1002)?
+    [[nodiscard]] bool wants_mouse_motion() const noexcept;
+    [[nodiscard]] bool wants_mouse_drag() const noexcept;
+
+    enum class MouseEvent { press, release, motion };
+    // Encode a pointer event at cell (col,row0-based) for the app and write it
+    // to the child. `button`: 0 left, 1 middle, 2 right, 3 none/release,
+    // 64/65 wheel up/down. No-op when mouse tracking is off.
+    void report_mouse(MouseEvent kind, int button, int col, int row, bool shift, bool alt,
+                      bool ctrl);
+
     [[nodiscard]] Extent grid_size() const noexcept;
     [[nodiscard]] Pos cursor() const noexcept;
     [[nodiscard]] std::string window_title() const;

@@ -7,6 +7,7 @@
 #include "gvte/terminal.hpp"
 
 #include <array>
+#include <algorithm>
 #include <cstdlib>
 #include <span>
 #include <utility>
@@ -106,6 +107,57 @@ void Session::select_extend(int vrow, int col) {
 void Session::select_clear() { impl_->screen.selection_clear(); }
 bool Session::has_selection() const noexcept { return impl_->screen.has_selection(); }
 std::string Session::selected_text() const { return impl_->screen.selected_text(); }
+
+// --- mouse reporting -------------------------------------------------------
+bool Session::wants_mouse() const noexcept {
+    return impl_->screen.mouse_mode() != term::Screen::MouseMode::off;
+}
+bool Session::wants_mouse_motion() const noexcept {
+    return impl_->screen.mouse_mode() == term::Screen::MouseMode::any;
+}
+bool Session::wants_mouse_drag() const noexcept {
+    const auto m = impl_->screen.mouse_mode();
+    return m == term::Screen::MouseMode::button || m == term::Screen::MouseMode::any;
+}
+
+void Session::report_mouse(MouseEvent kind, int button, int col, int row, bool shift, bool alt,
+                           bool ctrl) {
+    const auto mode = impl_->screen.mouse_mode();
+    if (mode == term::Screen::MouseMode::off) return;
+
+    // Compose the button byte: low bits select the button (or wheel/motion),
+    // high bits carry modifiers, per the xterm protocol.
+    int cb = button;
+    if (kind == MouseEvent::motion) {
+        cb += 32; // motion flag (bit 5)
+    }
+    if (shift) cb += 4;
+    if (alt) cb += 8;
+    if (ctrl) cb += 16;
+
+    const int cx = col + 1; // protocol coords are 1-based
+    const int cy = row + 1;
+
+    std::string seq;
+    if (impl_->screen.mouse_sgr()) {
+        // SGR extended: ESC [ < cb ; cx ; cy (M press / m release)
+        seq = "\x1b[<";
+        seq += std::to_string(cb);
+        seq += ';';
+        seq += std::to_string(cx);
+        seq += ';';
+        seq += std::to_string(cy);
+        seq += (kind == MouseEvent::release) ? 'm' : 'M';
+    } else {
+        // Legacy X10: ESC [ M  (cb+32) (cx+32) (cy+32) as bytes. Release is
+        // reported as button 3 (cb base already set by the caller for release).
+        seq = "\x1b[M";
+        seq.push_back(static_cast<char>(std::clamp(cb + 32, 32, 255)));
+        seq.push_back(static_cast<char>(std::clamp(cx + 32, 32, 255)));
+        seq.push_back(static_cast<char>(std::clamp(cy + 32, 32, 255)));
+    }
+    (void)impl_->pty.write(seq);
+}
 
 void Session::send_key(const KeyEvent &ev) {
     // Text branch: forward the UTF-8 as-is (Ctrl-<letter> is folded to a C0
