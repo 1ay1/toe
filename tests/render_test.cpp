@@ -65,8 +65,10 @@ int main() {
     Extent grid = renderer->cells_for(PixelSize{W, H});
     term::Screen screen{grid};
     vt::Parser parser;
-    // A line of text and a red-on-nothing 'X', plus a green-background space.
-    std::string_view input = "Hello, GPU!\r\n\x1b[31mXXXX\x1b[0m \x1b[42m \x1b[0m";
+    // A line of text and a red-on-nothing 'X', a green-background space, then a
+    // row of FULL BLOCK glyphs (U+2588) to verify they tile without seams.
+    std::string_view input =
+        "Hello, GPU!\r\n\x1b[31mXXXX\x1b[0m \x1b[42m \x1b[0m\r\n\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88";
     parser.feed(std::span<const char>{input.data(), input.size()},
                 [&](const vt::Action &a) {
                     gvte::Cmds out;
@@ -106,11 +108,11 @@ int main() {
     // Block-vs-glyph guard: a correctly-rendered glyph covers only PART of its
     // cell; if the atlas sample or UVs collapse, every glyph fills its whole
     // cell as a solid block (the exact symptom of the packed-UV regression).
-    // Scan every cell in the grid and find the single densest one. Text glyphs
-    // (even 'X'/'M'/'@') never fill a cell; a solid block is ~100%. We ignore
-    // the explicit green-background cell (\x1b[42m) which legitimately fills.
+    // Scan the TEXT rows (0..1) for the densest cell — the block row (2) is
+    // intentionally full and excluded. Text glyphs never fill a cell; a solid
+    // block is ~100%. Skip the green-background cell (\x1b[42m).
     int worst_cell_cov = 0;
-    for (int gr = 0; gr < grid.rows; ++gr) {
+    for (int gr = 0; gr < 2 && gr < grid.rows; ++gr) {
         for (int gc = 0; gc < grid.cols; ++gc) {
             int cov = 0, tot = 0, greenbg = 0;
             for (int y = gr * ch; y < (gr + 1) * ch && y < H; ++y) {
@@ -138,6 +140,37 @@ int main() {
     if (worst_cell_cov >= 70) {
         std::printf("FAIL glyphs render as solid blocks (is_glyph/UV/atlas-sample bug)\n");
         ++fails;
+    }
+
+    // Block-tiling guard: the FULL BLOCK (U+2588) glyphs must join into a
+    // seamless bar. Instead of guessing the block row's pixel band (glyph
+    // baseline offsets make that fragile), scan every scanline for one that is
+    // fully filled across the first 4 cells (that's the block bar), then check
+    // the interior cell boundaries on it for background seams.
+    {
+        int seams = -1; // -1 = no fully-filled block scanline found yet
+        for (int y = 0; y < H && seams != 0; ++y) {
+            int filled = 0;
+            for (int x = 0; x < 4 * cw && x < W; ++x) {
+                auto c = at(x, y);
+                if (!(c[0] == 23 && c[1] == 23 && c[2] == 28)) ++filled;
+            }
+            if (filled < 4 * cw - 4) continue; // this scanline isn't the block bar
+            // Found the bar: count interior-boundary background gaps.
+            int s = 0;
+            for (int gc = 1; gc < 4; ++gc) {
+                const int bx = gc * cw;
+                if (bx <= 0 || bx >= W) continue;
+                auto m = at(bx, y);
+                if (m[0] == 23 && m[1] == 23 && m[2] == 28) ++s;
+            }
+            seams = s;
+        }
+        std::printf("block-tiling seams = %d (want 0; -1 = block bar not found)\n", seams);
+        if (seams != 0) {
+            std::printf("FAIL block glyphs don't tile seamlessly\n");
+            ++fails;
+        }
     }
 
     glDeleteFramebuffers(1, &fbo);

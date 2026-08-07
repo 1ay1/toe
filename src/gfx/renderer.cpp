@@ -101,6 +101,42 @@ const std::array<float, 256> &fr_table() {
 }
 inline float fr(std::uint8_t v) noexcept { return fr_table()[v]; }
 
+// Procedural block-element rendering. The Unicode block-drawing characters
+// (U+2580–259F) are exact geometric fractions of the cell — but a font's
+// bitmaps for them are usually a pixel or two shy of the cell metrics, so
+// adjacent block cells leave visible seams (the classic "disconnected blocks"
+// in mosaic/ASCII-art logos and TUI bars). Draw them as precise cell-relative
+// rectangles instead, so they tile pixel-perfectly at any font size. `out`
+// receives a rect describing the fraction to fill, expressed in [0,1] cell
+// coordinates (x, y, w, h) with y measured from the TOP of the cell. Returns
+// false for non-block characters (which go through the font atlas as usual).
+struct BlockFill { float x, y, w, h; };
+inline bool block_fill(char32_t cp, BlockFill &out) noexcept {
+    out = {0.f, 0.f, 1.f, 1.f};
+    switch (cp) {
+    case U'\u2588': return true;                        // full block
+    case U'\u2580': out.h = 0.5f; return true;          // upper half
+    case U'\u2584': out.y = 0.5f; out.h = 0.5f; return true; // lower half
+    case U'\u258C': out.w = 0.5f; return true;          // left half
+    case U'\u2590': out.x = 0.5f; out.w = 0.5f; return true; // right half
+    // Eighth blocks from the bottom (U+2581..2587): 1/8 .. 7/8 tall.
+    case U'\u2581': out.y = 7.f/8; out.h = 1.f/8; return true;
+    case U'\u2582': out.y = 6.f/8; out.h = 2.f/8; return true;
+    case U'\u2583': out.y = 5.f/8; out.h = 3.f/8; return true;
+    case U'\u2585': out.y = 3.f/8; out.h = 5.f/8; return true;
+    case U'\u2586': out.y = 2.f/8; out.h = 6.f/8; return true;
+    case U'\u2587': out.y = 1.f/8; out.h = 7.f/8; return true;
+    // Eighth blocks from the left (U+2589..258F): 7/8 .. 1/8 wide.
+    case U'\u2589': out.w = 7.f/8; return true;
+    case U'\u258A': out.w = 6.f/8; return true;
+    case U'\u258B': out.w = 5.f/8; return true;
+    case U'\u258D': out.w = 3.f/8; return true;
+    case U'\u258E': out.w = 2.f/8; return true;
+    case U'\u258F': out.w = 1.f/8; return true;
+    default: return false;
+    }
+}
+
 } // namespace
 
 Result<Renderer> Renderer::create(FontAtlas &&atlas) {
@@ -424,11 +460,28 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
 
         const char32_t cp = cell.cp;
         if (cp == U' ' || cp == 0 || cell.spacer()) continue;
+
+        // Foreground color for this cell's glyph.
+        const Rgb fgcol = on_cursor
+                              ? palette_.resolve(cell.pen.bg, /*is_fg=*/false)
+                              : palette_.resolve(reverse ? cell.pen.bg : cell.pen.fg, !reverse);
+
+        // Geometric block elements (full/half/quadrant/eighth blocks) tile
+        // pixel-perfectly only if drawn as exact cell-relative rects — the
+        // font's bitmaps are a pixel shy and leave seams. Draw them procedurally
+        // in the fg colour; they go into rc.bg so any real glyph still layers on
+        // top, and z-order stays correct.
+        if (BlockFill bf; block_fill(cp, bf)) {
+            const float fcw = static_cast<float>(cw), fch = static_cast<float>(ch);
+            rc.bg.push_back(rect_inst(static_cast<float>(c * cw) + bf.x * fcw, ry + bf.y * fch,
+                                      bf.w * fcw, bf.h * fch, fgcol.r, fgcol.g, fgcol.b,
+                                      /*radius=*/0));
+            continue;
+        }
+
         const GlyphInfo *gi = atlas_.glyph(cp);
         if (!gi || gi->width == 0 || gi->height == 0) continue;
-        const Rgb col = on_cursor
-                            ? palette_.resolve(cell.pen.bg, /*is_fg=*/false)
-                            : palette_.resolve(reverse ? cell.pen.bg : cell.pen.fg, !reverse);
+        const Rgb col = fgcol;
         const float gx = static_cast<float>(c * cw + gi->bearing_x);
         const float gy = static_cast<float>(base_gy - gi->bearing_y);
         rc.glyphs.push_back(Instance{gx, gy, static_cast<float>(gi->width),
