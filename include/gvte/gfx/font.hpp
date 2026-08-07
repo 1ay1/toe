@@ -61,7 +61,16 @@ private:
 
     // opaque FreeType handles (kept as void* to avoid leaking ft2 into the hdr)
     void *ft_{nullptr};   // FT_Library
-    void *face_{nullptr}; // FT_Face
+    void *face_{nullptr}; // FT_Face (primary)
+
+    // Font fallback: codepoints the primary face lacks (CJK, emoji, symbols)
+    // are rasterized from a font Fontconfig says covers them. Keyed by the
+    // resolved font path so each fallback face is opened at most once.
+    std::unordered_map<std::string, void *> fallback_faces_{}; // path -> FT_Face
+    int pixel_size_{0};
+    // Resolve the FT_Face to use for `cp`: the primary if it has the glyph,
+    // else a fallback face (loaded on demand), else the primary as notdef.
+    void *face_for(char32_t cp);
 
     std::uint32_t tex_{0};
     int atlas_dim_{0};

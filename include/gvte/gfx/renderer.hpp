@@ -35,7 +35,7 @@ public:
     [[nodiscard]] const FontAtlas &font() const noexcept { return atlas_; }
 
     // Draw the whole screen into the current framebuffer of size `px`.
-    void draw(const term::Screen &screen, PixelSize px);
+    void draw(const term::Screen &screen, PixelSize px, bool cursor_on = true);
 
 private:
     // One instance: a colored (and optionally textured) quad in pixel space.

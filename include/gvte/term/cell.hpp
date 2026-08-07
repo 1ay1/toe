@@ -82,10 +82,14 @@ struct Pen {
 struct Cell {
     char32_t cp{U' '}; // the glyph; U' ' == blank
     Pen pen{};
+    // Display width: 1 = normal, 2 = lead cell of a double-width (CJK/emoji)
+    // glyph, 0 = the trailing spacer cell it occupies (renderer skips it).
+    std::uint8_t width{1};
 
     [[nodiscard]] constexpr bool blank() const noexcept {
         return cp == U' ' && pen == Pen{};
     }
+    [[nodiscard]] constexpr bool spacer() const noexcept { return width == 0; }
     constexpr auto operator<=>(const Cell &) const = default;
 };
 

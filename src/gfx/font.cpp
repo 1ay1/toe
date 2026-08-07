@@ -45,6 +45,32 @@ Result<std::string> resolve_font(const std::string &family) {
     return path;
 }
 
+// Find a font file that contains `cp` (used for CJK/emoji/symbol fallback).
+// Returns an empty string if fontconfig can't suggest one.
+std::string resolve_fallback(char32_t cp) {
+    FcPattern *pat = FcPatternCreate();
+    FcCharSet *cs = FcCharSetCreate();
+    FcCharSetAddChar(cs, cp);
+    FcPatternAddCharSet(pat, FC_CHARSET, cs);
+    FcPatternAddBool(pat, FC_SCALABLE, FcTrue);
+    FcConfigSubstitute(nullptr, pat, FcMatchPattern);
+    FcDefaultSubstitute(pat);
+
+    FcResult result;
+    FcPattern *match = FcFontMatch(nullptr, pat, &result);
+    std::string path;
+    if (match) {
+        FcChar8 *file = nullptr;
+        if (FcPatternGetString(match, FC_FILE, 0, &file) == FcResultMatch && file) {
+            path = reinterpret_cast<const char *>(file);
+        }
+        FcPatternDestroy(match);
+    }
+    FcCharSetDestroy(cs);
+    FcPatternDestroy(pat);
+    return path;
+}
+
 } // namespace
 
 Result<FontAtlas> FontAtlas::create(std::string family, int pixel_size) {
@@ -71,6 +97,7 @@ Result<FontAtlas> FontAtlas::create(std::string family, int pixel_size) {
     FontAtlas a;
     a.ft_ = ft;
     a.face_ = face;
+    a.pixel_size_ = pixel_size;
 
     // Cell metrics. For a monospace grid the cell width is the advance of a
     // representative glyph, NOT face->metrics.max_advance (which reflects the
@@ -113,15 +140,21 @@ Result<FontAtlas> FontAtlas::create(std::string family, int pixel_size) {
 
 FontAtlas::FontAtlas(FontAtlas &&o) noexcept
     : ft_{std::exchange(o.ft_, nullptr)}, face_{std::exchange(o.face_, nullptr)},
+      fallback_faces_{std::move(o.fallback_faces_)}, pixel_size_{o.pixel_size_},
       tex_{std::exchange(o.tex_, 0)}, atlas_dim_{o.atlas_dim_}, pen_x_{o.pen_x_}, pen_y_{o.pen_y_},
       shelf_h_{o.shelf_h_}, cell_w_{o.cell_w_}, cell_h_{o.cell_h_}, ascent_{o.ascent_},
-      cache_{std::move(o.cache_)} {}
+      cache_{std::move(o.cache_)} {
+    o.fallback_faces_.clear();
+}
 
 FontAtlas &FontAtlas::operator=(FontAtlas &&o) noexcept {
     if (this != &o) {
         destroy();
         ft_ = std::exchange(o.ft_, nullptr);
         face_ = std::exchange(o.face_, nullptr);
+        fallback_faces_ = std::move(o.fallback_faces_);
+        o.fallback_faces_.clear();
+        pixel_size_ = o.pixel_size_;
         tex_ = std::exchange(o.tex_, 0);
         atlas_dim_ = o.atlas_dim_;
         pen_x_ = o.pen_x_;
@@ -142,6 +175,12 @@ void FontAtlas::destroy() noexcept {
         glDeleteTextures(1, &tex_);
         tex_ = 0;
     }
+    // Free fallback faces first (some map entries alias the primary as a
+    // "use primary" sentinel — skip those), then the primary itself.
+    for (auto &[path, fb] : fallback_faces_) {
+        if (fb && fb != face_) FT_Done_Face(static_cast<FT_Face>(fb));
+    }
+    fallback_faces_.clear();
     if (face_) {
         FT_Done_Face(static_cast<FT_Face>(face_));
         face_ = nullptr;
@@ -159,8 +198,33 @@ const GlyphInfo *FontAtlas::glyph(char32_t cp) {
     return rasterize(cp);
 }
 
+// Pick the FT_Face that actually contains `cp`: the primary if it has the
+// glyph, otherwise a fallback font (opened + cached on first use), otherwise
+// the primary (which renders .notdef). This is what gives CJK/emoji coverage.
+void *FontAtlas::face_for(char32_t cp) {
+    auto primary = static_cast<FT_Face>(face_);
+    if (FT_Get_Char_Index(primary, cp) != 0) {
+        return face_;
+    }
+    const std::string path = resolve_fallback(cp);
+    if (path.empty()) {
+        return face_;
+    }
+    if (auto it = fallback_faces_.find(path); it != fallback_faces_.end()) {
+        return it->second;
+    }
+    FT_Face fb = nullptr;
+    if (FT_New_Face(static_cast<FT_Library>(ft_), path.c_str(), 0, &fb) != 0 || !fb) {
+        fallback_faces_.emplace(path, face_); // remember the failure as "use primary"
+        return face_;
+    }
+    FT_Set_Pixel_Sizes(fb, 0, static_cast<FT_UInt>(pixel_size_));
+    fallback_faces_.emplace(path, fb);
+    return fb;
+}
+
 const GlyphInfo *FontAtlas::rasterize(char32_t cp) {
-    auto face = static_cast<FT_Face>(face_);
+    auto face = static_cast<FT_Face>(face_for(cp));
 
     if (FT_Load_Char(face, cp, FT_LOAD_RENDER) != 0) {
         return nullptr;

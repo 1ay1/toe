@@ -198,7 +198,7 @@ void Renderer::flush(std::size_t count, PixelSize px) {
     glBindVertexArray(0);
 }
 
-void Renderer::draw(const term::Screen &screen, PixelSize px) {
+void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on) {
     const Rgb bgc = palette_.default_bg();
     glClearColor(fr(bgc.r), fr(bgc.g), fr(bgc.b), 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -245,7 +245,7 @@ void Renderer::draw(const term::Screen &screen, PixelSize px) {
     // cursor cell. The glyph beneath it (pass 3) is drawn in the background
     // color so it reads as inverted video.
     const bool cursor_visible =
-        screen.cursor_shown() && screen.cursor_visible() && cur.row.get() >= 0 &&
+        cursor_on && screen.cursor_shown() && screen.cursor_visible() && cur.row.get() >= 0 &&
         cur.row.get() < grid.rows && cur.col.get() >= 0 && cur.col.get() < grid.cols;
     if (cursor_visible) {
         const Rgb cc = palette_.default_fg();
@@ -260,6 +260,7 @@ void Renderer::draw(const term::Screen &screen, PixelSize px) {
         const auto cells = screen.row(Row{r});
         for (int c = 0; c < grid.cols; ++c) {
             const auto &cell = cells[static_cast<std::size_t>(c)];
+            if (cell.spacer()) continue; // trailing half of a wide glyph
             if (cell.cp == U' ' || cell.cp == 0) continue;
             const GlyphInfo *gi = atlas_.glyph(cell.cp);
             if (!gi || gi->width == 0 || gi->height == 0) continue;

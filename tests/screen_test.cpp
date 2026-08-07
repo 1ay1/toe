@@ -377,6 +377,32 @@ int main() {
                "plain CSI u still restores cursor");
     }
 
+    // Wide (CJK) characters occupy two cells: a width-2 lead + a spacer.
+    {
+        term::Screen s{Extent{10, 2}};
+        feed(s, "\xe4\xb8\xad" "X"); // U+4E2D (中) then 'X'
+        auto row = s.row(Row{0});
+        expect(row[0].cp == 0x4e2d && row[0].width == 2, "wide char is width 2");
+        expect(row[1].width == 0 && row[1].spacer(), "wide char trailing cell is a spacer");
+        expect(row[2].cp == U'X', "next glyph lands after the wide char");
+        expect(s.cursor().col.get() == 3, "cursor advanced by 2+1");
+    }
+
+    // A combining mark (width 0) does not advance the cursor.
+    {
+        term::Screen s{Extent{10, 2}};
+        feed(s, "e\xcc\x81"); // 'e' + U+0301 combining acute
+        expect(s.row(Row{0})[0].cp == U'e', "base glyph placed");
+        expect(s.cursor().col.get() == 1, "combining mark does not advance");
+    }
+
+    // A wide char at the last column wraps to the next line first.
+    {
+        term::Screen s{Extent{3, 2}};
+        feed(s, "ab\xe4\xb8\xad"); // cols: a b, then 中 can't fit at col 2 -> wraps
+        expect(s.row(Row{1})[0].cp == 0x4e2d, "wide char wraps when it won't fit");
+    }
+
     if (failures == 0) {
         std::printf("all screen tests passed\n");
         return 0;

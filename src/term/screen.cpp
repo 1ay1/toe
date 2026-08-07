@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cassert>
+#include <clocale>
+#include <cwchar>
 
 namespace gvte::term {
 
@@ -138,21 +140,69 @@ void Screen::apply(const vt::Action &action, Cmds &out) {
     pending_ = nullptr;
 }
 
+namespace {
+// Display width of a codepoint: 2 for double-width (CJK, emoji, fullwidth),
+// 0 for combining/zero-width marks, 1 otherwise. Backed by wcwidth; a one-time
+// setlocale makes it honor the Unicode East-Asian-Width tables.
+int char_width(char32_t cp) {
+    if (cp == 0) return 0;
+    if (cp < 0x20) return 0; // controls never occupy a cell here
+    static const bool locale_set = [] {
+        std::setlocale(LC_CTYPE, "");
+        return true;
+    }();
+    (void)locale_set;
+    const int w = ::wcwidth(static_cast<wchar_t>(cp));
+    if (w < 0) return 1;      // unknown -> assume single-width rather than drop
+    return w > 2 ? 2 : w;
+}
+} // namespace
+
 void Screen::put(char32_t cp) {
+    const int w = char_width(cp);
+
+    // Combining / zero-width marks attach to the preceding cell rather than
+    // advancing the cursor (best-effort: we keep the base glyph as-is).
+    if (w == 0) {
+        touch();
+        return;
+    }
+
     if (wrap_pending_) {
         cursor_.col = Col{0};
         line_feed();
         wrap_pending_ = false;
     }
-    at(cursor_.row, cursor_.col) = Cell{cp, pen_};
-    if (cursor_.col.get() + 1 >= size_.cols) {
+
+    // A double-width glyph that won't fit before the right margin wraps to the
+    // next line first (leaving the last column blank), as real terminals do.
+    if (w == 2 && cursor_.col.get() + 1 >= size_.cols) {
         if (autowrap_) {
-            wrap_pending_ = true; // defer the wrap until the next glyph (DEC semantics)
+            // Blank the final column, then wrap.
+            at(cursor_.row, cursor_.col) = Cell{};
+            cursor_.col = Col{0};
+            line_feed();
+        } else {
+            // No room and no wrap: overwrite in place as a single cell.
+            at(cursor_.row, cursor_.col) = Cell{cp, pen_, 1};
+            touch();
+            return;
         }
-        // With autowrap off, the cursor stays pinned at the last column and
-        // subsequent glyphs overwrite it (xterm behavior).
+    }
+
+    at(cursor_.row, cursor_.col) = Cell{cp, pen_, static_cast<std::uint8_t>(w)};
+    if (w == 2) {
+        // The second half is a spacer the renderer skips.
+        at(cursor_.row, cursor_.col + 1) = Cell{U' ', pen_, 0};
+    }
+
+    const int advance = w;
+    if (cursor_.col.get() + advance >= size_.cols) {
+        if (autowrap_) {
+            wrap_pending_ = true;
+        }
     } else {
-        ++cursor_.col;
+        cursor_.col += advance;
     }
     touch();
 }
