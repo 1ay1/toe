@@ -101,39 +101,82 @@ const std::array<float, 256> &fr_table() {
 }
 inline float fr(std::uint8_t v) noexcept { return fr_table()[v]; }
 
-// Procedural block-element rendering. The Unicode block-drawing characters
-// (U+2580–259F) are exact geometric fractions of the cell — but a font's
-// bitmaps for them are usually a pixel or two shy of the cell metrics, so
-// adjacent block cells leave visible seams (the classic "disconnected blocks"
-// in mosaic/ASCII-art logos and TUI bars). Draw them as precise cell-relative
-// rectangles instead, so they tile pixel-perfectly at any font size. `out`
-// receives a rect describing the fraction to fill, expressed in [0,1] cell
-// coordinates (x, y, w, h) with y measured from the TOP of the cell. Returns
-// false for non-block characters (which go through the font atlas as usual).
-struct BlockFill { float x, y, w, h; };
-inline bool block_fill(char32_t cp, BlockFill &out) noexcept {
-    out = {0.f, 0.f, 1.f, 1.f};
+// Procedural block-element and box-drawing rendering. The Unicode block
+// characters (U+2580–259F) and line-drawing characters (U+2500–257F) are exact
+// geometric shapes on the cell — but a font's bitmaps for them are usually a
+// pixel or two shy of the cell metrics, so adjacent cells leave visible seams
+// (disconnected blocks in ASCII-art, and broken vertical/horizontal rules in
+// TUI borders). Draw them as precise cell-relative rectangles instead, so they
+// tile and CONNECT pixel-perfectly at any font size.
+//
+// fills[] receive rects in [0,1] cell coordinates (x, y, w, h), y from the TOP.
+// A line/junction is built from stubs that run exactly to the cell edge, so a
+// stub in one cell meets its neighbour's stub with no gap. Returns the number
+// of rects written (0 = not a procedural glyph; use the font atlas).
+struct CellRect { float x, y, w, h; };
+inline int cell_fills(char32_t cp, CellRect out[5]) noexcept {
+    // --- block elements (solid fractions of the cell) ---
+    auto one = [&](float x, float y, float w, float h) { out[0] = {x, y, w, h}; return 1; };
     switch (cp) {
-    case U'\u2588': return true;                        // full block
-    case U'\u2580': out.h = 0.5f; return true;          // upper half
-    case U'\u2584': out.y = 0.5f; out.h = 0.5f; return true; // lower half
-    case U'\u258C': out.w = 0.5f; return true;          // left half
-    case U'\u2590': out.x = 0.5f; out.w = 0.5f; return true; // right half
-    // Eighth blocks from the bottom (U+2581..2587): 1/8 .. 7/8 tall.
-    case U'\u2581': out.y = 7.f/8; out.h = 1.f/8; return true;
-    case U'\u2582': out.y = 6.f/8; out.h = 2.f/8; return true;
-    case U'\u2583': out.y = 5.f/8; out.h = 3.f/8; return true;
-    case U'\u2585': out.y = 3.f/8; out.h = 5.f/8; return true;
-    case U'\u2586': out.y = 2.f/8; out.h = 6.f/8; return true;
-    case U'\u2587': out.y = 1.f/8; out.h = 7.f/8; return true;
-    // Eighth blocks from the left (U+2589..258F): 7/8 .. 1/8 wide.
-    case U'\u2589': out.w = 7.f/8; return true;
-    case U'\u258A': out.w = 6.f/8; return true;
-    case U'\u258B': out.w = 5.f/8; return true;
-    case U'\u258D': out.w = 3.f/8; return true;
-    case U'\u258E': out.w = 2.f/8; return true;
-    case U'\u258F': out.w = 1.f/8; return true;
-    default: return false;
+    case U'\u2588': return one(0, 0, 1, 1);              // full block
+    case U'\u2580': return one(0, 0, 1, .5f);            // upper half
+    case U'\u2584': return one(0, .5f, 1, .5f);          // lower half
+    case U'\u258C': return one(0, 0, .5f, 1);            // left half
+    case U'\u2590': return one(.5f, 0, .5f, 1);          // right half
+    case U'\u2581': return one(0, 7.f/8, 1, 1.f/8);
+    case U'\u2582': return one(0, 6.f/8, 1, 2.f/8);
+    case U'\u2583': return one(0, 5.f/8, 1, 3.f/8);
+    case U'\u2585': return one(0, 3.f/8, 1, 5.f/8);
+    case U'\u2586': return one(0, 2.f/8, 1, 6.f/8);
+    case U'\u2587': return one(0, 1.f/8, 1, 7.f/8);
+    case U'\u2589': return one(0, 0, 7.f/8, 1);
+    case U'\u258A': return one(0, 0, 6.f/8, 1);
+    case U'\u258B': return one(0, 0, 5.f/8, 1);
+    case U'\u258D': return one(0, 0, 3.f/8, 1);
+    case U'\u258E': return one(0, 0, 2.f/8, 1);
+    case U'\u258F': return one(0, 0, 1.f/8, 1);
+    default: break;
+    }
+
+    // --- box-drawing lines (U+2500–257F) built from centered stubs ---
+    // Stroke widths as a fraction of the cell; light = ~1/8, heavy = ~1/4. The
+    // centre of the cell is (0.5, 0.5). A stub runs from the centre to an edge
+    // (plus half the stroke so the two arms of a corner overlap cleanly).
+    constexpr float t = 1.f / 8;  // light stroke half-width fraction ~ actually full width
+    constexpr float lo = 0.5f - t / 2, hw = t; // light: x/y start, width
+    constexpr float th = 1.f / 4;
+    constexpr float hlo = 0.5f - th / 2, hhw = th; // heavy
+    // Directional stubs. left/right/up/down extend from cell centre to the edge.
+    auto H = [&](int n, float y0, float w) { // horizontal bar full width
+        out[n] = {0, y0, 1, w};
+    };
+    auto V = [&](int n, float x0, float w) { // vertical bar full height
+        out[n] = {x0, 0, w, 1};
+    };
+    auto L = [&](int n, float y0, float w) { out[n] = {0, y0, 0.5f + w / 2, w}; };   // left stub
+    auto R = [&](int n, float y0, float w) { out[n] = {0.5f - w / 2, y0, 0.5f + w / 2, w}; };
+    auto U = [&](int n, float x0, float w) { out[n] = {x0, 0, w, 0.5f + w / 2}; };     // up stub
+    auto D = [&](int n, float x0, float w) { out[n] = {x0, 0.5f - w / 2, w, 0.5f + w / 2}; };
+
+    switch (cp) {
+    // Straight lines span the WHOLE cell so neighbours connect.
+    case U'\u2500': H(0, lo, hw); return 1;   // ─ light horizontal
+    case U'\u2501': H(0, hlo, hhw); return 1; // ━ heavy horizontal
+    case U'\u2502': V(0, lo, hw); return 1;   // │ light vertical
+    case U'\u2503': V(0, hlo, hhw); return 1; // ┃ heavy vertical
+    // Corners: two stubs meeting at the centre.
+    case U'\u250C': D(0, lo, hw); R(1, lo, hw); return 2; // ┌
+    case U'\u2510': D(0, lo, hw); L(1, lo, hw); return 2; // ┐
+    case U'\u2514': U(0, lo, hw); R(1, lo, hw); return 2; // └
+    case U'\u2518': U(0, lo, hw); L(1, lo, hw); return 2; // ┘
+    // T junctions: a full straight line + one perpendicular stub.
+    case U'\u251C': V(0, lo, hw); R(1, lo, hw); return 2; // ├
+    case U'\u2524': V(0, lo, hw); L(1, lo, hw); return 2; // ┤
+    case U'\u252C': H(0, lo, hw); D(1, lo, hw); return 2; // ┬
+    case U'\u2534': H(0, lo, hw); U(1, lo, hw); return 2; // ┴
+    // Cross.
+    case U'\u253C': H(0, lo, hw); V(1, lo, hw); return 2; // ┼
+    default: return 0;
     }
 }
 
@@ -466,16 +509,19 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
                               ? palette_.resolve(cell.pen.bg, /*is_fg=*/false)
                               : palette_.resolve(reverse ? cell.pen.bg : cell.pen.fg, !reverse);
 
-        // Geometric block elements (full/half/quadrant/eighth blocks) tile
-        // pixel-perfectly only if drawn as exact cell-relative rects — the
-        // font's bitmaps are a pixel shy and leave seams. Draw them procedurally
-        // in the fg colour; they go into rc.bg so any real glyph still layers on
-        // top, and z-order stays correct.
-        if (BlockFill bf; block_fill(cp, bf)) {
+        // Geometric block elements and box-drawing lines tile/connect pixel-
+        // perfectly only when drawn as exact cell-relative rects — the font's
+        // bitmaps are a pixel shy and leave seams (broken vertical rules,
+        // disconnected blocks). Draw them procedurally in the fg colour; they go
+        // into rc.bg so any real glyph still layers on top and z-order holds.
+        if (CellRect rects[5]; int nfills = cell_fills(cp, rects)) {
             const float fcw = static_cast<float>(cw), fch = static_cast<float>(ch);
-            rc.bg.push_back(rect_inst(static_cast<float>(c * cw) + bf.x * fcw, ry + bf.y * fch,
-                                      bf.w * fcw, bf.h * fch, fgcol.r, fgcol.g, fgcol.b,
-                                      /*radius=*/0));
+            const float cx = static_cast<float>(c * cw);
+            for (int i = 0; i < nfills; ++i) {
+                const CellRect &b = rects[i];
+                rc.bg.push_back(rect_inst(cx + b.x * fcw, ry + b.y * fch, b.w * fcw, b.h * fch,
+                                          fgcol.r, fgcol.g, fgcol.b, /*radius=*/0));
+            }
             continue;
         }
 
