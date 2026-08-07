@@ -3,7 +3,9 @@
 #include "gvte/gfx/renderer.hpp"
 
 #include <cstdio>
+#include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <utility>
 #include <array>
 
@@ -99,6 +101,13 @@ const std::array<float, 256> &fr_table() {
 }
 inline float fr(std::uint8_t v) noexcept { return fr_table()[v]; }
 
+// Convert a float atlas coord in [0,1] to a normalized u16.
+inline std::uint16_t unorm16(float f) noexcept {
+    if (f < 0.0f) f = 0.0f;
+    if (f > 1.0f) f = 1.0f;
+    return static_cast<std::uint16_t>(f * 65535.0f + 0.5f);
+}
+
 } // namespace
 
 Result<Renderer> Renderer::create(FontAtlas &&atlas) {
@@ -114,6 +123,14 @@ Result<Renderer> Renderer::create(FontAtlas &&atlas) {
 }
 
 Renderer::~Renderer() {
+    for (auto *&f : fences_) {
+        if (f) { glDeleteSync(static_cast<GLsync>(f)); f = nullptr; }
+    }
+    if (inst_map_ && inst_vbo_) {
+        glBindBuffer(GL_ARRAY_BUFFER, inst_vbo_);
+        glUnmapBuffer(GL_ARRAY_BUFFER);
+        inst_map_ = nullptr;
+    }
     if (inst_vbo_) glDeleteBuffers(1, &inst_vbo_);
     if (quad_vbo_) glDeleteBuffers(1, &quad_vbo_);
     if (vao_) glDeleteVertexArrays(1, &vao_);
@@ -124,10 +141,23 @@ Renderer::Renderer(Renderer &&o) noexcept
       u_screen_{o.u_screen_}, u_atlas_{o.u_atlas_},
       vao_{std::exchange(o.vao_, 0)}, quad_vbo_{std::exchange(o.quad_vbo_, 0)},
       inst_vbo_{std::exchange(o.inst_vbo_, 0)}, inst_bytes_capacity_{o.inst_bytes_capacity_},
-      instances_{std::move(o.instances_)} {}
+      persistent_{o.persistent_}, inst_map_{std::exchange(o.inst_map_, nullptr)},
+      inst_region_bytes_{o.inst_region_bytes_}, ring_slot_{o.ring_slot_},
+      instances_{std::move(o.instances_)} {
+    for (int i = 0; i < kRing; ++i) fences_[i] = std::exchange(o.fences_[i], nullptr);
+    o.persistent_ = false;
+}
 
 Renderer &Renderer::operator=(Renderer &&o) noexcept {
     if (this != &o) {
+        for (auto *&f : fences_) {
+            if (f) { glDeleteSync(static_cast<GLsync>(f)); f = nullptr; }
+        }
+        if (inst_map_ && inst_vbo_) {
+            glBindBuffer(GL_ARRAY_BUFFER, inst_vbo_);
+            glUnmapBuffer(GL_ARRAY_BUFFER);
+            inst_map_ = nullptr;
+        }
         if (inst_vbo_) glDeleteBuffers(1, &inst_vbo_);
         if (quad_vbo_) glDeleteBuffers(1, &quad_vbo_);
         if (vao_) glDeleteVertexArrays(1, &vao_);
@@ -138,6 +168,11 @@ Renderer &Renderer::operator=(Renderer &&o) noexcept {
         quad_vbo_ = std::exchange(o.quad_vbo_, 0);
         inst_vbo_ = std::exchange(o.inst_vbo_, 0);
         inst_bytes_capacity_ = o.inst_bytes_capacity_;
+        persistent_ = std::exchange(o.persistent_, false);
+        inst_map_ = std::exchange(o.inst_map_, nullptr);
+        inst_region_bytes_ = o.inst_region_bytes_;
+        ring_slot_ = o.ring_slot_;
+        for (int i = 0; i < kRing; ++i) fences_[i] = std::exchange(o.fences_[i], nullptr);
         instances_ = std::move(o.instances_);
     }
     return *this;
@@ -147,6 +182,33 @@ Extent Renderer::cells_for(PixelSize px) const noexcept {
     const int cw = atlas_.cell_width();
     const int ch = atlas_.cell_height();
     return Extent{cw > 0 ? px.w / cw : 1, ch > 0 ? px.h / ch : 1};
+}
+
+void Renderer::setup_instance_attribs() {
+    const GLsizei stride = sizeof(Instance);
+    auto off = [](std::size_t n) { return reinterpret_cast<void *>(n); };
+    // Packed layout: rect 4xf32 @0, uv 4xu16(norm) @16, color 4xu8(norm) @24,
+    // is_glyph u8(norm) @28, radius u8(raw) @29.
+    // aRect (loc1)
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, stride, off(0));
+    glVertexAttribDivisor(1, 1);
+    // aUV (loc2) — u16 normalized -> [0,1]
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 4, GL_UNSIGNED_SHORT, GL_TRUE, stride, off(16));
+    glVertexAttribDivisor(2, 1);
+    // aColor (loc3) — 3 of the 4 packed u8, normalized -> [0,1]
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 3, GL_UNSIGNED_BYTE, GL_TRUE, stride, off(24));
+    glVertexAttribDivisor(3, 1);
+    // aIsGlyph (loc4) — u8 normalized (0/255 -> 0.0/1.0)
+    glEnableVertexAttribArray(4);
+    glVertexAttribPointer(4, 1, GL_UNSIGNED_BYTE, GL_TRUE, stride, off(28));
+    glVertexAttribDivisor(4, 1);
+    // aRadius (loc5) — u8 raw px value as float (unnormalized)
+    glEnableVertexAttribArray(5);
+    glVertexAttribPointer(5, 1, GL_UNSIGNED_BYTE, GL_FALSE, stride, off(29));
+    glVertexAttribDivisor(5, 1);
 }
 
 void Renderer::ensure_buffers() {
@@ -164,24 +226,32 @@ void Renderer::ensure_buffers() {
     glGenBuffers(1, &inst_vbo_);
     glBindBuffer(GL_ARRAY_BUFFER, inst_vbo_);
 
-    const GLsizei stride = sizeof(Instance);
-    auto off = [](std::size_t n) { return reinterpret_cast<void *>(n); };
-    // aRect (loc1), aUV (loc2), aColor (loc3), aIsGlyph (loc4), aRadius (loc5)
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, stride, off(0));
-    glVertexAttribDivisor(1, 1);
-    glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, stride, off(4 * sizeof(float)));
-    glVertexAttribDivisor(2, 1);
-    glEnableVertexAttribArray(3);
-    glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, stride, off(8 * sizeof(float)));
-    glVertexAttribDivisor(3, 1);
-    glEnableVertexAttribArray(4);
-    glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, stride, off(11 * sizeof(float)));
-    glVertexAttribDivisor(4, 1);
-    glEnableVertexAttribArray(5);
-    glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, stride, off(12 * sizeof(float)));
-    glVertexAttribDivisor(5, 1);
+    // Fastest streaming path: on GL 4.4+ (buffer_storage), allocate one large
+    // immutable, persistently+coherently mapped ring and write instances
+    // straight into GPU-visible memory — no glBufferSubData copy, no per-frame
+    // orphan+realloc. We fence each ring region so the CPU never scribbles over
+    // instances the GPU is still reading.
+    persistent_ = epoxy_gl_version() >= 44 || epoxy_has_gl_extension("GL_ARB_buffer_storage");
+    if (std::getenv("GVTE_NO_PERSISTENT")) persistent_ = false;
+    if (persistent_) {
+        // Worst case is ~2 instances/cell (bg + glyph); size a region to cover
+        // a 4K screen with slack so a frame never overflows one region.
+        inst_region_bytes_ = std::size_t{160000} * sizeof(Instance); // ~5 MiB/region
+        const std::size_t total = inst_region_bytes_ * kRing;
+        const GLbitfield flags =
+            GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
+        glBufferStorage(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(total), nullptr, flags);
+        inst_map_ = static_cast<unsigned char *>(
+            glMapBufferRange(GL_ARRAY_BUFFER, 0, static_cast<GLsizeiptr>(total), flags));
+        if (!inst_map_) {
+            // Mapping failed — fall back to the classic orphaning path.
+            persistent_ = false;
+        } else {
+            inst_bytes_capacity_ = total;
+        }
+    }
+
+    setup_instance_attribs();
 
     glBindVertexArray(0);
 }
@@ -192,18 +262,59 @@ void Renderer::flush(std::size_t count, PixelSize px) {
     glBindVertexArray(vao_);
     glBindBuffer(GL_ARRAY_BUFFER, inst_vbo_);
     const std::size_t bytes = count * sizeof(Instance);
-    if (bytes > inst_bytes_capacity_) {
-        // Grow (and reserve headroom so this is rare). Fresh storage — no old
-        // contents to preserve.
-        inst_bytes_capacity_ = bytes + bytes / 2;
-        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(inst_bytes_capacity_), nullptr,
-                     GL_STREAM_DRAW);
-    } else {
-        // Orphan the previous frame's storage so the driver hands us a fresh
-        // block instead of stalling until the last draw finishes reading it.
-        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(inst_bytes_capacity_), nullptr,
-                     GL_STREAM_DRAW);
+
+    if (persistent_ && bytes <= inst_region_bytes_) {
+        // Cycle to the next ring region. Wait on its fence (from kRing frames
+        // ago) so we never overwrite instances the GPU is still consuming, then
+        // memcpy straight into the coherent mapping — no glBufferSubData copy.
+        const int slot = ring_slot_;
+        ring_slot_ = (ring_slot_ + 1) % kRing;
+        if (auto *f = static_cast<GLsync>(fences_[slot])) {
+            glClientWaitSync(f, GL_SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED);
+            glDeleteSync(f);
+            fences_[slot] = nullptr;
+        }
+        const std::size_t base = static_cast<std::size_t>(slot) * inst_region_bytes_;
+        std::memcpy(inst_map_ + base, instances_.data(), bytes);
+
+        prog_.use();
+        glUniform2f(u_screen_, static_cast<float>(px.w), static_cast<float>(px.h));
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, atlas_.texture());
+        glUniform1i(u_atlas_, 0);
+
+        // Point the instanced attributes at this region's slice.
+        const GLuint first = static_cast<GLuint>(base / sizeof(Instance));
+        glDrawArraysInstancedBaseInstance(GL_TRIANGLE_STRIP, 0, 4,
+                                          static_cast<GLsizei>(count), first);
+        fences_[slot] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        glBindVertexArray(0);
+        return;
     }
+
+    // Classic orphaning path (GL 3.3). If we somehow get here with a persistent
+    // immutable buffer and an over-large frame, clamp to the region (can't
+    // realloc immutable storage) rather than issue an illegal glBufferData.
+    if (persistent_) {
+        count = inst_region_bytes_ / sizeof(Instance);
+        const std::size_t clamped = count * sizeof(Instance);
+        std::memcpy(inst_map_, instances_.data(), clamped);
+        prog_.use();
+        glUniform2f(u_screen_, static_cast<float>(px.w), static_cast<float>(px.h));
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, atlas_.texture());
+        glUniform1i(u_atlas_, 0);
+        glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, static_cast<GLsizei>(count));
+        glBindVertexArray(0);
+        return;
+    }
+
+    // Classic orphaning path (GL 3.3).
+    if (bytes > inst_bytes_capacity_) {
+        inst_bytes_capacity_ = bytes + bytes / 2;
+    }
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(inst_bytes_capacity_), nullptr,
+                 GL_STREAM_DRAW);
     glBufferSubData(GL_ARRAY_BUFFER, 0, static_cast<GLsizeiptr>(bytes), instances_.data());
 
     prog_.use();
@@ -246,9 +357,9 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on) {
         for (int c = 0; c < grid.cols; ++c) {
             const auto &cell = cells[static_cast<std::size_t>(c)];
             if (any_selection && screen.is_selected(abs_row, c)) {
-                instances_.push_back(Instance{static_cast<float>(c * cw), ry, static_cast<float>(cw),
-                                              static_cast<float>(ch), 0, 0, 0, 0, 0.26f, 0.33f,
-                                              0.44f, 0.0f, 0.0f});
+                instances_.push_back(rect_inst(static_cast<float>(c * cw), ry,
+                                               static_cast<float>(cw), static_cast<float>(ch),
+                                               66, 84, 112, /*radius=*/0));
                 continue;
             }
             const bool reverse = term::has(cell.pen.attr, term::Attr::Reverse);
@@ -258,9 +369,9 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on) {
             }
             const term::Color bg = reverse ? cell.pen.fg : cell.pen.bg;
             const Rgb col = palette_.resolve(bg, /*is_fg=*/reverse);
-            instances_.push_back(Instance{static_cast<float>(c * cw), ry, static_cast<float>(cw),
-                                          static_cast<float>(ch), 0, 0, 0, 0, fr(col.r), fr(col.g),
-                                          fr(col.b), 0.0f, 0.0f});
+            instances_.push_back(rect_inst(static_cast<float>(c * cw), ry, static_cast<float>(cw),
+                                           static_cast<float>(ch), col.r, col.g, col.b,
+                                           /*radius=*/0));
         }
     }
 
@@ -270,10 +381,10 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on) {
         cur.row.get() < grid.rows && cur.col.get() >= 0 && cur.col.get() < grid.cols;
     if (cursor_visible) {
         const Rgb cc = palette_.default_fg();
-        instances_.push_back(Instance{static_cast<float>(cur.col.get() * cw),
-                                      static_cast<float>(cur.row.get() * ch), static_cast<float>(cw),
-                                      static_cast<float>(ch), 0, 0, 0, 0, fr(cc.r), fr(cc.g),
-                                      fr(cc.b), 0.0f, 2.0f});
+        instances_.push_back(rect_inst(static_cast<float>(cur.col.get() * cw),
+                                       static_cast<float>(cur.row.get() * ch),
+                                       static_cast<float>(cw), static_cast<float>(ch),
+                                       cc.r, cc.g, cc.b, /*radius=*/2));
     }
 
     // Pass 3: glyphs.
@@ -299,8 +410,10 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on) {
             const float gx = static_cast<float>(c * cw + gi->bearing_x);
             const float gy = static_cast<float>(base_gy - gi->bearing_y);
             instances_.push_back(Instance{gx, gy, static_cast<float>(gi->width),
-                                          static_cast<float>(gi->height), gi->u0, gi->v0, gi->u1,
-                                          gi->v1, fr(col.r), fr(col.g), fr(col.b), 1.0f, 0.0f});
+                                          static_cast<float>(gi->height),
+                                          unorm16(gi->u0), unorm16(gi->v0), unorm16(gi->u1),
+                                          unorm16(gi->v1), col.r, col.g, col.b, 255,
+                                          /*is_glyph=*/1, 0, 0, 0});
         }
     }
 

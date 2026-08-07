@@ -514,13 +514,24 @@ Result<void> WaylandSurface::init_egl() {
         return fail("egl: no matching config");
     }
 
-    const EGLint ctx_attribs[] = {
+    // Prefer a 4.4 core context (enables persistent-mapped buffers for the
+    // fastest streaming path); fall back to 3.3 if the driver won't grant it.
+    const EGLint ctx44[] = {
+        EGL_CONTEXT_MAJOR_VERSION, 4,
+        EGL_CONTEXT_MINOR_VERSION, 4,
+        EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
+        EGL_NONE,
+    };
+    const EGLint ctx33[] = {
         EGL_CONTEXT_MAJOR_VERSION, 3,
         EGL_CONTEXT_MINOR_VERSION, 3,
         EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
         EGL_NONE,
     };
-    egl_context_ = eglCreateContext(egl_display_, egl_config_, EGL_NO_CONTEXT, ctx_attribs);
+    egl_context_ = eglCreateContext(egl_display_, egl_config_, EGL_NO_CONTEXT, ctx44);
+    if (egl_context_ == EGL_NO_CONTEXT) {
+        egl_context_ = eglCreateContext(egl_display_, egl_config_, EGL_NO_CONTEXT, ctx33);
+    }
     if (egl_context_ == EGL_NO_CONTEXT) {
         return fail("egl: eglCreateContext (GL 3.3 core) failed");
     }

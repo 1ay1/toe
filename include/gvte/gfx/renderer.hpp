@@ -39,13 +39,18 @@ public:
 
 private:
     // One instance: a colored (and optionally textured) quad in pixel space.
+    // Packed to 32 bytes so streaming a full screen moves half the bytes:
+    //   rect   16B  x,y,w,h in pixels (float — needs sub-pixel precision)
+    //   uv      8B  u0,v0,u1,v1 as normalized u16 (atlas coords in [0,1])
+    //   color   4B  r,g,b,_ as normalized u8
+    //   flags   4B  is_glyph (u8), radius-in-px (u8), 2B pad
     struct Instance {
-        float x, y, w, h;     // pixel rect
-        float u0, v0, u1, v1; // atlas UVs (bg quads use 0s)
-        float r, g, b;        // color
-        float is_glyph;       // 1.0 for textured glyph, 0.0 for solid rect
-        float radius;         // corner radius in px (rects only; 0 = sharp)
+        float x, y, w, h;                    // pixel rect
+        std::uint16_t u0, v0, u1, v1;        // atlas UVs, normalized u16
+        std::uint8_t r, g, b, a;             // color, normalized u8
+        std::uint8_t is_glyph, radius, pad0, pad1;
     };
+    static_assert(sizeof(Instance) == 32, "Instance must stay 32 bytes");
 
     explicit Renderer(FontAtlas &&atlas, Program &&prog)
         : atlas_{std::move(atlas)}, prog_{std::move(prog)} {}
@@ -63,6 +68,25 @@ private:
     std::uint32_t quad_vbo_{0};
     std::uint32_t inst_vbo_{0};
     std::size_t inst_bytes_capacity_{0};
+
+    // Persistent-mapped streaming ring (GL 4.4 / GL_ARB_buffer_storage). When
+    // available we write instances straight into GPU-visible memory with no
+    // glBufferSubData copy, cycling through kRing sub-regions and fencing each
+    // so the CPU never overwrites a region the GPU is still reading.
+    static constexpr int kRing = 3;
+    bool persistent_{false};
+    unsigned char *inst_map_{nullptr};      // base of the persistent mapping
+    std::size_t inst_region_bytes_{0};      // capacity of one ring region
+    int ring_slot_{0};
+    void *fences_[kRing]{};                  // GLsync per region (opaque here)
+    void setup_instance_attribs();
+
+    // Packed-instance builders (colors are raw bytes; the shader normalizes).
+    static Instance rect_inst(float x, float y, float w, float h,
+                              std::uint8_t r, std::uint8_t g, std::uint8_t b,
+                              std::uint8_t radius) noexcept {
+        return Instance{x, y, w, h, 0, 0, 0, 0, r, g, b, 255, 0, radius, 0, 0};
+    }
 
     std::vector<Instance> instances_{};
 };
