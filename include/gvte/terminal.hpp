@@ -1,0 +1,115 @@
+// SPDX-License-Identifier: LGPL-2.0-or-later
+//
+// gvte public API — a GPU-accelerated terminal, no GTK, no VTE.
+//
+// Design principle: illegal states are unrepresentable. A terminal's lifecycle
+// is a two-state machine — Running or Exited — encoded as a sum type, not a
+// boolean flag. Operations that only make sense on a live terminal (render,
+// resize, key input) live on the `Session` state and are simply *absent* from
+// the exited state, so calling them on a dead terminal is a compile error, not
+// a runtime check. The one transition, `poll()`, is the sole way to observe a
+// Running -> Exited change; you cannot fabricate the reverse.
+
+#ifndef GVTE_TERMINAL_HPP
+#define GVTE_TERMINAL_HPP
+
+#include <memory>
+#include <string>
+#include <string_view>
+#include <variant>
+#include <vector>
+
+#include "gvte/core/types.hpp"
+#include "gvte/input.hpp"
+
+namespace gvte {
+
+// --- configuration ---------------------------------------------------------
+struct Config {
+    std::string font_family = "monospace"; // empty -> system default monospace
+    int font_pixel_size = 18;
+    Rgb default_fg = rgb(220, 220, 220);
+    Rgb default_bg = rgb(23, 23, 28);
+    std::vector<std::string> command{}; // empty -> $SHELL, then /bin/sh
+};
+
+// --- lifecycle states ------------------------------------------------------
+class Session; // the Running state (defined below)
+
+// The Exited state. Terminal; carries the child's exit code. Deliberately has
+// no render/input methods — you cannot drive a dead terminal.
+struct Exited {
+    int code = 0;
+};
+
+// --- the live session ------------------------------------------------------
+// Obtained only by polling a Running terminal. While you hold a Session&, the
+// child is alive by construction. All the "only valid while running" verbs
+// live here.
+class Session {
+public:
+    Session(const Session &) = delete;
+    Session &operator=(const Session &) = delete;
+    Session(Session &&) noexcept;
+    Session &operator=(Session &&) noexcept;
+    ~Session();
+
+    void render(PixelSize px);
+    void resize(PixelSize px);
+    void send_key(const KeyEvent &ev);
+    void send_text(std::string_view utf8);
+
+    [[nodiscard]] Extent grid_size() const noexcept;
+    [[nodiscard]] Pos cursor() const noexcept;
+    [[nodiscard]] std::string window_title() const;
+    [[nodiscard]] int cell_width() const noexcept;
+    [[nodiscard]] int cell_height() const noexcept;
+
+private:
+    friend class Terminal;
+    struct Impl;
+    explicit Session(std::unique_ptr<Impl> impl);
+    std::unique_ptr<Impl> impl_;
+};
+
+// --- the terminal (the state machine) --------------------------------------
+// Holds exactly one of {Running, Exited}. You reach the live Session only by
+// matching the current state via poll(); there is no way to obtain a Session
+// for an exited terminal.
+class Terminal {
+public:
+    // Fallible construction (font load, GPU objects, PTY spawn). Requires a
+    // current GL context on the calling thread. On success the terminal starts
+    // in the Running state.
+    static Result<Terminal> create(const Config &cfg, PixelSize px);
+
+    Terminal(const Terminal &) = delete;
+    Terminal &operator=(const Terminal &) = delete;
+    Terminal(Terminal &&) noexcept = default;
+    Terminal &operator=(Terminal &&) noexcept = default;
+    ~Terminal() = default;
+
+    // The single transition. Drains child output into the grid; if the child
+    // has exited, transitions Running -> Exited. Returns a view of the state
+    // AFTER the transition:
+    //   - Session*  : still running (borrow it to render / send input)
+    //   - Exited*   : it exited (host should tear down)
+    // Exactly one pointer is non-null. Non-owning; valid until the next poll().
+    struct Poll {
+        Session *running = nullptr;
+        const Exited *exited = nullptr;
+    };
+    [[nodiscard]] Poll poll();
+
+    [[nodiscard]] bool running() const noexcept {
+        return std::holds_alternative<Session>(state_);
+    }
+
+private:
+    explicit Terminal(Session &&s) : state_{std::move(s)} {}
+    std::variant<Session, Exited> state_;
+};
+
+} // namespace gvte
+
+#endif // GVTE_TERMINAL_HPP
