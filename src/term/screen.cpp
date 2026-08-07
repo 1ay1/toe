@@ -319,7 +319,8 @@ void Screen::scroll_up(std::int32_t n) {
     const auto bot = cells_.begin() + static_cast<std::ptrdiff_t>(
                                           stride * static_cast<std::size_t>(scroll_bottom_ + 1));
     std::move(top + static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)), bot, top);
-    std::fill(bot - static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)), bot, Cell{});
+    std::fill(bot - static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)), bot,
+              blank_cell());
     stamp_all();
     touch();
 }
@@ -336,7 +337,8 @@ void Screen::scroll_down(std::int32_t n) {
                                           stride * static_cast<std::size_t>(scroll_bottom_ + 1));
     std::move_backward(top, bot - static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)),
                        bot);
-    std::fill(top, top + static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)), Cell{});
+    std::fill(top, top + static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)),
+              blank_cell());
     stamp_all();
     touch();
 }
@@ -353,7 +355,8 @@ void Screen::insert_lines(std::int32_t n) {
                                           stride * static_cast<std::size_t>(scroll_bottom_ + 1));
     std::move_backward(cur, bot - static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)),
                        bot);
-    std::fill(cur, cur + static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)), Cell{});
+    std::fill(cur, cur + static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)),
+              blank_cell());
     cursor_.col = Col{0};
     stamp_all();
     touch();
@@ -369,7 +372,8 @@ void Screen::delete_lines(std::int32_t n) {
     const auto bot = cells_.begin() + static_cast<std::ptrdiff_t>(
                                           stride * static_cast<std::size_t>(scroll_bottom_ + 1));
     std::move(cur + static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)), bot, cur);
-    std::fill(bot - static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)), bot, Cell{});
+    std::fill(bot - static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)), bot,
+              blank_cell());
     cursor_.col = Col{0};
     stamp_all();
     touch();
@@ -384,7 +388,7 @@ void Screen::insert_chars(std::int32_t n) {
     for (std::int32_t c = size_.cols - 1; c >= start + n; --c) {
         at(r, Col{c}) = at(r, Col{c - n});
     }
-    for (std::int32_t c = start; c < start + n; ++c) at(r, Col{c}) = Cell{};
+    for (std::int32_t c = start; c < start + n; ++c) at(r, Col{c}) = blank_cell();
     touch();
 }
 
@@ -394,7 +398,7 @@ void Screen::delete_chars(std::int32_t n) {
     n = std::clamp(n, 0, size_.cols - start);
     if (n == 0) return;
     for (std::int32_t c = start; c < size_.cols - n; ++c) at(r, Col{c}) = at(r, Col{c + n});
-    for (std::int32_t c = size_.cols - n; c < size_.cols; ++c) at(r, Col{c}) = Cell{};
+    for (std::int32_t c = size_.cols - n; c < size_.cols; ++c) at(r, Col{c}) = blank_cell();
     touch();
 }
 
@@ -402,7 +406,7 @@ void Screen::erase_chars(std::int32_t n) {
     const Row r = cursor_.row;
     const std::int32_t start = cursor_.col.get();
     n = std::clamp(n, 0, size_.cols - start);
-    for (std::int32_t c = start; c < start + n; ++c) at(r, Col{c}) = Cell{};
+    for (std::int32_t c = start; c < start + n; ++c) at(r, Col{c}) = blank_cell();
     touch();
 }
 
@@ -523,13 +527,14 @@ void Screen::erase_in_line(int mode) {
     const Row r = cursor_.row;
     switch (mode) {
     case 0: // cursor to end of line
-        for (std::int32_t c = cursor_.col.get(); c < size_.cols; ++c) at(r, Col{c}) = Cell{};
+        for (std::int32_t c = cursor_.col.get(); c < size_.cols; ++c) at(r, Col{c}) = blank_cell();
         break;
     case 1: // start of line to cursor
-        for (std::int32_t c = 0; c <= cursor_.col.get() && c < size_.cols; ++c) at(r, Col{c}) = Cell{};
+        for (std::int32_t c = 0; c <= cursor_.col.get() && c < size_.cols; ++c)
+            at(r, Col{c}) = blank_cell();
         break;
     case 2: // whole line
-        for (std::int32_t c = 0; c < size_.cols; ++c) at(r, Col{c}) = Cell{};
+        for (std::int32_t c = 0; c < size_.cols; ++c) at(r, Col{c}) = blank_cell();
         break;
     default: break;
     }
@@ -541,16 +546,16 @@ void Screen::erase_in_display(int mode) {
     case 0: // cursor to end of screen
         erase_in_line(0);
         for (std::int32_t rr = cursor_.row.get() + 1; rr < size_.rows; ++rr)
-            for (std::int32_t c = 0; c < size_.cols; ++c) at(Row{rr}, Col{c}) = Cell{};
+            for (std::int32_t c = 0; c < size_.cols; ++c) at(Row{rr}, Col{c}) = blank_cell();
         break;
     case 1: // start of screen to cursor
         for (std::int32_t rr = 0; rr < cursor_.row.get(); ++rr)
-            for (std::int32_t c = 0; c < size_.cols; ++c) at(Row{rr}, Col{c}) = Cell{};
+            for (std::int32_t c = 0; c < size_.cols; ++c) at(Row{rr}, Col{c}) = blank_cell();
         erase_in_line(1);
         break;
     case 2: // entire screen
     case 3:
-        std::fill(cells_.begin(), cells_.end(), Cell{});
+        std::fill(cells_.begin(), cells_.end(), blank_cell());
         stamp_all();
         break;
     default: break;

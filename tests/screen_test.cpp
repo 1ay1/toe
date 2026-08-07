@@ -403,6 +403,44 @@ int main() {
         expect(s.row(Row{1})[0].cp == 0x4e2d, "wide char wraps when it won't fit");
     }
 
+    // Background Color Erase (BCE): erase ops fill with the CURRENT background,
+    // not the default. This is how htop's meter bars / TUI colour fills work.
+    {
+        auto bg_idx = [](const term::Cell &c) -> int {
+            if (auto *ic = std::get_if<term::IndexedColor>(&c.pen.bg)) return ic->index;
+            return -1; // default or truecolor
+        };
+        // ECH: set bg to index 4, erase 5 chars, they must carry bg=4.
+        {
+            term::Screen s{Extent{20, 2}};
+            feed(s, "\x1b[44m\x1b[5X"); // SGR bg=blue(idx4), ECH 5
+            expect(bg_idx(s.row(Row{0})[0]) == 4 && bg_idx(s.row(Row{0})[4]) == 4,
+                   "ECH fills erased cells with current bg (BCE)");
+            expect(s.row(Row{0})[0].cp == U' ', "ECH-erased cell is blank");
+        }
+        // EL to end of line carries the bg.
+        {
+            term::Screen s{Extent{20, 2}};
+            feed(s, "\x1b[41mhi\x1b[0K"); // bg=red(idx1), 'hi', erase to EOL
+            expect(bg_idx(s.row(Row{0})[10]) == 1, "EL fills with current bg (BCE)");
+        }
+        // A default background after reset is NOT indexed (default), so a plain
+        // erase does not paint a stray colour.
+        {
+            term::Screen s{Extent{20, 2}};
+            feed(s, "\x1b[41m\x1b[0m\x1b[5X"); // set red then reset then erase
+            expect(bg_idx(s.row(Row{0})[0]) == -1,
+                   "erase after SGR reset uses default bg");
+        }
+        // Scroll-blank uses BCE too: fill bg, scroll the region up, the new
+        // bottom line inherits the bg.
+        {
+            term::Screen s{Extent{10, 4}};
+            feed(s, "\x1b[42m\x1b[4S"); // bg=green(idx2), scroll up 4 (whole screen)
+            expect(bg_idx(s.row(Row{3})[0]) == 2, "scroll-blank uses current bg (BCE)");
+        }
+    }
+
     if (failures == 0) {
         std::printf("all screen tests passed\n");
         return 0;

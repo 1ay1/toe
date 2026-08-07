@@ -178,6 +178,20 @@ private:
     void clamp_cursor() noexcept;
     void touch() noexcept { ++generation_; }
 
+    // Background Color Erase (BCE). Every erase/clear op (ECH, EL, ED, DCH,
+    // ICH gap, scroll-blank) fills with THIS, not a default cell: xterm-family
+    // terminals fill erased cells with the CURRENT background colour, which is
+    // how full-screen TUIs (htop meter bars, powerline fills, colour panes)
+    // paint solid coloured regions with a single erase. We keep the pen's bg
+    // and the reverse flag (a reversed blank shows the fg colour) but drop the
+    // fg colour and text-decoration attrs, which don't affect a space.
+    [[nodiscard]] Cell blank_cell() const noexcept {
+        Pen p;
+        p.bg = pen_.bg;
+        p.attr = pen_.attr & Attr::Reverse;
+        return Cell{U' ', p, 1};
+    }
+
     // --- per-row damage epochs (renderer cache fast-path) ------------------
     // Each live grid row carries a 64-bit epoch drawn from a monotonic global
     // sequence; a write to the row stamps it with a fresh value. The renderer
