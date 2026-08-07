@@ -14,6 +14,7 @@
 #define GVTE_PLATFORM_SURFACE_HPP
 
 #include <functional>
+#include <cstdint>
 #include <memory>
 #include <string_view>
 #include <variant>
@@ -40,7 +41,30 @@ struct TextEntered {
     std::string_view utf8;
 };
 
-using Event = std::variant<CloseRequested, Resized, KeyPressed, TextEntered>;
+// --- pointer events (in pixels, top-left origin) ---------------------------
+enum class MouseButton { left, middle, right };
+
+struct MouseDown {
+    MouseButton button;
+    std::int32_t x, y;   // pixels
+    int click_count;     // 1 = single, 2 = double, 3 = triple
+    Modifiers mods;
+};
+struct MouseUp {
+    MouseButton button;
+    std::int32_t x, y;
+    Modifiers mods;
+};
+struct MouseMove {
+    std::int32_t x, y;
+    bool button_down;    // true while a button is held (a drag)
+};
+struct MouseWheel {
+    std::int32_t dx, dy; // discrete steps; dy>0 = up
+};
+
+using Event = std::variant<CloseRequested, Resized, KeyPressed, TextEntered, MouseDown, MouseUp,
+                           MouseMove, MouseWheel>;
 
 // --- the abstract surface --------------------------------------------------
 class Surface {

@@ -68,6 +68,12 @@ private:
     Atom a_prop_ = 0; // property used for transfers ("GVTE_CLIP")
     std::string clipboard_owned_; // text we currently offer
 
+    // Pointer / click-count tracking.
+    bool button_down_ = false;
+    uint32_t last_click_time_ = 0;
+    int16_t last_click_x_ = -1, last_click_y_ = -1;
+    int click_count_ = 0;
+
     EGLDisplay egl_display_ = EGL_NO_DISPLAY;
     EGLContext egl_context_ = EGL_NO_CONTEXT;
     EGLSurface egl_surface_ = EGL_NO_SURFACE;
@@ -143,7 +149,8 @@ Result<void> X11Surface::init(std::string_view title, PixelSize initial) {
     swa.colormap = colormap;
     swa.background_pixel = 0;
     swa.border_pixel = 0;
-    swa.event_mask = KeyPressMask | StructureNotifyMask | ExposureMask;
+    swa.event_mask = KeyPressMask | StructureNotifyMask | ExposureMask | ButtonPressMask |
+                     ButtonReleaseMask | PointerMotionMask;
 
     Window win = XCreateWindow(display_, root, 0, 0, static_cast<unsigned>(size_.w),
                                static_cast<unsigned>(size_.h), 0, depth, InputOutput, visual,
@@ -399,6 +406,53 @@ void X11Surface::poll_events(const std::function<void(const Event &)> &sink) {
                 closed_ = true;
                 sink(Event{CloseRequested{}});
             }
+            break;
+        }
+        case XCB_BUTTON_PRESS: {
+            auto *b = reinterpret_cast<xcb_button_press_event_t *>(ev);
+            Modifiers mods;
+            mods.ctrl = (b->state & XCB_MOD_MASK_CONTROL) != 0;
+            mods.shift = (b->state & XCB_MOD_MASK_SHIFT) != 0;
+            mods.alt = (b->state & XCB_MOD_MASK_1) != 0;
+            if (b->detail == 4 || b->detail == 5) { // wheel up/down
+                sink(Event{MouseWheel{0, b->detail == 4 ? 1 : -1}});
+            } else {
+                // Click-count: same button, within 400ms and ~2px.
+                const int dx = b->event_x - last_click_x_;
+                const int dy = b->event_y - last_click_y_;
+                if (b->time - last_click_time_ < 400 && dx * dx + dy * dy <= 8) {
+                    click_count_ = click_count_ % 3 + 1;
+                } else {
+                    click_count_ = 1;
+                }
+                last_click_time_ = b->time;
+                last_click_x_ = b->event_x;
+                last_click_y_ = b->event_y;
+                button_down_ = true;
+                MouseButton btn = (b->detail == 3)   ? MouseButton::right
+                                  : (b->detail == 2) ? MouseButton::middle
+                                                     : MouseButton::left;
+                sink(Event{MouseDown{btn, b->event_x, b->event_y, click_count_, mods}});
+            }
+            break;
+        }
+        case XCB_BUTTON_RELEASE: {
+            auto *b = reinterpret_cast<xcb_button_release_event_t *>(ev);
+            if (b->detail != 4 && b->detail != 5) {
+                button_down_ = false;
+                Modifiers mods;
+                mods.ctrl = (b->state & XCB_MOD_MASK_CONTROL) != 0;
+                mods.shift = (b->state & XCB_MOD_MASK_SHIFT) != 0;
+                MouseButton btn = (b->detail == 3)   ? MouseButton::right
+                                  : (b->detail == 2) ? MouseButton::middle
+                                                     : MouseButton::left;
+                sink(Event{MouseUp{btn, b->event_x, b->event_y, mods}});
+            }
+            break;
+        }
+        case XCB_MOTION_NOTIFY: {
+            auto *m = reinterpret_cast<xcb_motion_notify_event_t *>(ev);
+            sink(Event{MouseMove{m->event_x, m->event_y, button_down_}});
             break;
         }
         case XCB_SELECTION_REQUEST: {

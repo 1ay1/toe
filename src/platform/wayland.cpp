@@ -91,6 +91,21 @@ public:
     static void source_dnd_finished(void *, wl_data_source *) {}
     static void source_action(void *, wl_data_source *, uint32_t) {}
 
+    // pointer callbacks.
+    static void ptr_enter(void *data, wl_pointer *, uint32_t serial, wl_surface *, wl_fixed_t sx,
+                          wl_fixed_t sy);
+    static void ptr_leave(void *, wl_pointer *, uint32_t, wl_surface *) {}
+    static void ptr_motion(void *data, wl_pointer *, uint32_t time, wl_fixed_t sx, wl_fixed_t sy);
+    static void ptr_button(void *data, wl_pointer *, uint32_t serial, uint32_t time,
+                           uint32_t button, uint32_t state);
+    static void ptr_axis(void *data, wl_pointer *, uint32_t time, uint32_t axis, wl_fixed_t value);
+    static void ptr_frame(void *, wl_pointer *) {}
+    static void ptr_axis_source(void *, wl_pointer *, uint32_t) {}
+    static void ptr_axis_stop(void *, wl_pointer *, uint32_t, uint32_t) {}
+    static void ptr_axis_discrete(void *, wl_pointer *, uint32_t, int32_t) {}
+    static void ptr_axis_value120(void *, wl_pointer *, uint32_t, int32_t) {}
+    static void ptr_axis_relative_direction(void *, wl_pointer *, uint32_t, uint32_t) {}
+
 private:
     WaylandSurface() = default;
     Result<void> init(std::string_view title, PixelSize initial);
@@ -103,6 +118,7 @@ private:
     xdg_wm_base *wm_base_ = nullptr;
     wl_seat *seat_ = nullptr;
     wl_keyboard *keyboard_ = nullptr;
+    wl_pointer *pointer_ = nullptr;
     wl_surface *surface_ = nullptr;
     xdg_surface *xdg_surface_ = nullptr;
     xdg_toplevel *toplevel_ = nullptr;
@@ -115,6 +131,13 @@ private:
     wl_data_offer *selection_offer_ = nullptr; // current incoming selection (paste)
     std::string clipboard_owned_;             // text we currently offer
     uint32_t last_serial_ = 0;                // most recent input event serial
+
+    // Pointer state / click-count tracking.
+    std::int32_t ptr_x_ = 0, ptr_y_ = 0;
+    bool ptr_down_ = false;
+    uint32_t last_click_time_ = 0;
+    std::int32_t last_click_x_ = -1, last_click_y_ = -1;
+    int click_count_ = 0;
 
     // EGL.
     EGLDisplay egl_display_ = EGL_NO_DISPLAY;
@@ -165,6 +188,14 @@ const wl_data_source_listener kDataSourceListener = {
     &WaylandSurface::source_target,     &WaylandSurface::source_send,
     &WaylandSurface::source_cancelled,  &WaylandSurface::source_dnd_drop,
     &WaylandSurface::source_dnd_finished, &WaylandSurface::source_action,
+};
+const wl_pointer_listener kPointerListener = {
+    &WaylandSurface::ptr_enter,        &WaylandSurface::ptr_leave,
+    &WaylandSurface::ptr_motion,       &WaylandSurface::ptr_button,
+    &WaylandSurface::ptr_axis,         &WaylandSurface::ptr_frame,
+    &WaylandSurface::ptr_axis_source,  &WaylandSurface::ptr_axis_stop,
+    &WaylandSurface::ptr_axis_discrete, &WaylandSurface::ptr_axis_value120,
+    &WaylandSurface::ptr_axis_relative_direction,
 };
 
 // --- registry --------------------------------------------------------------
@@ -227,6 +258,14 @@ void WaylandSurface::seat_capabilities(void *data, wl_seat *seat, uint32_t caps)
     } else if (!has_kb && self->keyboard_) {
         wl_keyboard_destroy(self->keyboard_);
         self->keyboard_ = nullptr;
+    }
+    const bool has_ptr = (caps & WL_SEAT_CAPABILITY_POINTER) != 0;
+    if (has_ptr && !self->pointer_) {
+        self->pointer_ = wl_seat_get_pointer(seat);
+        wl_pointer_add_listener(self->pointer_, &kPointerListener, self);
+    } else if (!has_ptr && self->pointer_) {
+        wl_pointer_destroy(self->pointer_);
+        self->pointer_ = nullptr;
     }
 }
 
@@ -440,6 +479,7 @@ WaylandSurface::~WaylandSurface() {
     if (xkb_keymap_) xkb_keymap_unref(xkb_keymap_);
     if (xkb_ctx_) xkb_context_unref(xkb_ctx_);
     if (keyboard_) wl_keyboard_destroy(keyboard_);
+    if (pointer_) wl_pointer_destroy(pointer_);
     if (toplevel_) xdg_toplevel_destroy(toplevel_);
     if (xdg_surface_) xdg_surface_destroy(xdg_surface_);
     if (surface_) wl_surface_destroy(surface_);
@@ -542,6 +582,64 @@ std::string WaylandSurface::get_clipboard() {
     }
     ::close(fds[0]);
     return out;
+}
+
+// --- pointer ---------------------------------------------------------------
+void WaylandSurface::ptr_enter(void *data, wl_pointer *, uint32_t serial, wl_surface *,
+                               wl_fixed_t sx, wl_fixed_t sy) {
+    auto *self = static_cast<WaylandSurface *>(data);
+    self->last_serial_ = serial;
+    self->ptr_x_ = wl_fixed_to_int(sx);
+    self->ptr_y_ = wl_fixed_to_int(sy);
+}
+
+void WaylandSurface::ptr_motion(void *data, wl_pointer *, uint32_t, wl_fixed_t sx, wl_fixed_t sy) {
+    auto *self = static_cast<WaylandSurface *>(data);
+    self->ptr_x_ = wl_fixed_to_int(sx);
+    self->ptr_y_ = wl_fixed_to_int(sy);
+    if (self->sink_) {
+        (*self->sink_)(Event{MouseMove{self->ptr_x_, self->ptr_y_, self->ptr_down_}});
+    }
+}
+
+void WaylandSurface::ptr_button(void *data, wl_pointer *, uint32_t serial, uint32_t time,
+                                uint32_t button, uint32_t state) {
+    auto *self = static_cast<WaylandSurface *>(data);
+    self->last_serial_ = serial;
+    if (!self->sink_) return;
+
+    // Linux input event codes.
+    MouseButton btn = MouseButton::left;
+    if (button == 0x111) btn = MouseButton::right;
+    else if (button == 0x112) btn = MouseButton::middle;
+
+    if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
+        const std::int32_t dx = self->ptr_x_ - self->last_click_x_;
+        const std::int32_t dy = self->ptr_y_ - self->last_click_y_;
+        if (time - self->last_click_time_ < 400 && dx * dx + dy * dy <= 8) {
+            self->click_count_ = self->click_count_ % 3 + 1;
+        } else {
+            self->click_count_ = 1;
+        }
+        self->last_click_time_ = time;
+        self->last_click_x_ = self->ptr_x_;
+        self->last_click_y_ = self->ptr_y_;
+        self->ptr_down_ = true;
+        (*self->sink_)(
+            Event{MouseDown{btn, self->ptr_x_, self->ptr_y_, self->click_count_, Modifiers{}}});
+    } else {
+        self->ptr_down_ = false;
+        (*self->sink_)(Event{MouseUp{btn, self->ptr_x_, self->ptr_y_, Modifiers{}}});
+    }
+}
+
+void WaylandSurface::ptr_axis(void *data, wl_pointer *, uint32_t, uint32_t axis,
+                              wl_fixed_t value) {
+    auto *self = static_cast<WaylandSurface *>(data);
+    if (!self->sink_ || axis != WL_POINTER_AXIS_VERTICAL_SCROLL) return;
+    // Positive axis value scrolls down; emit discrete steps.
+    const int steps = wl_fixed_to_int(value) > 0 ? -1 : 1;
+    (*self->sink_)(Event{MouseWheel{0, steps}});
 }
 
 } // namespace
