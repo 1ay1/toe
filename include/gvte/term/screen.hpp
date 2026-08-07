@@ -11,8 +11,10 @@
 
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -102,6 +104,11 @@ public:
     // The single reduction step: fold one parser Action into the screen.
     void apply(const vt::Action &action);
 
+    // Install a channel the screen uses to answer terminal queries (DA1, DSR,
+    // …): the callback writes the reply bytes back to the child via the PTY.
+    // Query handlers are no-ops until this is set.
+    void set_reply(std::function<void(std::string_view)> reply) { reply_ = std::move(reply); }
+
     // Monotonic damage counter — bumped on any mutation so the renderer can
     // skip re-uploading an unchanged grid.
     [[nodiscard]] std::uint64_t generation() const noexcept { return generation_; }
@@ -154,6 +161,12 @@ private:
     Pen pen_{};
     bool wrap_pending_{false};   // DEC-style deferred wrap at right margin
     std::uint64_t generation_{1};
+
+    // Reply channel for query sequences (DA/DSR/…). Empty until set_reply().
+    std::function<void(std::string_view)> reply_{};
+    void reply(std::string_view bytes) const {
+        if (reply_) reply_(bytes);
+    }
 
     // Scroll region (DECSTBM), 0-based inclusive. Defaults to the whole grid.
     std::int32_t scroll_top_{0};

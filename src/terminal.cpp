@@ -7,6 +7,8 @@
 #include "gvte/terminal.hpp"
 
 #include <array>
+#include <cstdio>
+#include <cstdlib>
 #include <optional>
 #include <algorithm>
 #include <cstdlib>
@@ -306,6 +308,10 @@ Result<Terminal> Terminal::create(const Config &cfg, PixelSize px) {
 
     auto impl = std::make_unique<Session::Impl>(cfg, grid, std::move(*renderer), std::move(*pty),
                                                 cw, ch);
+    // Wire the screen's query-reply channel to the child PTY, so queries like
+    // DA1/DSR (which fish/vim send at startup and block on) get answered.
+    Session::Impl *raw = impl.get();
+    impl->screen.set_reply([raw](std::string_view bytes) { (void)raw->pty.write(bytes); });
     return Terminal{Session{std::move(impl)}};
 }
 

@@ -519,6 +519,34 @@ void Screen::csi(const vt::CsiDispatch &d) {
             for (int m : p) set_private_mode(m, false);
         }
         break;
+    case 'c': // Device Attributes
+        if (d.private_marker && d.marker == '>') {
+            // DA2 (secondary): report a VT220-ish terminal, version, keyboard.
+            reply("\x1b[>1;95;0c");
+        } else if (!d.private_marker || d.marker == '?') {
+            // DA1 (primary). fish sends this last as a fence and waits 10s for
+            // the reply; the response must start with '?' and end with 'c'.
+            // \e[?62;...c advertises a VT220 with 132-col, colour, and
+            // selective-erase support (features we actually implement).
+            reply("\x1b[?62;1;6;22c");
+        }
+        break;
+    case 'n': // Device Status Report
+        if (!d.private_marker) {
+            const int req = param_raw(p, 0, 0);
+            if (req == 5) {
+                reply("\x1b[0n"); // terminal OK
+            } else if (req == 6) {
+                // CPR: cursor position, 1-based row;col.
+                std::string r = "\x1b[";
+                r += std::to_string(cursor_.row.get() + 1);
+                r += ';';
+                r += std::to_string(cursor_.col.get() + 1);
+                r += 'R';
+                reply(r);
+            }
+        }
+        break;
     case 'm': apply_sgr(p); break;                          // SGR
     default: break; // unhandled — silently ignore for now
     }

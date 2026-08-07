@@ -311,6 +311,29 @@ int main() {
         expect(glyph_at(s, 0, 5) == U'X', "TAB honors custom stop at col 5");
     }
 
+    // Device queries must be answered (fish blocks 10s on an unanswered DA1).
+    {
+        term::Screen s{Extent{80, 24}};
+        std::string replies;
+        s.set_reply([&](std::string_view b) { replies += std::string{b}; });
+
+        feed(s, "\x1b[c"); // DA1
+        expect(replies == "\x1b[?62;1;6;22c", "DA1 primary device attributes reply");
+        replies.clear();
+
+        feed(s, "\x1b[>c"); // DA2
+        expect(replies == "\x1b[>1;95;0c", "DA2 secondary device attributes reply");
+        replies.clear();
+
+        feed(s, "\x1b[5n"); // DSR status
+        expect(replies == "\x1b[0n", "DSR status reply (terminal OK)");
+        replies.clear();
+
+        // CPR: move cursor to row 3 col 7 (1-based CUP), then request position.
+        feed(s, "\x1b[3;7H\x1b[6n");
+        expect(replies == "\x1b[3;7R", "CPR cursor position reply (1-based)");
+    }
+
     if (failures == 0) {
         std::printf("all screen tests passed\n");
         return 0;
