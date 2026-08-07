@@ -56,6 +56,13 @@ public:
     // Update the window/toplevel title (from OSC 0/2).
     virtual void set_title(std::string_view title) = 0;
 
+    // --- clipboard (CLIPBOARD selection) -----------------------------------
+    // Offer `utf8` as the clipboard contents (copy).
+    virtual void set_clipboard(std::string_view utf8) = 0;
+    // Request the clipboard contents (paste). Returns empty if unavailable.
+    // Synchronous best-effort: on Wayland/X11 this round-trips the server.
+    [[nodiscard]] virtual std::string get_clipboard() = 0;
+
     // Drain pending native events, invoking `sink` for each translated Event.
     // Non-blocking: returns after dispatching whatever is queued.
     virtual void poll_events(const std::function<void(const Event &)> &sink) = 0;

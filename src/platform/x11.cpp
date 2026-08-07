@@ -8,7 +8,7 @@
 
 #include "gvte/platform/surface.hpp"
 
-#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 
@@ -18,9 +18,12 @@
 #include <X11/Xlib.h>
 #include <X11/Xlib-xcb.h>
 #include <X11/Xutil.h>
+#include <X11/Xatom.h>
 #include <xcb/xcb.h>
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-x11.h>
+
+#include <unistd.h>
 
 namespace gvte::platform {
 
@@ -40,6 +43,8 @@ public:
             XFlush(display_);
         }
     }
+    void set_clipboard(std::string_view utf8) override;
+    [[nodiscard]] std::string get_clipboard() override;
     void poll_events(const std::function<void(const Event &)> &sink) override;
     [[nodiscard]] bool should_close() const override { return closed_; }
 
@@ -55,6 +60,13 @@ private:
     xcb_connection_t *xcb_ = nullptr;
     xcb_window_t window_ = 0;
     xcb_atom_t wm_delete_ = 0;
+
+    // Clipboard (CLIPBOARD selection) state.
+    Atom a_clipboard_ = 0;
+    Atom a_utf8_ = 0;
+    Atom a_targets_ = 0;
+    Atom a_prop_ = 0; // property used for transfers ("GVTE_CLIP")
+    std::string clipboard_owned_; // text we currently offer
 
     EGLDisplay egl_display_ = EGL_NO_DISPLAY;
     EGLContext egl_context_ = EGL_NO_CONTEXT;
@@ -144,6 +156,12 @@ Result<void> X11Surface::init(std::string_view title, PixelSize initial) {
     wm_delete_ = intern_atom(xcb_, "WM_DELETE_WINDOW");
     Atom del = static_cast<Atom>(wm_delete_);
     XSetWMProtocols(display_, win, &del, 1);
+
+    // Clipboard atoms.
+    a_clipboard_ = XInternAtom(display_, "CLIPBOARD", False);
+    a_utf8_ = XInternAtom(display_, "UTF8_STRING", False);
+    a_targets_ = XInternAtom(display_, "TARGETS", False);
+    a_prop_ = XInternAtom(display_, "GVTE_CLIP", False);
 
     XMapWindow(display_, win);
     XSync(display_, False);
@@ -300,6 +318,63 @@ void X11Surface::handle_key(xcb_keycode_t code, const std::function<void(const E
     }
 }
 
+void X11Surface::set_clipboard(std::string_view utf8) {
+    clipboard_owned_ = std::string{utf8};
+    // Claim ownership of the CLIPBOARD selection. Subsequent SelectionRequest
+    // events (handled in poll_events) will serve `clipboard_owned_`.
+    XSetSelectionOwner(display_, a_clipboard_, static_cast<Window>(window_), CurrentTime);
+    XFlush(display_);
+}
+
+std::string X11Surface::get_clipboard() {
+    const Window owner = XGetSelectionOwner(display_, a_clipboard_);
+    if (owner == None) {
+        return {};
+    }
+    if (owner == static_cast<Window>(window_)) {
+        return clipboard_owned_; // we own it; short-circuit
+    }
+    XConvertSelection(display_, a_clipboard_, a_utf8_, a_prop_, static_cast<Window>(window_),
+                      CurrentTime);
+    XFlush(display_);
+
+    // Wait for the SelectionNotify through XCB (which owns the event queue).
+    // Non-selection events seen during this brief window are dropped — paste is
+    // a rare, explicit operation.
+    for (int spins = 0; spins < 200; ++spins) {
+        xcb_generic_event_t *ev = nullptr;
+        while ((ev = xcb_poll_for_event(xcb_)) != nullptr) {
+            const uint8_t type = static_cast<uint8_t>(ev->response_type & 0x7f);
+            if (type == XCB_SELECTION_NOTIFY) {
+                auto *sn = reinterpret_cast<xcb_selection_notify_event_t *>(ev);
+                const xcb_atom_t prop = sn->property;
+                free(ev);
+                if (prop == XCB_ATOM_NONE) {
+                    return {};
+                }
+                Atom actual_type = 0;
+                int actual_format = 0;
+                unsigned long nitems = 0, bytes_after = 0;
+                unsigned char *data = nullptr;
+                // long_length is in 32-bit units; 0x1fffffff covers any sane
+                // clipboard payload without overflowing the server's math.
+                XGetWindowProperty(display_, static_cast<Window>(window_), a_prop_, 0, 0x1fffffff,
+                                   True, AnyPropertyType, &actual_type, &actual_format, &nitems,
+                                   &bytes_after, &data);
+                std::string out;
+                if (data) {
+                    out.assign(reinterpret_cast<char *>(data), nitems);
+                    XFree(data);
+                }
+                return out;
+            }
+            free(ev);
+        }
+        usleep(1000);
+    }
+    return {};
+}
+
 void X11Surface::poll_events(const std::function<void(const Event &)> &sink) {
     xcb_generic_event_t *ev = nullptr;
     while ((ev = xcb_poll_for_event(xcb_)) != nullptr) {
@@ -324,6 +399,32 @@ void X11Surface::poll_events(const std::function<void(const Event &)> &sink) {
                 closed_ = true;
                 sink(Event{CloseRequested{}});
             }
+            break;
+        }
+        case XCB_SELECTION_REQUEST: {
+            // Another client is pasting from our CLIPBOARD: serve the text.
+            auto *r = reinterpret_cast<xcb_selection_request_event_t *>(ev);
+            XSelectionEvent notify{};
+            notify.type = SelectionNotify;
+            notify.display = display_;
+            notify.requestor = r->requestor;
+            notify.selection = r->selection;
+            notify.target = r->target;
+            notify.time = r->time;
+            notify.property = None;
+            if (r->target == a_utf8_ || r->target == XA_STRING) {
+                XChangeProperty(display_, r->requestor, r->property, r->target, 8, PropModeReplace,
+                                reinterpret_cast<const unsigned char *>(clipboard_owned_.data()),
+                                static_cast<int>(clipboard_owned_.size()));
+                notify.property = r->property;
+            } else if (r->target == a_targets_) {
+                Atom targets[] = {a_targets_, a_utf8_, XA_STRING};
+                XChangeProperty(display_, r->requestor, r->property, XA_ATOM, 32, PropModeReplace,
+                                reinterpret_cast<const unsigned char *>(targets), 3);
+                notify.property = r->property;
+            }
+            XSendEvent(display_, r->requestor, False, 0, reinterpret_cast<XEvent *>(&notify));
+            XFlush(display_);
             break;
         }
         default:

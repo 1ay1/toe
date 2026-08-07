@@ -8,8 +8,11 @@
 #include "gvte/platform/surface.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstring>
 #include <string>
+
+#include <fcntl.h>
 
 #include <wayland-client.h>
 #include <wayland-egl.h>
@@ -42,6 +45,8 @@ public:
             xdg_toplevel_set_title(toplevel_, std::string{title}.c_str());
         }
     }
+    void set_clipboard(std::string_view utf8) override;
+    [[nodiscard]] std::string get_clipboard() override;
     void poll_events(const std::function<void(const Event &)> &sink) override;
     [[nodiscard]] bool should_close() const override { return closed_; }
 
@@ -68,6 +73,24 @@ public:
                              uint32_t lat, uint32_t locked, uint32_t group);
     static void kb_repeat_info(void *, wl_keyboard *, int32_t, int32_t) {}
 
+    // data-device (clipboard) callbacks.
+    static void dd_data_offer(void *data, wl_data_device *, wl_data_offer *offer);
+    static void dd_selection(void *data, wl_data_device *, wl_data_offer *offer);
+    static void dd_enter(void *, wl_data_device *, uint32_t, wl_surface *, wl_fixed_t, wl_fixed_t,
+                         wl_data_offer *) {}
+    static void dd_leave(void *, wl_data_device *) {}
+    static void dd_motion(void *, wl_data_device *, uint32_t, wl_fixed_t, wl_fixed_t) {}
+    static void dd_drop(void *, wl_data_device *) {}
+    static void offer_mime(void *, wl_data_offer *, const char *) {}
+    static void offer_source_actions(void *, wl_data_offer *, uint32_t) {}
+    static void offer_action(void *, wl_data_offer *, uint32_t) {}
+    static void source_target(void *, wl_data_source *, const char *) {}
+    static void source_send(void *data, wl_data_source *, const char *mime, int32_t fd);
+    static void source_cancelled(void *data, wl_data_source *source);
+    static void source_dnd_drop(void *, wl_data_source *) {}
+    static void source_dnd_finished(void *, wl_data_source *) {}
+    static void source_action(void *, wl_data_source *, uint32_t) {}
+
 private:
     WaylandSurface() = default;
     Result<void> init(std::string_view title, PixelSize initial);
@@ -84,6 +107,14 @@ private:
     xdg_surface *xdg_surface_ = nullptr;
     xdg_toplevel *toplevel_ = nullptr;
     wl_egl_window *egl_window_ = nullptr;
+
+    // Clipboard via wl_data_device.
+    wl_data_device_manager *data_mgr_ = nullptr;
+    wl_data_device *data_device_ = nullptr;
+    wl_data_source *data_source_ = nullptr;   // our outgoing offer (copy)
+    wl_data_offer *selection_offer_ = nullptr; // current incoming selection (paste)
+    std::string clipboard_owned_;             // text we currently offer
+    uint32_t last_serial_ = 0;                // most recent input event serial
 
     // EGL.
     EGLDisplay egl_display_ = EGL_NO_DISPLAY;
@@ -123,6 +154,18 @@ const wl_keyboard_listener kKeyboardListener = {
     &WaylandSurface::kb_keymap,   &WaylandSurface::kb_enter,      &WaylandSurface::kb_leave,
     &WaylandSurface::kb_key,      &WaylandSurface::kb_modifiers,  &WaylandSurface::kb_repeat_info,
 };
+const wl_data_device_listener kDataDeviceListener = {
+    &WaylandSurface::dd_data_offer, &WaylandSurface::dd_enter,     &WaylandSurface::dd_leave,
+    &WaylandSurface::dd_motion,     &WaylandSurface::dd_drop,      &WaylandSurface::dd_selection,
+};
+const wl_data_offer_listener kDataOfferListener = {
+    &WaylandSurface::offer_mime, &WaylandSurface::offer_source_actions, &WaylandSurface::offer_action,
+};
+const wl_data_source_listener kDataSourceListener = {
+    &WaylandSurface::source_target,     &WaylandSurface::source_send,
+    &WaylandSurface::source_cancelled,  &WaylandSurface::source_dnd_drop,
+    &WaylandSurface::source_dnd_finished, &WaylandSurface::source_action,
+};
 
 // --- registry --------------------------------------------------------------
 void WaylandSurface::registry_global(void *data, wl_registry *reg, uint32_t name,
@@ -139,6 +182,9 @@ void WaylandSurface::registry_global(void *data, wl_registry *reg, uint32_t name
         self->seat_ = static_cast<wl_seat *>(
             wl_registry_bind(reg, name, &wl_seat_interface, std::min(version, 5u)));
         wl_seat_add_listener(self->seat_, &kSeatListener, self);
+    } else if (std::strcmp(iface, wl_data_device_manager_interface.name) == 0) {
+        self->data_mgr_ = static_cast<wl_data_device_manager *>(
+            wl_registry_bind(reg, name, &wl_data_device_manager_interface, std::min(version, 3u)));
     }
 }
 
@@ -215,9 +261,10 @@ void WaylandSurface::kb_modifiers(void *data, wl_keyboard *, uint32_t, uint32_t 
     }
 }
 
-void WaylandSurface::kb_key(void *data, wl_keyboard *, uint32_t, uint32_t, uint32_t key,
+void WaylandSurface::kb_key(void *data, wl_keyboard *, uint32_t serial, uint32_t, uint32_t key,
                             uint32_t state) {
     auto *self = static_cast<WaylandSurface *>(data);
+    self->last_serial_ = serial; // needed for wl_data_device.set_selection
     if (state != WL_KEYBOARD_KEY_STATE_PRESSED || !self->xkb_state_ || !self->sink_) {
         return;
     }
@@ -303,6 +350,12 @@ Result<void> WaylandSurface::init(std::string_view title, PixelSize initial) {
         return fail("wayland: missing wl_compositor or xdg_wm_base");
     }
 
+    // Clipboard: bind a data device to the seat if the manager is present.
+    if (data_mgr_ && seat_) {
+        data_device_ = wl_data_device_manager_get_data_device(data_mgr_, seat_);
+        wl_data_device_add_listener(data_device_, &kDataDeviceListener, this);
+    }
+
     surface_ = wl_compositor_create_surface(compositor_);
     xdg_surface_ = xdg_wm_base_get_xdg_surface(wm_base_, surface_);
     xdg_surface_add_listener(xdg_surface_, &kXdgSurfaceListener, this);
@@ -379,6 +432,10 @@ WaylandSurface::~WaylandSurface() {
         eglTerminate(egl_display_);
     }
     if (egl_window_) wl_egl_window_destroy(egl_window_);
+    if (data_source_) wl_data_source_destroy(data_source_);
+    if (selection_offer_) wl_data_offer_destroy(selection_offer_);
+    if (data_device_) wl_data_device_destroy(data_device_);
+    if (data_mgr_) wl_data_device_manager_destroy(data_mgr_);
     if (xkb_state_) xkb_state_unref(xkb_state_);
     if (xkb_keymap_) xkb_keymap_unref(xkb_keymap_);
     if (xkb_ctx_) xkb_context_unref(xkb_ctx_);
@@ -404,6 +461,87 @@ void WaylandSurface::poll_events(const std::function<void(const Event &)> &sink)
     wl_display_dispatch_pending(display_);
     wl_display_flush(display_);
     sink_ = nullptr;
+}
+
+// --- clipboard: incoming selection (paste) ---------------------------------
+void WaylandSurface::dd_data_offer(void *, wl_data_device *, wl_data_offer *offer) {
+    // A new offer is being introduced; listen for its mime types.
+    wl_data_offer_add_listener(offer, &kDataOfferListener, nullptr);
+}
+
+void WaylandSurface::dd_selection(void *data, wl_data_device *, wl_data_offer *offer) {
+    auto *self = static_cast<WaylandSurface *>(data);
+    if (self->selection_offer_ && self->selection_offer_ != offer) {
+        wl_data_offer_destroy(self->selection_offer_);
+    }
+    self->selection_offer_ = offer; // may be null (selection cleared)
+}
+
+// --- clipboard: outgoing source (copy) -------------------------------------
+void WaylandSurface::source_send(void *data, wl_data_source *, const char *, int32_t fd) {
+    auto *self = static_cast<WaylandSurface *>(data);
+    const std::string &s = self->clipboard_owned_;
+    size_t off = 0;
+    while (off < s.size()) {
+        const ssize_t w = ::write(fd, s.data() + off, s.size() - off);
+        if (w <= 0) break;
+        off += static_cast<size_t>(w);
+    }
+    ::close(fd);
+}
+
+void WaylandSurface::source_cancelled(void *data, wl_data_source *source) {
+    auto *self = static_cast<WaylandSurface *>(data);
+    wl_data_source_destroy(source);
+    if (self->data_source_ == source) self->data_source_ = nullptr;
+}
+
+void WaylandSurface::set_clipboard(std::string_view utf8) {
+    if (!data_device_ || !data_mgr_) return;
+    clipboard_owned_ = std::string{utf8};
+    if (data_source_) {
+        wl_data_source_destroy(data_source_);
+        data_source_ = nullptr;
+    }
+    data_source_ = wl_data_device_manager_create_data_source(data_mgr_);
+    wl_data_source_add_listener(data_source_, &kDataSourceListener, this);
+    wl_data_source_offer(data_source_, "text/plain;charset=utf-8");
+    wl_data_source_offer(data_source_, "text/plain");
+    wl_data_device_set_selection(data_device_, data_source_, last_serial_);
+    wl_display_flush(display_);
+}
+
+std::string WaylandSurface::get_clipboard() {
+    // Ensure any pending selection announcement has been processed so
+    // selection_offer_ reflects the current clipboard owner.
+    wl_display_roundtrip(display_);
+    if (!selection_offer_) return {};
+    int fds[2];
+    if (::pipe(fds) != 0) return {};
+    ::fcntl(fds[0], F_SETFL, O_NONBLOCK);
+    wl_data_offer_receive(selection_offer_, "text/plain;charset=utf-8", fds[1]);
+    wl_display_flush(display_);
+    ::close(fds[1]);
+
+    std::string out;
+    char buf[4096];
+    // Bounded read: pump the display so the compositor delivers the pipe data.
+    for (int spins = 0; spins < 200; ++spins) {
+        wl_display_dispatch_pending(display_);
+        wl_display_flush(display_);
+        const ssize_t n = ::read(fds[0], buf, sizeof(buf));
+        if (n > 0) {
+            out.append(buf, static_cast<size_t>(n));
+            spins = 0; // keep reading while data flows
+        } else if (n == 0) {
+            break; // EOF
+        } else {
+            if (errno != EAGAIN && errno != EWOULDBLOCK) break;
+            usleep(1000);
+        }
+    }
+    ::close(fds[0]);
+    return out;
 }
 
 } // namespace
