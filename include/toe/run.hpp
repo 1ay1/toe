@@ -32,7 +32,6 @@
 #include "toe/app.hpp"
 #include "toe/core/blink.hpp"
 #include "toe/core/event_router.hpp"
-#include "toe/core/poll_set.hpp"
 #include "toe/gfx/render_target.hpp"
 #include "toe/terminal.hpp"
 
@@ -58,17 +57,18 @@ struct RenderKey {
     constexpr auto operator<=>(const RenderKey &) const = default;
 };
 
-// Compute the poll timeout for an idle wait: the blink cadence, tightened to an
-// inline-image animation's next-frame deadline when one is playing.
-[[nodiscard]] inline Timeout idle_timeout(const toe::Session &s, Millis now) noexcept {
+// Compute the deadline for an idle wait: the blink cadence, tightened to an
+// inline-image animation's next-frame deadline when one is playing. Returned as
+// a portable WaitDeadline (nanoseconds) — the host's wait honours it precisely.
+[[nodiscard]] inline WaitDeadline idle_deadline(const toe::Session &s, Millis now) noexcept {
     if (const std::uint64_t deadline = s.next_animation_deadline(); deadline != 0) {
         const std::int64_t wait =
             static_cast<std::int64_t>(deadline) - static_cast<std::int64_t>(now.value);
         const int clamped =
             static_cast<int>(std::clamp<std::int64_t>(wait, kMinAnimMs, kIdlePollMs));
-        return Timeout::millis(clamped);
+        return WaitDeadline::millis(clamped);
     }
-    return Timeout::millis(kIdlePollMs);
+    return WaitDeadline::millis(kIdlePollMs);
 }
 
 // The frame loop over one live Terminal and one concrete App. Runs until the
@@ -105,15 +105,14 @@ template <App A>
         //     PTY/model-bound, not event-loop-bound.
         bool child_gone = false;
         {
-            PollSet ready;
-            ready.add(session.pty_fd());
-            ready.wait(Timeout::millis(0)); // non-blocking probe
+            // Non-blocking probe, then drain while the PTY stays readable.
+            Readiness rr = toe::wait_readable(surf, session.pty_fd(), WaitDeadline::nanos(0));
             int coalesce_budget = kCoalesceRounds;
-            while (ready.ready(session.pty_fd())) {
+            while (rr.pty) {
                 if (!session.pump_output()) { child_gone = true; break; }
                 if (session.output_pending()) break;   // hit the byte budget: yield
                 if (--coalesce_budget <= 0) break;     // yield to render/input
-                ready.wait(Timeout::millis(kCoalesceWaitMs));
+                rr = toe::wait_readable(surf, session.pty_fd(), WaitDeadline::millis(kCoalesceWaitMs));
             }
         }
 
@@ -122,10 +121,9 @@ template <App A>
         //    lands in THIS frame instead of a vsync later.
         if (router.take_wrote_input()) {
             toe::flush(surf);
-            PollSet echo;
-            echo.add(session.pty_fd());
-            echo.wait(Timeout::millis(kEchoWaitMs));
-            if (echo.ready(session.pty_fd()) && !session.pump_output()) child_gone = true;
+            const Readiness echo =
+                toe::wait_readable(surf, session.pty_fd(), WaitDeadline::millis(kEchoWaitMs));
+            if (echo.pty && !session.pump_output()) child_gone = true;
         }
         if (child_gone) continue; // re-poll to observe the exit transition
 
@@ -159,11 +157,10 @@ template <App A>
         //    drain it, having just rendered an intermediate frame.
         toe::flush(surf);
         if (!session.output_pending()) {
-            PollSet wake;
-            wake.add(surf.event_fd())
-                .add(session.pty_fd())
-                .add(toe::repeat_fd(surf)); // -1 on backends without a repeat timer; skipped
-            wake.wait(idle_timeout(session, now));
+            // The App's readiness wait covers the PTY, the window and (if any) the
+            // key-repeat timer; toe passes only the PTY fd. Idle deadline paces
+            // the cursor blink / inline-image animation.
+            toe::wait_readable(surf, session.pty_fd(), idle_deadline(session, now));
         }
     }
     return 0;

@@ -130,7 +130,36 @@ struct WindowConfig {
     PixelSize size{800, 500};
 };
 
-// ===========================================================================
+// --- readiness waiting (part of the App contract) --------------------------
+// The ONE place the loop blocks is a readiness wait on a tiny fd set: the child
+// PTY, the window connection, and an optional key-repeat timer. That wait is the
+// single genuinely OS-specific step, so toe OWNS NONE OF IT — no epoll, no
+// poll.h (poll is POSIX; Windows has neither). toe declares the interface; the
+// host implements the wait with whatever its OS offers (hand: epoll) and hands
+// it back through the App. This keeps the engine fully portable.
+
+// A wait deadline as a value: block forever, or up to N nanoseconds. Portable;
+// the host maps it onto whatever its wait primitive accepts.
+struct WaitDeadline {
+    // < 0 means "block forever". Otherwise a nanosecond bound (0 = non-blocking).
+    std::int64_t ns = -1;
+    [[nodiscard]] static constexpr WaitDeadline forever() noexcept { return {-1}; }
+    [[nodiscard]] static constexpr WaitDeadline nanos(std::int64_t n) noexcept {
+        return {n < 0 ? 0 : n};
+    }
+    [[nodiscard]] static constexpr WaitDeadline millis(int ms) noexcept {
+        return ms < 0 ? forever() : WaitDeadline{static_cast<std::int64_t>(ms) * 1'000'000};
+    }
+    [[nodiscard]] constexpr bool blocks_forever() const noexcept { return ns < 0; }
+};
+
+// Which sources woke the wait. `pty` and `window` are what the loop acts on;
+// a spurious wakeup (all false) is fine — the loop just re-probes.
+struct Readiness {
+    bool pty = false;    // the child PTY fd is readable
+    bool window = false; // the window connection fd is readable (events pending)
+};
+
 // concept App — the structural contract.
 //
 // A type A models App iff it provides these operations with these shapes.
@@ -157,12 +186,19 @@ concept App = requires(A a, const A ca, const EventSink &sink, const WindowConfi
     // Non-blocking: returns after dispatching whatever is queued.
     { a.poll_events(sink) } -> std::same_as<void>;
 
-    // The fd the windowing connection multiplexes on (-1 if none), so toe's
-    // reference loop can poll() it to block idle.
+    // The fd the windowing connection multiplexes on (-1 if none). The host's
+    // wait_readable folds it into its readiness wait; toe never touches it.
     { ca.event_fd() } -> std::convertible_to<int>;
 
     // True once the server/compositor has closed the connection.
     { ca.should_close() } -> std::convertible_to<bool>;
+
+    // Block until the child PTY, the window, or the App's key-repeat timer is
+    // readable, or the deadline elapses; report which of {pty, window} woke us.
+    // This is the ONE place the loop blocks and the ONE OS-specific step — toe
+    // owns none of it, the host implements it (hand: epoll). toe passes only the
+    // PTY fd; the App already owns its window/repeat fds.
+    { a.wait_readable(int{}, WaitDeadline{}) } -> std::same_as<Readiness>;
 };
 
 // --- optional refinements --------------------------------------------------
@@ -232,6 +268,14 @@ template <App A>
 inline void present(A &a, DamageRect d) {
     if constexpr (DamageableApp<A>) a.swap_damaged(d);
     else a.swap();
+}
+
+// Block until the PTY, the window, or the App's key-repeat timer is readable, or
+// the deadline elapses; report which of {pty, window} woke us. Pure forward to
+// the App's required wait_readable — toe owns no wait mechanism of its own.
+template <App A>
+[[nodiscard]] inline Readiness wait_readable(A &a, int pty_fd, WaitDeadline d) {
+    return a.wait_readable(pty_fd, d);
 }
 
 } // namespace toe
