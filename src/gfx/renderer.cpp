@@ -521,30 +521,36 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
                 };
                 dc = {dim(dc.r, bg.r), dim(dc.g, bg.g), dim(dc.b, bg.b)};
             }
+            // Underline gets its own colour (SGR 58) when set; strike/overline
+            // always use the text colour above.
+            Rgb ulc = dc;
+            if (!std::holds_alternative<term::DefaultColor>(cell.pen.underline_color)) {
+                ulc = palette_.resolve(cell.pen.underline_color, /*is_fg=*/true);
+            }
             const float cx = static_cast<float>(c * cw);
             const float fcw = static_cast<float>(cw);
             // Stroke thickness scales with cell height (min 1px).
             const float thick = std::max(1.0f, static_cast<float>(ch) / 14.0f);
-            auto bar = [&](float y0, float x, float w) {
-                rc.bg.push_back(rect_inst(cx + x, ry + y0, w, thick, dc.r, dc.g, dc.b, 0));
+            auto bar = [&](Rgb col, float y0, float x, float w) {
+                rc.bg.push_back(rect_inst(cx + x, ry + y0, w, thick, col.r, col.g, col.b, 0));
             };
             if (has_ul) {
                 // Underline sits just below the baseline.
                 const float uy = static_cast<float>(ascent) + thick;
                 switch (cell.pen.underline) {
                 case term::Underline::Double:
-                    bar(uy, 0, fcw);
-                    bar(uy + thick * 2.0f, 0, fcw);
+                    bar(ulc, uy, 0, fcw);
+                    bar(ulc, uy + thick * 2.0f, 0, fcw);
                     break;
                 case term::Underline::Dotted: {
                     const float d = thick * 2.0f;
-                    for (float x = 0; x + thick <= fcw; x += d) bar(uy, x, thick);
+                    for (float x = 0; x + thick <= fcw; x += d) bar(ulc, uy, x, thick);
                     break;
                 }
                 case term::Underline::Dashed: {
                     const float seg = fcw / 3.0f;
-                    bar(uy, 0, seg);
-                    bar(uy, 2.0f * seg, seg);
+                    bar(ulc, uy, 0, seg);
+                    bar(ulc, uy, 2.0f * seg, seg);
                     break;
                 }
                 case term::Underline::Curly: {
@@ -553,17 +559,17 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
                     const float sw = fcw / static_cast<float>(seg);
                     for (int s = 0; s < seg; ++s) {
                         const float yoff = (s % 2 == 0) ? 0.0f : thick * 1.5f;
-                        bar(uy + yoff, static_cast<float>(s) * sw, sw);
+                        bar(ulc, uy + yoff, static_cast<float>(s) * sw, sw);
                     }
                     break;
                 }
                 default: // Single
-                    bar(uy, 0, fcw);
+                    bar(ulc, uy, 0, fcw);
                     break;
                 }
             }
-            if (has_st) bar(static_cast<float>(ascent) * 0.62f, 0, fcw);   // strike ~mid-x-height
-            if (has_ol) bar(0.0f, 0, fcw);                                  // overline at cell top
+            if (has_st) bar(dc, static_cast<float>(ascent) * 0.62f, 0, fcw); // strike ~mid-x-height
+            if (has_ol) bar(dc, 0.0f, 0, fcw);                               // overline at cell top
         }
 
         if (cp == U' ' || cp == 0 || cell.spacer()) continue;

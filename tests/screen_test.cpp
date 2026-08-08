@@ -527,6 +527,21 @@ int main() {
                 tc = t->rgb == Rgb{10, 20, 30};
             expect(tc && cell.cp == U'Z', "38:2:r:g:b colon truecolor parses");
         }
+        // Underline colour (SGR 58) is stored separately from fg; 59 resets it.
+        {
+            term::Screen s{Extent{20, 2}};
+            feed(s, "\x1b[4;58;2;200;50;50mA\x1b[59mB");
+            auto &a = s.row(Row{0})[0];
+            bool uc = false;
+            if (auto *t = std::get_if<term::TrueColor>(&a.pen.underline_color))
+                uc = t->rgb == Rgb{200, 50, 50};
+            expect(uc, "SGR 58;2;r;g;b sets a distinct underline colour");
+            expect(std::holds_alternative<term::DefaultColor>(a.pen.fg),
+                   "58 does not touch the fg colour");
+            auto &b = s.row(Row{0})[1];
+            expect(std::holds_alternative<term::DefaultColor>(b.pen.underline_color),
+                   "SGR 59 resets the underline colour to default");
+        }
     }
 
     if (failures == 0) {

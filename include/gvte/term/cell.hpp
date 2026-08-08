@@ -86,6 +86,7 @@ enum class Underline : std::uint8_t {
 struct Pen {
     Color fg{DefaultColor{}};
     Color bg{DefaultColor{}};
+    Color underline_color{DefaultColor{}}; // DefaultColor => draw underline in fg
     Attr attr{Attr::None};
     Underline underline{Underline::None};
     constexpr auto operator<=>(const Pen &) const = default;

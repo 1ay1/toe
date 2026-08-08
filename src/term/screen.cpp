@@ -877,21 +877,21 @@ void Screen::apply_sgr(std::span<const int> params, std::span<const std::uint8_t
                 pen_.bg = IndexedColor{static_cast<std::uint8_t>(c - 100 + 8)};
             } else if (c == 38 || c == 48 || c == 58) {
                 // Extended color: 38/48/58 ;5;n (indexed) or ;2;r;g;b (true).
-                // 58 is the underline color — accepted and skipped (we draw the
-                // underline in the fg colour), but its params must be consumed
-                // so the following SGR codes aren't misread. Colon- and
-                // semicolon-separated forms are both handled by scanning ahead.
-                Color *target = (c == 38) ? &pen_.fg : (c == 48) ? &pen_.bg : nullptr;
+                // 58 is the underline colour (rendered in its own colour when
+                // set; falls back to fg when default). Colon- and semicolon-
+                // separated forms are both handled by scanning ahead.
+                Color *target = (c == 38) ? &pen_.fg : (c == 48) ? &pen_.bg : &pen_.underline_color;
                 if (i + 1 < params.size() && params[i + 1] == 5 && i + 2 < params.size()) {
-                    if (target) *target = IndexedColor{static_cast<std::uint8_t>(params[i + 2])};
+                    *target = IndexedColor{static_cast<std::uint8_t>(params[i + 2])};
                     i += 2;
                 } else if (i + 4 < params.size() && params[i + 1] == 2) {
-                    if (target)
-                        *target = TrueColor{Rgb{static_cast<std::uint8_t>(params[i + 2]),
-                                                static_cast<std::uint8_t>(params[i + 3]),
-                                                static_cast<std::uint8_t>(params[i + 4])}};
+                    *target = TrueColor{Rgb{static_cast<std::uint8_t>(params[i + 2]),
+                                            static_cast<std::uint8_t>(params[i + 3]),
+                                            static_cast<std::uint8_t>(params[i + 4])}};
                     i += 4;
                 }
+            } else if (c == 59) {
+                pen_.underline_color = DefaultColor{}; // reset underline colour to fg
             }
             break;
         }
