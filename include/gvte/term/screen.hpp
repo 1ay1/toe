@@ -174,7 +174,7 @@ private:
     void erase_in_display(int mode);
     void erase_in_line(int mode);
     void move_cursor_abs(Row r, Col c);
-    void apply_sgr(std::span<const int> params);
+    void apply_sgr(std::span<const int> params, std::span<const std::uint8_t> sub);
     void clamp_cursor() noexcept;
     void touch() noexcept { ++generation_; }
 

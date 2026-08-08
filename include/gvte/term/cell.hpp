@@ -69,12 +69,25 @@ constexpr Attr &operator&=(Attr &a, Attr b) noexcept { return a = a & b; }
     return (set & flag) != Attr::None;
 }
 
+// Underline style (SGR 4, 4:1..4:5, 21). Kept as a small enum in the Pen so a
+// cell can be single / double / curly / dotted / dashed underlined. The
+// Attr::Underline flag still gates whether ANY underline is drawn.
+enum class Underline : std::uint8_t {
+    None = 0,
+    Single = 1,
+    Double = 2,
+    Curly = 3,
+    Dotted = 4,
+    Dashed = 5,
+};
+
 // --- the rendition (SGR state) ---------------------------------------------
 // The "pen" the terminal draws with: current fg/bg and active style flags.
 struct Pen {
     Color fg{DefaultColor{}};
     Color bg{DefaultColor{}};
     Attr attr{Attr::None};
+    Underline underline{Underline::None};
     constexpr auto operator<=>(const Pen &) const = default;
 };
 

@@ -502,6 +502,70 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
         }
 
         const char32_t cp = cell.cp;
+
+        // Text decorations (underline styles, strikethrough, overline) are thin
+        // fg-coloured bars that must render even on blank cells — git diff and
+        // spell-checkers underline runs that include spaces. Emit them before
+        // the space-skip below. They go into rc.bg; the glyph draws on top.
+        const term::Attr at = cell.pen.attr;
+        const bool has_ul = term::has(at, term::Attr::Underline);
+        const bool has_st = term::has(at, term::Attr::Strike);
+        const bool has_ol = term::has(at, term::Attr::Overline);
+        if (has_ul || has_st || has_ol) {
+            Rgb dc = on_cursor ? palette_.resolve(cell.pen.bg, /*is_fg=*/false)
+                               : palette_.resolve(reverse ? cell.pen.bg : cell.pen.fg, !reverse);
+            if (term::has(at, term::Attr::Faint)) {
+                const Rgb bg = palette_.resolve(reverse ? cell.pen.fg : cell.pen.bg, reverse);
+                auto dim = [](std::uint8_t f, std::uint8_t b) {
+                    return static_cast<std::uint8_t>((f * 45 + b * 55) / 100);
+                };
+                dc = {dim(dc.r, bg.r), dim(dc.g, bg.g), dim(dc.b, bg.b)};
+            }
+            const float cx = static_cast<float>(c * cw);
+            const float fcw = static_cast<float>(cw);
+            // Stroke thickness scales with cell height (min 1px).
+            const float thick = std::max(1.0f, static_cast<float>(ch) / 14.0f);
+            auto bar = [&](float y0, float x, float w) {
+                rc.bg.push_back(rect_inst(cx + x, ry + y0, w, thick, dc.r, dc.g, dc.b, 0));
+            };
+            if (has_ul) {
+                // Underline sits just below the baseline.
+                const float uy = static_cast<float>(ascent) + thick;
+                switch (cell.pen.underline) {
+                case term::Underline::Double:
+                    bar(uy, 0, fcw);
+                    bar(uy + thick * 2.0f, 0, fcw);
+                    break;
+                case term::Underline::Dotted: {
+                    const float d = thick * 2.0f;
+                    for (float x = 0; x + thick <= fcw; x += d) bar(uy, x, thick);
+                    break;
+                }
+                case term::Underline::Dashed: {
+                    const float seg = fcw / 3.0f;
+                    bar(uy, 0, seg);
+                    bar(uy, 2.0f * seg, seg);
+                    break;
+                }
+                case term::Underline::Curly: {
+                    // Approximate a wave with short segments alternating y.
+                    const int seg = 4;
+                    const float sw = fcw / static_cast<float>(seg);
+                    for (int s = 0; s < seg; ++s) {
+                        const float yoff = (s % 2 == 0) ? 0.0f : thick * 1.5f;
+                        bar(uy + yoff, static_cast<float>(s) * sw, sw);
+                    }
+                    break;
+                }
+                default: // Single
+                    bar(uy, 0, fcw);
+                    break;
+                }
+            }
+            if (has_st) bar(static_cast<float>(ascent) * 0.62f, 0, fcw);   // strike ~mid-x-height
+            if (has_ol) bar(0.0f, 0, fcw);                                  // overline at cell top
+        }
+
         if (cp == U' ' || cp == 0 || cell.spacer()) continue;
 
         // Foreground color for this cell's glyph.

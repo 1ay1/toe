@@ -491,6 +491,44 @@ int main() {
         expect(row[2].cp == U'b', "after SI (back to G0 ascii): literal 'b'");
     }
 
+    // Underline styles via SGR 4 and its 4:N colon sub-parameters, plus the
+    // 21 (double) form and 24 (off). Curly/dotted/dashed need colon subparams,
+    // which exercise the parser's ':' handling.
+    {
+        auto ul = [](const term::Cell &c) { return static_cast<int>(c.pen.underline); };
+        auto has_ul = [](const term::Cell &c) {
+            return term::has(c.pen.attr, term::Attr::Underline);
+        };
+        {
+            term::Screen s{Extent{20, 2}};
+            feed(s, "\x1b[4mA\x1b[4:3mB\x1b[4:5mC\x1b[21mD\x1b[24mE");
+            auto r = s.row(Row{0});
+            expect(has_ul(r[0]) && ul(r[0]) == 1, "SGR 4 -> single underline");
+            expect(has_ul(r[1]) && ul(r[1]) == 3, "SGR 4:3 -> curly underline");
+            expect(has_ul(r[2]) && ul(r[2]) == 5, "SGR 4:5 -> dashed underline");
+            expect(has_ul(r[3]) && ul(r[3]) == 2, "SGR 21 -> double underline");
+            expect(!has_ul(r[4]), "SGR 24 turns underline off");
+        }
+        // 4:0 turns the underline off via the subparam form.
+        {
+            term::Screen s{Extent{20, 2}};
+            feed(s, "\x1b[4mX\x1b[4:0mY");
+            expect(has_ul(s.row(Row{0})[0]), "4 on");
+            expect(!has_ul(s.row(Row{0})[1]), "4:0 off");
+        }
+        // A truecolor SGR with COLON separators (38:2:r:g:b) must still parse
+        // — the ':' handling can't break the color path.
+        {
+            term::Screen s{Extent{20, 2}};
+            feed(s, "\x1b[38:2:10:20:30mZ");
+            auto &cell = s.row(Row{0})[0];
+            bool tc = false;
+            if (auto *t = std::get_if<term::TrueColor>(&cell.pen.fg))
+                tc = t->rgb == Rgb{10, 20, 30};
+            expect(tc && cell.cp == U'Z', "38:2:r:g:b colon truecolor parses");
+        }
+    }
+
     if (failures == 0) {
         std::printf("all screen tests passed\n");
         return 0;

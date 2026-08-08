@@ -9,6 +9,7 @@ namespace gvte::vt {
 
 inline void Parser::clear_csi() noexcept {
     params_.clear();
+    param_sub_.clear();
     param_started_ = false;
     intermediates_.clear();
     marker_ = 0;
@@ -20,9 +21,11 @@ void Parser::csi_dispatch(std::uint8_t final, Sink &sink) {
     // A trailing sub-parameter with no digits still counts as a default 0.
     if (param_started_ && params_.empty()) {
         params_.push_back(0);
+        param_sub_.push_back(0);
     }
     CsiDispatch d;
     d.params = std::span<const int>{params_};
+    d.sub = std::span<const std::uint8_t>{param_sub_};
     d.intermediates = intermediates_;
     d.final = static_cast<char>(final);
     d.private_marker = private_marker_;
@@ -144,16 +147,21 @@ void Parser::step(std::uint8_t b, Sink &sink) {
         } else if (b >= 0x30 && b <= 0x39) { // digit
             if (!param_started_) {
                 params_.push_back(0);
+                param_sub_.push_back(0);
                 param_started_ = true;
             }
             params_.back() = params_.back() * 10 + (b - '0');
-        } else if (b == ';') {
+        } else if (b == ';' || b == ':') {
             // Close the current param (default 0 if empty) and open a fresh
-            // empty slot. `;H` -> {0,0}; `1;31m` -> {1,31}.
+            // empty slot. ';' starts a new primary parameter; ':' opens a
+            // SUB-parameter of the current one (SGR 4:3, 38:2:r:g:b).
+            const std::uint8_t sub = (b == ':') ? 1 : 0;
             if (!param_started_) {
                 params_.push_back(0);
+                param_sub_.push_back(0);
             }
             params_.push_back(0);
+            param_sub_.push_back(sub);
             param_started_ = true; // the freshly-opened slot counts as started
         } else if (b >= 0x20 && b <= 0x2F) {
             intermediates_.push_back(static_cast<char>(b));

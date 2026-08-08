@@ -36,6 +36,10 @@ struct Execute {
 // A final CSI dispatch, e.g. ESC [ 1 ; 31 m  ->  {params:{1,31}, final:'m'}.
 struct CsiDispatch {
     std::span<const int> params;
+    // Parallel to params: sub[i] is true when param i was joined to param i-1
+    // by a COLON (a sub-parameter), e.g. SGR 4:3 (curly underline) or
+    // 38:2:r:g:b. Distinguishes ':' from ';' so those can be handled correctly.
+    std::span<const std::uint8_t> sub;
     std::string_view intermediates; // collected intermediate bytes (0x20-0x2F)
     char final{};
     bool private_marker{}; // leading '?' etc. (0x3C-0x3F)
@@ -102,6 +106,7 @@ private:
 
     // CSI accumulation
     std::vector<int> params_{};
+    std::vector<std::uint8_t> param_sub_{}; // colon-joined flag per param
     bool param_started_{false};
     std::string intermediates_{};
     char marker_{0};

@@ -688,7 +688,7 @@ void Screen::csi(const vt::CsiDispatch &d) {
             reply("\x1bP>|gvte(0.1)\x1b\\");
         }
         break;
-    case 'm': apply_sgr(p); break;                          // SGR
+    case 'm': apply_sgr(p, d.sub); break;                   // SGR
     default: break; // unhandled — silently ignore for now
     }
 }
@@ -815,7 +815,7 @@ void Screen::esc(const vt::EscDispatch &d) {
 
 // --- SGR (Select Graphic Rendition) ---------------------------------------
 
-void Screen::apply_sgr(std::span<const int> params) {
+void Screen::apply_sgr(std::span<const int> params, std::span<const std::uint8_t> sub) {
     if (params.empty()) {
         pen_ = Pen{}; // ESC[m == ESC[0m == reset
         return;
@@ -827,17 +827,38 @@ void Screen::apply_sgr(std::span<const int> params) {
         case 1: pen_.attr |= Attr::Bold; break;
         case 2: pen_.attr |= Attr::Faint; break;
         case 3: pen_.attr |= Attr::Italic; break;
-        case 4: pen_.attr |= Attr::Underline; break;
+        case 4:
+            pen_.attr |= Attr::Underline;
+            // SGR 4:N selects the underline style (4:1 single .. 4:5 dashed).
+            // A bare 4 (no colon subparam) is a plain single underline.
+            if (i + 1 < params.size() && i + 1 < sub.size() && sub[i + 1]) {
+                switch (params[i + 1]) {
+                case 0: pen_.attr &= ~Attr::Underline; pen_.underline = Underline::None; break;
+                case 1: pen_.underline = Underline::Single; break;
+                case 2: pen_.underline = Underline::Double; break;
+                case 3: pen_.underline = Underline::Curly; break;
+                case 4: pen_.underline = Underline::Dotted; break;
+                case 5: pen_.underline = Underline::Dashed; break;
+                default: pen_.underline = Underline::Single; break;
+                }
+                ++i; // consume the subparam
+            } else {
+                pen_.underline = Underline::Single;
+            }
+            break;
         case 5: pen_.attr |= Attr::Blink; break;
         case 6: pen_.attr |= Attr::Blink; break; // rapid blink -> blink
         case 7: pen_.attr |= Attr::Reverse; break;
         case 8: pen_.attr |= Attr::Hidden; break;
         case 9: pen_.attr |= Attr::Strike; break;
-        case 21: pen_.attr |= Attr::Underline; break; // double underline -> underline
+        case 21: // double underline
+            pen_.attr |= Attr::Underline;
+            pen_.underline = Underline::Double;
+            break;
         case 53: pen_.attr |= Attr::Overline; break;
         case 22: pen_.attr &= ~(Attr::Bold | Attr::Faint); break;
         case 23: pen_.attr &= ~Attr::Italic; break;
-        case 24: pen_.attr &= ~Attr::Underline; break;
+        case 24: pen_.attr &= ~Attr::Underline; pen_.underline = Underline::None; break;
         case 25: pen_.attr &= ~Attr::Blink; break;
         case 27: pen_.attr &= ~Attr::Reverse; break;
         case 28: pen_.attr &= ~Attr::Hidden; break;
@@ -854,16 +875,21 @@ void Screen::apply_sgr(std::span<const int> params) {
                 pen_.fg = IndexedColor{static_cast<std::uint8_t>(c - 90 + 8)};
             } else if (c >= 100 && c <= 107) {
                 pen_.bg = IndexedColor{static_cast<std::uint8_t>(c - 100 + 8)};
-            } else if (c == 38 || c == 48) {
-                // Extended color: 38;5;n (indexed) or 38;2;r;g;b (truecolor).
-                Color *target = (c == 38) ? &pen_.fg : &pen_.bg;
+            } else if (c == 38 || c == 48 || c == 58) {
+                // Extended color: 38/48/58 ;5;n (indexed) or ;2;r;g;b (true).
+                // 58 is the underline color — accepted and skipped (we draw the
+                // underline in the fg colour), but its params must be consumed
+                // so the following SGR codes aren't misread. Colon- and
+                // semicolon-separated forms are both handled by scanning ahead.
+                Color *target = (c == 38) ? &pen_.fg : (c == 48) ? &pen_.bg : nullptr;
                 if (i + 1 < params.size() && params[i + 1] == 5 && i + 2 < params.size()) {
-                    *target = IndexedColor{static_cast<std::uint8_t>(params[i + 2])};
+                    if (target) *target = IndexedColor{static_cast<std::uint8_t>(params[i + 2])};
                     i += 2;
                 } else if (i + 4 < params.size() && params[i + 1] == 2) {
-                    *target = TrueColor{Rgb{static_cast<std::uint8_t>(params[i + 2]),
-                                            static_cast<std::uint8_t>(params[i + 3]),
-                                            static_cast<std::uint8_t>(params[i + 4])}};
+                    if (target)
+                        *target = TrueColor{Rgb{static_cast<std::uint8_t>(params[i + 2]),
+                                                static_cast<std::uint8_t>(params[i + 3]),
+                                                static_cast<std::uint8_t>(params[i + 4])}};
                     i += 4;
                 }
             }
