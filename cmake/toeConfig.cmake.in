@@ -3,9 +3,10 @@
 #
 # toeConfig.cmake — find_package(toe) entry point.
 #
-# toe exports a single target: toe::core — the terminal ENGINE (VT parse, screen
+# toe exports a single target: toe::toe — the terminal ENGINE (VT parse, screen
 # model, GL renderer). It has no window-system dependency; the host brings its
-# own window and drives toe::Terminal.
+# own window and drives toe::Terminal. toe::core is provided as a back-compat
+# alias.
 
 include(CMakeFindDependencyMacro)
 
@@ -18,10 +19,15 @@ pkg_check_modules(EPOXY REQUIRED IMPORTED_TARGET epoxy)
 
 include("${CMAKE_CURRENT_LIST_DIR}/toeTargets.cmake")
 
-if(TARGET toe::core)
-  set(toe_Core_FOUND TRUE)
+# Back-compat alias: consumers that still say toe::core get the engine target.
+if(TARGET toe::toe AND NOT TARGET toe::core)
+  add_library(toe::core ALIAS toe::toe)
+endif()
+
+if(TARGET toe::toe)
+  set(toe_toe_FOUND TRUE)
 else()
-  set(toe_Core_FOUND FALSE)
+  set(toe_toe_FOUND FALSE)
 endif()
 
 check_required_components(toe)

@@ -3,10 +3,10 @@
 # Install + export rules: make toe consumable via find_package(toe).
 #
 #   find_package(toe CONFIG REQUIRED)
-#   target_link_libraries(app PRIVATE toe::core)
+#   target_link_libraries(app PRIVATE toe::toe)
 #
-# toe exports a single target, toe::core — the engine. The window system lives
-# in the host (e.g. hand), never in toe.
+# toe exports a single target, toe::toe (the engine). toe::core remains as a
+# back-compat alias. The window system lives in the host (e.g. hand), never toe.
 
 include(CMakePackageConfigHelpers)
 
@@ -18,8 +18,8 @@ install(DIRECTORY "${PROJECT_SOURCE_DIR}/include/toe"
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 
 # --- targets ---------------------------------------------------------------
-set(_toe_targets toe-core)
-install(TARGETS toe-core
+set(_toe_targets toe)
+install(TARGETS toe
         EXPORT toeTargets
         LIBRARY  DESTINATION "${CMAKE_INSTALL_LIBDIR}"
         ARCHIVE  DESTINATION "${CMAKE_INSTALL_LIBDIR}"
