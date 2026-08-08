@@ -213,7 +213,10 @@ public:
     [[nodiscard]] std::uint64_t row_version(std::int32_t vrow) const noexcept {
         if (scroll_offset_ != 0) return 0;
         if (vrow < 0 || vrow >= size_.rows) return 0;
-        return row_epoch_[static_cast<std::size_t>(vrow)];
+        // The row's own epoch OR the last screen-wide stamp, whichever is newer,
+        // so stamp_all() can be O(1) (bump all_stamp_) instead of O(rows).
+        const std::uint64_t e = row_epoch_[static_cast<std::size_t>(vrow)];
+        return e > all_stamp_ ? e : all_stamp_;
     }
 
 private:
@@ -309,18 +312,22 @@ private:
     // reads row_version() to skip re-fingerprinting rows that didn't change.
     std::vector<std::uint64_t> row_epoch_{};
     std::uint64_t epoch_seq_{1};
+    std::uint64_t all_stamp_{0}; // last screen-wide stamp (O(1) stamp_all)
     void stamp(std::int32_t live_row) noexcept {
         if (live_row >= 0 && live_row < static_cast<std::int32_t>(row_epoch_.size()))
             row_epoch_[static_cast<std::size_t>(live_row)] = ++epoch_seq_;
     }
     void stamp_all() noexcept {
-        const std::uint64_t base = ++epoch_seq_;
-        for (auto &e : row_epoch_) e = base;
-        epoch_seq_ += row_epoch_.size();
+        // O(1): bump the screen-wide stamp; row_version() folds it in per read.
+        all_stamp_ = ++epoch_seq_;
     }
 
     Extent size_{};
     std::vector<Cell> cells_{}; // physical cell store, size_.area() cells
+    // A row of blank cells, kept sized to size_.cols, for fast bulk-blank via
+    // memcpy in the scroll hot path (avoids per-cell fill construction).
+    std::vector<Cell> blank_row_{};
+    mutable std::vector<Cell> scratch_row_{}; // pad-buffer for trimmed history reads
     // Logical-to-physical row map. cells_ holds the live grid's rows in some
     // physical order; row_of_[r] is the physical row backing logical row r.
     // Scrolling rotates this map (O(rows) index shuffle) instead of moving

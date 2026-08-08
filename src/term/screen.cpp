@@ -3,6 +3,7 @@
 #include "toe/term/screen.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <cassert>
 #include <cstdio>
 #include <clocale>
@@ -28,6 +29,7 @@ Screen::Screen(Extent size) : size_{size}, cells_(size.area()) {
     lr_margins_ = false;
     live_wrapped_.assign(static_cast<std::size_t>(std::max(size_.rows, 0)), false);
     line_attr_.assign(static_cast<std::size_t>(std::max(size_.rows, 0)), LineAttr::normal);
+    blank_row_.assign(static_cast<std::size_t>(std::max(size_.cols, 0)), blank_cell());
     reset_row_map();
     row_epoch_.assign(static_cast<std::size_t>(std::max(size_.rows, 0)), 0);
     tab_stops_.assign(static_cast<std::size_t>(std::max(size_.cols, 1)), false);
@@ -78,8 +80,15 @@ std::span<const Cell> Screen::row(Row r) const {
             static_cast<std::int32_t>(history_.size()) - scroll_offset_;
         const std::int32_t hist_index = hist_start + vr;
         if (hist_index >= 0 && hist_index < static_cast<std::int32_t>(history_.size())) {
-            return std::span<const Cell>{history_[static_cast<std::size_t>(hist_index)].data(),
-                                         static_cast<std::size_t>(size_.cols)};
+            const auto &hrow = history_[static_cast<std::size_t>(hist_index)];
+            const std::size_t cols = static_cast<std::size_t>(size_.cols);
+            if (hrow.size() >= cols)
+                return std::span<const Cell>{hrow.data(), cols};
+            // Trimmed scrollback line: pad to full width in a scratch buffer.
+            // (Only hit when the user scrolls back, never on the flood path.)
+            scratch_row_.assign(cols, blank_cell());
+            std::memcpy(scratch_row_.data(), hrow.data(), hrow.size() * sizeof(Cell));
+            return std::span<const Cell>{scratch_row_.data(), cols};
         }
         // Past the end of history -> into the live grid.
         const std::int32_t live_row = hist_index - static_cast<std::int32_t>(history_.size());
@@ -148,6 +157,7 @@ void Screen::resize(Extent size) {
     clamp_cursor();
     row_epoch_.assign(static_cast<std::size_t>(std::max(size_.rows, 0)), 0);
     line_attr_.assign(static_cast<std::size_t>(std::max(size_.rows, 0)), LineAttr::normal);
+    blank_row_.assign(static_cast<std::size_t>(std::max(size_.cols, 0)), blank_cell());
     stamp_all();
     touch();
 }
@@ -665,18 +675,25 @@ void Screen::scroll_up(std::int32_t n) {
         const std::size_t cols = static_cast<std::size_t>(size_.cols);
         for (std::int32_t i = 0; i < n; ++i) {
             const std::size_t base = index(Row{i}, Col{0});
-            const auto begin = cells_.begin() + static_cast<std::ptrdiff_t>(base);
-            const auto end = begin + static_cast<std::ptrdiff_t>(cols);
-            // The evicted row's soft-wrap flag follows it into scrollback.
+            const Cell *rowp = cells_.data() + base;
+            // Trim trailing blanks. Scan backwards comparing raw bytes against a
+            // known blank Cell (memcmp on trivially-copyable Cells beats the
+            // per-cell blank() which does a std::variant colour compare).
+            std::size_t used = cols;
+            const Cell blank = blank_cell();
+            while (used > 0 && std::memcmp(&rowp[used - 1], &blank, sizeof(Cell)) == 0) --used;
             const bool w = wrapped_at(i);
             if (history_.size() >= max_history_) {
                 std::vector<Cell> recycled = std::move(history_.front());
                 history_.pop_front();
                 if (!hist_wrapped_.empty()) hist_wrapped_.pop_front();
-                recycled.assign(begin, end);
+                recycled.resize(used);
+                if (used) std::memcpy(recycled.data(), rowp, used * sizeof(Cell));
                 history_.push_back(std::move(recycled));
             } else {
-                history_.emplace_back(begin, end);
+                std::vector<Cell> line(used);
+                if (used) std::memcpy(line.data(), rowp, used * sizeof(Cell));
+                history_.push_back(std::move(line));
             }
             hist_wrapped_.push_back(w);
         }
@@ -709,12 +726,21 @@ void Screen::scroll_up(std::int32_t n) {
         for (std::int32_t r = std::max(0, size_.rows - n); r < size_.rows; ++r)
             line_attr_[static_cast<std::size_t>(r)] = LineAttr::normal;
     }
+    // The blank fill obeys BCE: erased cells take the current pen's background.
+    // Keep blank_row_ in sync with the active bg/reverse so the fast memcpy is
+    // correct; rebuild only when they change (cheap compare, not per-cell fill).
+    {
+        const term::Color bg = pen_.bg;
+        const term::Attr rev = pen_.attr & Attr::Reverse;
+        if (blank_row_.empty() || static_cast<std::int32_t>(blank_row_.size()) != size_.cols ||
+            blank_row_[0].pen.bg != bg || (blank_row_[0].pen.attr & Attr::Reverse) != rev) {
+            blank_row_.assign(static_cast<std::size_t>(std::max(size_.cols, 0)), blank_cell());
+        }
+    }
     for (std::int32_t r = scroll_bottom_ - n + 1; r <= scroll_bottom_; ++r) {
         const std::size_t base = index(Row{r}, Col{0});
-        std::fill(cells_.begin() + static_cast<std::ptrdiff_t>(base),
-                  cells_.begin() +
-                      static_cast<std::ptrdiff_t>(base + static_cast<std::size_t>(size_.cols)),
-                  blank_cell());
+        std::memcpy(cells_.data() + base, blank_row_.data(),
+                    static_cast<std::size_t>(size_.cols) * sizeof(Cell));
     }
     stamp_all();
     touch();
@@ -1780,6 +1806,12 @@ const Cell *Screen::cell_at_abs(std::int64_t abs_row, std::int32_t col) const no
     if (abs_row < 0) return nullptr;
     if (abs_row < hist) {
         const auto &line = history_[static_cast<std::size_t>(abs_row)];
+        // Trimmed scrollback rows are shorter than the width; cols past the end
+        // are blank. Return a shared blank cell for those.
+        if (static_cast<std::size_t>(col) >= line.size()) {
+            static const Cell kBlank{};
+            return &kBlank;
+        }
         return &line[static_cast<std::size_t>(col)];
     }
     const std::int64_t live = abs_row - hist;
