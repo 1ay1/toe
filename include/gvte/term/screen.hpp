@@ -247,6 +247,17 @@ private:
     // Tab stops: one flag per column (default every 8th).
     std::vector<bool> tab_stops_{};
 
+    // Character-set state (VT100 line-drawing). G0/G1 each hold ASCII or the
+    // DEC Special Graphics set; SI (^O) selects G0, SO (^N) selects G1. When
+    // the active set is DecGraphics, ASCII 0x5F..0x7E are mapped to the box-
+    // drawing / block Unicode glyphs — this is how tmux, dialog, mc and older
+    // ncurses apps draw borders without UTF-8.
+    enum class Charset : std::uint8_t { Ascii, DecGraphics };
+    Charset charset_g0_{Charset::Ascii};
+    Charset charset_g1_{Charset::Ascii};
+    bool charset_use_g1_{false}; // SO active?
+    [[nodiscard]] char32_t map_charset(char32_t cp) const noexcept;
+
     // Selection state, in absolute (history-aware) coordinates.
     SelectMode sel_mode_{SelectMode::none};
     AbsPos sel_anchor_{};

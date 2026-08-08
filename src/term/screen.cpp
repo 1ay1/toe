@@ -170,6 +170,7 @@ int char_width(char32_t cp) {
 } // namespace
 
 void Screen::put(char32_t cp) {
+    cp = map_charset(cp); // VT100 line-drawing charset, if active
     const int w = char_width(cp);
 
     // Combining / zero-width marks attach to the preceding cell rather than
@@ -226,11 +227,38 @@ void Screen::execute(std::uint8_t c0) {
     case 0x0B:                              // VT
     case 0x0C: line_feed(); break;         // FF
     case 0x0D: carriage_return(); break;   // CR
+    case 0x0E: charset_use_g1_ = true; break;  // SO — invoke G1
+    case 0x0F: charset_use_g1_ = false; break; // SI — invoke G0
     case 0x07: // BEL
         if (pending_) pending_->emplace_back(RingBell{});
         break;
     default: break;
     }
+}
+
+// DEC Special Graphics: ASCII 0x5F..0x7E map to line-drawing / block glyphs.
+// This is the classic VT100 alternate charset every ncurses TUI uses for
+// borders when it isn't emitting UTF-8. Indexed by (cp - 0x5F).
+char32_t Screen::map_charset(char32_t cp) const noexcept {
+    const Charset cs = charset_use_g1_ ? charset_g1_ : charset_g0_;
+    if (cs != Charset::DecGraphics || cp < 0x5F || cp > 0x7E) return cp;
+    static constexpr char32_t kDec[] = {
+        // 0x5F ' '        0x60 ◆        0x61 ▒        0x62 ␉(HT)   0x63 ␌(FF)
+        0x00A0,          0x25C6,        0x2592,        0x2409,        0x240C,
+        // 0x64 ␍(CR)   0x65 ␊(LF)   0x66 °        0x67 ±        0x68 ␤(NL)
+        0x240D,          0x240A,        0x00B0,        0x00B1,        0x2424,
+        // 0x69 ␋(VT)   0x6A ┘        0x6B ┐        0x6C ┌        0x6D └
+        0x240B,          0x2518,        0x2510,        0x250C,        0x2514,
+        // 0x6E ┼        0x6F ⎺        0x70 ⎻        0x71 ─        0x72 ⎼
+        0x253C,          0x23BA,        0x23BB,        0x2500,        0x23BC,
+        // 0x73 ⎽        0x74 ├        0x75 ┤        0x76 ┴        0x77 ┬
+        0x23BD,          0x251C,        0x2524,        0x2534,        0x252C,
+        // 0x78 │        0x79 ≤        0x7A ≥        0x7B π        0x7C ≠
+        0x2502,          0x2264,        0x2265,        0x03C0,        0x2260,
+        // 0x7D £        0x7E ·
+        0x00A3,          0x00B7,
+    };
+    return kDec[cp - 0x5F];
 }
 
 void Screen::line_feed() {
@@ -748,6 +776,8 @@ void Screen::esc(const vt::EscDispatch &d) {
             wrap_pending_ = false;
             scroll_top_ = 0;
             scroll_bottom_ = size_.rows - 1;
+            charset_g0_ = charset_g1_ = Charset::Ascii;
+            charset_use_g1_ = false;
             stamp_all();
             touch();
             return;
@@ -772,7 +802,15 @@ void Screen::esc(const vt::EscDispatch &d) {
         default: break;
         }
     }
-    // Charset designations (ESC ( B etc.) are accepted and ignored for now.
+    // Character-set designation: ESC ( <f> selects G0, ESC ) <f> selects G1.
+    // '0' = DEC Special Graphics (line drawing), 'B'/'A'/'~' etc. = ASCII-ish.
+    // This is how VT100-era and ncurses apps (tmux, dialog, mc) draw borders.
+    if (d.intermediates.size() == 1 && (d.intermediates[0] == '(' || d.intermediates[0] == ')')) {
+        const Charset cs = (d.final == '0') ? Charset::DecGraphics : Charset::Ascii;
+        if (d.intermediates[0] == '(') charset_g0_ = cs;
+        else charset_g1_ = cs;
+        return;
+    }
 }
 
 // --- SGR (Select Graphic Rendition) ---------------------------------------

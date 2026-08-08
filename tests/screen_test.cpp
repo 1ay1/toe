@@ -467,6 +467,30 @@ int main() {
                "primary buffer restored after leaving alt screen");
     }
 
+    // DEC Special Graphics charset (VT100 line drawing): ESC ( 0 makes ASCII
+    // l/q/k/x/j map to box-drawing glyphs — how tmux/dialog/mc draw borders.
+    {
+        term::Screen s{Extent{20, 3}};
+        feed(s, "\x1b(0lqk\x1b(B"); // enter DEC graphics, draw top border, back to ASCII
+        auto row = s.row(Row{0});
+        expect(row[0].cp == 0x250C, "'l' -> upper-left corner (U+250C)");
+        expect(row[1].cp == 0x2500, "'q' -> horizontal line (U+2500)");
+        expect(row[2].cp == 0x2510, "'k' -> upper-right corner (U+2510)");
+        // After ESC ( B, ASCII is literal again.
+        feed(s, "abc");
+        expect(s.row(Row{0})[3].cp == U'a', "ESC ( B restores literal ASCII");
+    }
+    // SO/SI shift between G1 (line drawing) and G0 (ASCII).
+    {
+        term::Screen s{Extent{20, 3}};
+        feed(s, "\x1b)0");                  // designate G1 = DEC graphics
+        feed(s, "a\x0e" "q\x0f" "b");        // 'a', SO, 'q'->line, SI, 'b'
+        auto row = s.row(Row{0});
+        expect(row[0].cp == U'a', "before SO: literal 'a'");
+        expect(row[1].cp == 0x2500, "after SO (G1 graphics): 'q' -> line");
+        expect(row[2].cp == U'b', "after SI (back to G0 ascii): literal 'b'");
+    }
+
     if (failures == 0) {
         std::printf("all screen tests passed\n");
         return 0;
