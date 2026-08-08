@@ -348,7 +348,7 @@ int main() {
     // With TEA, replies are WriteChild Cmds we read straight off feed_replies.
     {
         term::Screen s{Extent{80, 24}};
-        expect(feed_replies(s, "\x1b[c") == "\x1b[?62;1;6;22c",
+        expect(feed_replies(s, "\x1b[c") == "\x1b[?62;1;4;6;22c",
                "DA1 primary device attributes reply");
         expect(feed_replies(s, "\x1b[>c") == "\x1b[>1;95;0c",
                "DA2 secondary device attributes reply");
@@ -637,6 +637,28 @@ int main() {
         del += '\\';
         feed(s, del);
         expect(s.graphics().placements().empty(), "kitty a=d removes the placement");
+    }
+
+    // Sixel graphics (DCS q ... ST): decode a small image with a defined colour,
+    // run-length and a band newline.
+    {
+        term::Screen s{Extent{40, 10}};
+        s.set_cell_size(8, 16);
+        std::string six = "\x1bPq";        // DCS q
+        six += "#0;2;100;0;0";              // define colour 0 = red (RGB 0..100)
+        six += "#0!4~";                     // colour 0, 4 full 6px columns
+        six += "-";                         // next band (down 6px)
+        six += "#0!4~";                     // another 6px band
+        six += "\x1b";
+        six += "\\";                        // ST
+        feed(s, six);
+        expect(s.graphics().placements().size() == 1, "sixel DCS creates a placement");
+        if (!s.graphics().placements().empty()) {
+            const auto *img = s.graphics().image(s.graphics().placements()[0].image_id);
+            expect(img && img->width == 4 && img->height == 12, "sixel decodes to 4x12");
+            expect(img && img->rgba[0] == 255 && img->rgba[1] == 0 && img->rgba[2] == 0,
+                   "sixel colour definition decoded to red");
+        }
     }
 
     if (failures == 0) {

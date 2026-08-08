@@ -52,6 +52,13 @@ public:
     bool handle_apc(std::string_view data, std::int64_t cursor_abs_row, std::int32_t cursor_col,
                     int cell_w, int cell_h);
 
+    // Decode a sixel image (the DCS payload after the 'q', i.e. the sixel data)
+    // into an RGBA image and place it at the cursor. Returns true on success.
+    // `params` are the DCS parameters before 'q' (P1;P2;P3) — mostly ignored;
+    // we honour the P2=1 "transparent background" hint.
+    bool handle_sixel(std::string_view params, std::string_view data, std::int64_t cursor_abs_row,
+                      std::int32_t cursor_col, int cell_w, int cell_h);
+
     [[nodiscard]] const std::vector<Placement> &placements() const noexcept { return placements_; }
     [[nodiscard]] const Image *image(std::uint32_t id) const noexcept {
         auto it = images_.find(id);

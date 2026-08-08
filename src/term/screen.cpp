@@ -152,7 +152,24 @@ void Screen::apply(const vt::Action &action, Cmds &out) {
                 // OSC (title, clipboard, colour queries) is handled by the
                 // owning Terminal (which knows the palette); ignored here.
             } else if constexpr (std::is_same_v<T, vt::DcsDispatch>) {
-                dcs(a.prefix, a.data);
+                // Sixel is DCS <numeric params> q — a bare 'q' final preceded
+                // only by digits/';'. XTGETTCAP ('+q') and DECRQSS ('$q') also
+                // end in 'q' but carry an intermediate ('+'/'$'), so route by
+                // checking the char before the final.
+                const bool is_sixel =
+                    !a.prefix.empty() && a.prefix.back() == 'q' &&
+                    (a.prefix.size() == 1 ||
+                     (a.prefix[a.prefix.size() - 2] >= '0' && a.prefix[a.prefix.size() - 2] <= '9') ||
+                     a.prefix[a.prefix.size() - 2] == ';');
+                if (is_sixel) {
+                    const std::int64_t abs = viewport_to_abs(cursor_.row.get());
+                    if (graphics_.handle_sixel(a.prefix, a.data, abs, cursor_.col.get(), cell_w_,
+                                               cell_h_)) {
+                        touch();
+                    }
+                } else {
+                    dcs(a.prefix, a.data);
+                }
             } else if constexpr (std::is_same_v<T, vt::ApcDispatch>) {
                 // Kitty graphics: anchor a display at the cursor's absolute row.
                 const std::int64_t abs = viewport_to_abs(cursor_.row.get());
@@ -770,9 +787,9 @@ void Screen::csi(const vt::CsiDispatch &d) {
         } else if (!d.private_marker || d.marker == '?') {
             // DA1 (primary). fish sends this last as a fence and waits 10s for
             // the reply; the response must start with '?' and end with 'c'.
-            // \e[?62;...c advertises a VT220 with 132-col, colour, and
-            // selective-erase support (features we actually implement).
-            reply("\x1b[?62;1;6;22c");
+            // \e[?62;...c advertises a VT220 with 132-col, colour, selective
+            // erase, and SIXEL graphics (4) — features we actually implement.
+            reply("\x1b[?62;1;4;6;22c");
         }
         break;
     case 'n': // Device Status Report

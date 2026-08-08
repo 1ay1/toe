@@ -117,6 +117,147 @@ void Graphics::clear() {
     ++revision_;
 }
 
+bool Graphics::handle_sixel(std::string_view params, std::string_view data,
+                            std::int64_t cursor_abs_row, std::int32_t cursor_col, int cell_w,
+                            int cell_h) {
+    // P2 (the second DCS parameter) == 1 means "pixels left un-set are
+    // transparent"; otherwise they're the background colour. We render un-set
+    // pixels as transparent regardless (cleaner over a terminal cell), but
+    // track it for correctness of the default fill.
+    (void)params;
+
+    // The default sixel palette (VT340-ish): 16 colours. Apps usually redefine
+    // them, but provide a sane default so a palette-less image still shows.
+    struct Col { std::uint8_t r, g, b, a; };
+    std::vector<Col> pal(256, Col{0, 0, 0, 255});
+    static const std::uint8_t kDefault[16][3] = {
+        {0, 0, 0},    {20, 20, 80},  {80, 13, 13}, {20, 80, 20}, {80, 20, 80}, {20, 80, 80},
+        {80, 80, 20}, {53, 53, 53},  {26, 26, 26}, {33, 33, 60}, {60, 26, 26}, {33, 60, 33},
+        {33, 33, 60}, {33, 60, 60},  {60, 60, 33}, {80, 80, 80},
+    };
+    for (int i = 0; i < 16; ++i) {
+        pal[static_cast<std::size_t>(i)] = {static_cast<std::uint8_t>(kDefault[i][0] * 255 / 100),
+                                            static_cast<std::uint8_t>(kDefault[i][1] * 255 / 100),
+                                            static_cast<std::uint8_t>(kDefault[i][2] * 255 / 100),
+                                            255};
+    }
+
+    // Decode into a growable RGBA canvas. Sixel writes 6-pixel vertical bands.
+    std::vector<std::uint8_t> canvas; // RGBA, row-major, resized as we grow
+    int cw = 0, chgt = 0;             // current canvas dims
+    int px = 0;                       // pen x
+    int band = 0;                     // current band's top y (multiple of 6)
+    int cur = 0;                      // current colour index
+    int max_x = 0, max_y = 0;         // used extent
+
+    auto ensure = [&](int nx, int ny) {
+        if (nx < cw && ny < chgt) return;
+        const int ncw = std::max(cw, nx + 1);
+        const int nch = std::max(chgt, ((ny / 6) + 1) * 6);
+        if (static_cast<long long>(ncw) * nch > (16LL << 20)) return; // 16Mpx cap
+        std::vector<std::uint8_t> nn(static_cast<std::size_t>(ncw) * static_cast<std::size_t>(nch) * 4, 0);
+        for (int y = 0; y < chgt; ++y)
+            std::memcpy(nn.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(ncw) * 4,
+                        canvas.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(cw) * 4,
+                        static_cast<std::size_t>(cw) * 4);
+        canvas.swap(nn);
+        cw = ncw;
+        chgt = nch;
+    };
+    auto plot = [&](int x, int y, int colour) {
+        if (colour < 0 || colour >= 256) return;
+        ensure(x, y);
+        if (x >= cw || y >= chgt) return;
+        const Col &c = pal[static_cast<std::size_t>(colour)];
+        std::uint8_t *d =
+            canvas.data() + (static_cast<std::size_t>(y) * static_cast<std::size_t>(cw) + static_cast<std::size_t>(x)) * 4;
+        d[0] = c.r; d[1] = c.g; d[2] = c.b; d[3] = c.a;
+        if (x > max_x) max_x = x;
+        if (y > max_y) max_y = y;
+    };
+
+    for (std::size_t i = 0; i < data.size(); ++i) {
+        const char ch = data[i];
+        if (ch == '#') { // colour: #Pc or #Pc;Pu;Px;Py;Pz
+            ++i;
+            int idx = 0;
+            while (i < data.size() && data[i] >= '0' && data[i] <= '9') idx = idx * 10 + (data[i++] - '0');
+            if (i < data.size() && data[i] == ';') { // definition
+                ++i;
+                int comps[4] = {0, 0, 0, 0};
+                int n = 0;
+                while (n < 4) {
+                    int v = 0;
+                    while (i < data.size() && data[i] >= '0' && data[i] <= '9') v = v * 10 + (data[i++] - '0');
+                    comps[n++] = v;
+                    if (i < data.size() && data[i] == ';') { ++i; continue; }
+                    break;
+                }
+                if (idx >= 0 && idx < 256) {
+                    // comps: system(1=HLS,2=RGB), then three 0..100 values.
+                    auto sc = [](int v) { return static_cast<std::uint8_t>(std::clamp(v, 0, 100) * 255 / 100); };
+                    pal[static_cast<std::size_t>(idx)] = {sc(comps[1]), sc(comps[2]), sc(comps[3]), 255};
+                }
+            }
+            cur = idx;
+            --i; // the for-loop will ++i
+        } else if (ch == '$') { // carriage return: back to x=0, same band
+            px = 0;
+        } else if (ch == '-') { // next band (down 6 px)
+            px = 0;
+            band += 6;
+        } else if (ch == '!') { // run-length: !Pn <sixel>
+            ++i;
+            int rep = 0;
+            while (i < data.size() && data[i] >= '0' && data[i] <= '9') rep = rep * 10 + (data[i++] - '0');
+            if (i < data.size()) {
+                const char sx = data[i];
+                if (sx >= '?' && sx <= '~') {
+                    const int bits = sx - '?';
+                    for (int r = 0; r < rep; ++r) {
+                        for (int b = 0; b < 6; ++b)
+                            if (bits & (1 << b)) plot(px, band + b, cur);
+                        ++px;
+                    }
+                }
+            }
+        } else if (ch >= '?' && ch <= '~') { // one sixel column
+            const int bits = ch - '?';
+            for (int b = 0; b < 6; ++b)
+                if (bits & (1 << b)) plot(px, band + b, cur);
+            ++px;
+        }
+        // Other bytes (whitespace, "Pn;Pn;Pn;Pn q" raster attrs handled by DCS
+        // params, etc.) are ignored.
+    }
+
+    const int w = max_x + 1, h = max_y + 1;
+    if (w <= 0 || h <= 0 || canvas.empty()) return false;
+
+    Image img;
+    img.id = next_auto_id_++;
+    img.width = w;
+    img.height = h;
+    img.rgba.assign(static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4, 0);
+    for (int y = 0; y < h; ++y)
+        std::memcpy(img.rgba.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(w) * 4,
+                    canvas.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(cw) * 4,
+                    static_cast<std::size_t>(w) * 4);
+
+    const std::uint32_t iid = img.id;
+    images_[iid] = std::move(img);
+
+    Placement pl;
+    pl.image_id = iid;
+    pl.abs_row = cursor_abs_row;
+    pl.col = cursor_col;
+    pl.cols = cell_w > 0 ? (w + cell_w - 1) / cell_w : 1;
+    pl.rows = cell_h > 0 ? (h + cell_h - 1) / cell_h : 1;
+    placements_.push_back(pl);
+    ++revision_;
+    return true;
+}
+
 bool Graphics::handle_apc(std::string_view data, std::int64_t cursor_abs_row,
                           std::int32_t cursor_col, int cell_w, int cell_h) {
     // kitty graphics packets start with 'G'. Anything else isn't ours.

@@ -9,7 +9,7 @@ std::string writes(const Cmds&cs){ std::string s; for(auto&c:cs) if(auto*w=std::
 int main(){
   Config cfg; term::Model m{cfg, Extent{80,24}};
   // ChildOutput with a DA1 query -> a WriteChild reply Cmd (pure).
-  ok(writes(term::feed_output(m,"\x1b[c"))=="\x1b[?62;1;6;22c", "feed_output DA1 -> WriteChild reply");
+  ok(writes(term::feed_output(m,"\x1b[c"))=="\x1b[?62;1;4;6;22c", "feed_output DA1 -> WriteChild reply");
   // OSC 2 title -> SetTitle Cmd.
   { Cmds c=term::feed_output(m,"\x1b]2;hello\x07"); bool t=false;
     for(auto&x:c) if(auto*s=std::get_if<SetTitle>(&x)) t=(s->title=="hello");
