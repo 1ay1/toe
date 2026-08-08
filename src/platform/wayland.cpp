@@ -27,6 +27,7 @@
 #include <sys/timerfd.h>
 #include <time.h>
 #include <unistd.h>
+#include <poll.h>
 
 #include "xdg-shell-client-protocol.h"
 
@@ -612,17 +613,28 @@ void WaylandSurface::swap() {
 
 void WaylandSurface::poll_events(const std::function<void(const Event &)> &sink) {
     sink_ = &sink;
-    // Dispatch anything already decoded, then read whatever is on the socket
-    // (non-blocking) and dispatch that too. The host is expected to have polled
-    // the fd, so a read here won't block meaningfully; prepare_read/read_events
-    // is the race-free way to pull new events after a poll wakeup.
+    // Dispatch anything already decoded, then pull whatever is on the socket
+    // WITHOUT blocking. This is called every frame regardless of what woke the
+    // host's poll() (often the PTY, not Wayland), so read_events() must not be
+    // allowed to block: we only read when the fd is actually readable, and
+    // cancel the read otherwise. Blocking here starves xdg ping/pong and makes
+    // the compositor flag the window "not responding".
     wl_display_dispatch_pending(display_);
+
     while (wl_display_prepare_read(display_) != 0) {
         wl_display_dispatch_pending(display_);
     }
     wl_display_flush(display_);
-    wl_display_read_events(display_);
-    wl_display_dispatch_pending(display_);
+
+    // Is the Wayland fd readable right now? poll with a zero timeout.
+    struct pollfd pfd{wl_display_get_fd(display_), POLLIN, 0};
+    if (::poll(&pfd, 1, 0) > 0 && (pfd.revents & POLLIN)) {
+        wl_display_read_events(display_);
+        wl_display_dispatch_pending(display_);
+    } else {
+        // Nothing to read — release the read intent instead of blocking on it.
+        wl_display_cancel_read(display_);
+    }
 
     // Fire synthetic key repeats for however many intervals elapsed.
     if (repeat_fd_ >= 0 && repeat_key_ != 0) {
