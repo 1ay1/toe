@@ -1,22 +1,22 @@
 // SPDX-License-Identifier: LGPL-2.0-or-later
 //
-// toe::run<S> — the terminal's frame loop, MONOMORPHIC over the concrete
-// surface type S. This is the engine's ENTRY POINT: a host opens a window that
-// models `toe::Surface`, creates nothing else, and calls `toe::run(surface,
-// cfg)`. toe owns everything from here — PTY, VT parse, screen model, the GL
-// renderer, input policy (EventRouter), timing/blink, and the shape of a frame.
+// toe::run<App> — the terminal, driven to completion over one window.
 //
-// The host (hand, or any Qt/GLFW/SDL/Win32/Cocoa shell) is left with exactly
-// one job: bring a window that satisfies the `Surface` concept, with a current
-// GL context. It does NOT own the loop — inverting the old split where the
-// frontend drove the engine.
+// This is the engine's ENTRY POINT and the line `main` writes:
 //
-// Everything here is compile-time dispatched. `S` is a concrete `Surface` model
-// chosen once at startup by the host; there is no AnySurface, no vtable, no
-// std::function in the hot loop. Every surface call inlines and optional surface
-// refinements (title, partial damage, key-repeat fd) resolve through the uniform
-// `if constexpr` accessors in surface.hpp — folding to nothing on backends that
-// don't provide them.
+//     int main() { return toe::run<hand::App>(cfg, {"hand", {800, 500}}); }
+//
+// `App` is the concrete window type for this build target (a build-time
+// typedef). toe OPENS it (App::open), builds the Terminal inside it, and owns
+// everything from there — PTY, VT parse, screen model, the GL renderer, input
+// policy (EventRouter), timing/blink, and the shape of a frame. The host's only
+// job is to be an `App`: bring a window, with a current GL context.
+//
+// Everything is compile-time dispatched on the concrete `App`; there is no
+// AnySurface, no vtable, no std::function in the hot loop. Every App call
+// inlines and optional refinements (title, partial damage, key-repeat fd)
+// resolve through the uniform `if constexpr` accessors in app.hpp — folding to
+// nothing on backends that don't provide them.
 
 #ifndef TOE_RUN_HPP
 #define TOE_RUN_HPP
@@ -33,7 +33,6 @@
 #include "toe/core/blink.hpp"
 #include "toe/core/event_router.hpp"
 #include "toe/core/poll_set.hpp"
-#include "toe/core/surface.hpp"
 #include "toe/gfx/render_target.hpp"
 #include "toe/terminal.hpp"
 
@@ -72,11 +71,11 @@ struct RenderKey {
     return Timeout::millis(kIdlePollMs);
 }
 
-// The frame loop over one live Terminal and one concrete surface. Runs until the
+// The frame loop over one live Terminal and one concrete App. Runs until the
 // child exits or the window closes; returns the child's exit code. Called by
-// `run()` below once the Terminal has been created.
-template <Surface S>
-[[nodiscard]] int run_loop(S &surf, toe::Terminal &term, toe::PixelSize px) {
+// `run()` below once the App is open and the Terminal created.
+template <App A>
+[[nodiscard]] int run_loop(A &surf, toe::Terminal &term, toe::PixelSize px) {
     bool running = true;
     std::string last_title;
     std::optional<RenderKey> drawn;    // key of the last rendered frame
@@ -91,7 +90,7 @@ template <Surface S>
 
         // 2. Route window events -> Session actions via the exhaustive
         //    visitor. It reports whether any event handed bytes to the child.
-        EventRouter<S> router{session, surf, px, running};
+        EventRouter<A> router{session, surf, px, running};
         surf.poll_events([&](const Event &ev) { std::visit(router, ev); });
 
         // 2b. Drain child output HERE, decoupled from the window event
@@ -170,35 +169,37 @@ template <Surface S>
     return 0;
 }
 
-// The low-level entry: given an already-open surface that models `Surface`
-// (with a current GL context) and a build recipe, create the Terminal at the
-// surface's pixel size and run the monomorphic frame loop to completion. Returns
-// the child's exit code, or a negative value if the Terminal couldn't be created
-// (message already printed to stderr).
+// dereference a Result<App> or Result<unique_ptr<App>> to an App& uniformly, so
+// a host may return its App by value OR by owning pointer from open().
+template <class T> [[nodiscard]] inline auto &deref_app(T &opened) {
+    if constexpr (requires { *opened; }) return *opened; // smart-pointer payload
+    else return opened;                                  // by-value payload
+}
+
+// The single, top-level entry point — the line `main` writes. `App` is the
+// concrete window type for this build (hand::App). toe opens it via the App's
+// own factory (App::open), builds the Config's Terminal at the window's pixel
+// size, and drives the loop to completion. Everything is monomorphic on the one
+// concrete App — no vtable. Returns the child's exit code, or a negative value
+// if the window or terminal couldn't be created (message already on stderr).
 //
-// Most frontends implement the `App` contract and call the `run(App&)` overload
-// below instead; this surface+config form is the primitive it delegates to.
-template <Surface S>
-[[nodiscard]] int run(S &surface, const toe::Config &cfg) {
-    const toe::PixelSize px = surface.pixel_size();
+//     int main() { return toe::run<hand::App>(cfg, {"hand", {800, 500}}); }
+template <App A>
+[[nodiscard]] int run(const toe::Config &cfg, const WindowConfig &win = {}) {
+    auto opened = A::open(win);
+    if (!opened) {
+        std::fprintf(stderr, "toe: %s\n", opened.error().message.c_str());
+        return -1;
+    }
+    A &app = deref_app(*opened);
+
+    const toe::PixelSize px = app.pixel_size();
     auto term = toe::Terminal::create(cfg, px);
     if (!term) {
         std::fprintf(stderr, "toe: %s\n", term.error().message.c_str());
         return -1;
     }
-    return run_loop(surface, *term, px);
-}
-
-// The canonical engine entry point. A frontend that models the `App` contract
-// (toe/app.hpp) hands its whole self to toe: toe pulls the window out of
-// `app.surface()` and the build recipe out of `app.config()`, then drives the
-// terminal to completion. This is "toe owns the contract; the host implements
-// it" made literal — the host supplies exactly what the contract declares and
-// nothing more, and toe owns the loop. Instantiated once per concrete App, so
-// the whole thing is monomorphic — no vtable.
-template <App A>
-[[nodiscard]] int run(A &app) {
-    return run(app.surface(), app.config());
+    return run_loop(app, *term, px);
 }
 
 } // namespace toe

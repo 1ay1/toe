@@ -22,7 +22,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "toe/core/surface.hpp"
+#include "toe/app.hpp"
 #include "toe/terminal.hpp"
 
 namespace toe {
@@ -31,7 +31,7 @@ namespace toe {
 // across the whole session; `take_wrote_input()` reports (and resets) whether
 // this batch handed bytes to the child, so the host can coalesce the echo into
 // one frame. Templated on the concrete surface so nothing goes through a vtable.
-template <Surface S>
+template <App S>
 class EventRouter {
 public:
     EventRouter(Session &session, S &surface, PixelSize &px, bool &running)
