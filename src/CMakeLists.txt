@@ -26,6 +26,7 @@ add_library(toe
   pty/child.cpp
   gfx/font.cpp
   gfx/face.cpp
+  gfx/font_discovery.cpp
   gfx/stb_impl.cpp
   gfx/shader.cpp
   gfx/palette.cpp

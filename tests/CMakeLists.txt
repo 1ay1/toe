@@ -21,3 +21,9 @@ add_test(NAME tea COMMAND tea_test)
 add_executable(keymap_test keymap_test.cpp)
 target_link_libraries(keymap_test PRIVATE toe::toe)
 add_test(NAME keymap COMMAND keymap_test)
+
+# Universal Unicode coverage: FaceStack + FontDiscovery lazy fallback. Uses the
+# system's fonts, so it may SKIP (exit 77) on a machine with no usable primary.
+add_executable(coverage_test coverage_test.cpp)
+target_link_libraries(coverage_test PRIVATE toe::toe)
+add_test(NAME coverage COMMAND coverage_test)

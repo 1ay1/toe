@@ -111,15 +111,21 @@ Result<FontAtlas> FontAtlas::create(std::string font_path, int pixel_size,
     if (a.cell_w_ <= 0) a.cell_w_ = pixel_size / 2 + 1;
     if (a.cell_h_ <= 0) a.cell_h_ = pixel_size + 2;
 
-    a.faces_.push(std::move(primary));
+    a.faces_.push(std::move(primary), font_path);
 
     // Optional fallback face(s), appended in order. load() sizes each to the
     // same pixel height so their glyphs share the primary's baseline.
     if (!fallback_path.empty()) {
         if (auto fb = read_file(fallback_path); !fb.empty()) {
-            a.faces_.push(Face::load(std::move(fb), pixel_size));
+            a.faces_.push(Face::load(std::move(fb), pixel_size), fallback_path);
         }
     }
+
+    // Enable LAZY, discovery-backed fallback: any codepoint no loaded face has
+    // triggers a one-time system-font search (cached by Unicode block), so every
+    // UTF character renders — CJK, emoji, symbols, Braille, math — without
+    // preloading the whole font tree.
+    a.faces_.enable_discovery(pixel_size);
 
     // Ligature shaper (GSUB calt/liga) over the primary face's bytes. Optional;
     // identity if unavailable.

@@ -110,16 +110,32 @@ private:
 // An ordered chain of faces: the primary defines the cell + metrics; subsequent
 // faces are consulted, in order, for codepoints the primary lacks (CJK, emoji,
 // symbols). `resolve()` returns the first face that owns the codepoint plus its
-// glyph index, so a rasterize uses that face's own scale.
+// glyph index. When NO loaded face has the codepoint, the stack LAZILY discovers
+// a system font that covers it (FontDiscovery), loads it, and appends it — so
+// "every UTF character renders" without preloading every font on the machine.
 class FaceStack {
 public:
-    FaceStack() = default;
+    FaceStack();
+    ~FaceStack();
+    FaceStack(FaceStack &&) noexcept;
+    FaceStack &operator=(FaceStack &&) noexcept;
+    FaceStack(const FaceStack &) = delete;
+    FaceStack &operator=(const FaceStack &) = delete;
 
     // Add a face to the end of the chain. The FIRST face added is the primary
-    // and fixes the reference metrics. Ignored if `face` is nullopt.
-    void push(std::optional<Face> face) {
-        if (face) faces_.push_back(std::move(*face));
+    // and fixes the reference metrics. Ignored if `face` is nullopt. `path` (if
+    // given) is remembered so lazy discovery never re-loads an already-chained
+    // file.
+    void push(std::optional<Face> face, std::string path = {}) {
+        if (face) {
+            faces_.push_back(std::move(*face));
+            if (!path.empty()) loaded_paths_.push_back(std::move(path));
+        }
     }
+
+    // The pixel height every lazily-discovered fallback face is loaded at, and
+    // whether lazy discovery is enabled. Set once after the primary is pushed.
+    void enable_discovery(int pixel_height) noexcept { pixel_height_ = pixel_height; }
 
     [[nodiscard]] bool empty() const noexcept { return faces_.empty(); }
     [[nodiscard]] std::size_t size() const noexcept { return faces_.size(); }
@@ -130,24 +146,21 @@ public:
     [[nodiscard]] Face &primary() noexcept { return faces_.front(); }
 
     // Where a codepoint lives: the first face in the chain that has a glyph for
-    // it, and that glyph's index. Falls back to {primary, primary.glyph_index}
-    // (which may be 0 = .notdef) when NO face has it, so the caller always gets
-    // a drawable result. The common ASCII case hits the primary on the first
-    // probe.
+    // it, and that glyph's index. On a total miss, lazily discovers + appends a
+    // covering system font (so a later codepoint in the same script is instant).
+    // Falls back to {primary, .notdef} only when the whole system has nothing,
+    // so the caller always gets a drawable result (a visible box).
     struct Resolved {
-        const Face *face;      // the face that owns the glyph
-        std::uint32_t index;   // its glyph index within that face
+        const Face *face;    // the face that owns the glyph
+        std::uint32_t index; // its glyph index within that face
     };
-    [[nodiscard]] Resolved resolve(char32_t cp) const noexcept {
-        for (const Face &f : faces_) {
-            if (const std::uint32_t gi = f.glyph_index(cp); gi != 0) return {&f, gi};
-        }
-        const Face &pf = faces_.front();
-        return {&pf, pf.glyph_index(cp)};
-    }
+    [[nodiscard]] Resolved resolve(char32_t cp);
 
 private:
     std::vector<Face> faces_;
+    std::unique_ptr<class FontDiscovery> discovery_;
+    std::vector<std::string> loaded_paths_; // files already in the chain (dedup)
+    int pixel_height_ = 0;                   // 0 = discovery disabled
 };
 
 } // namespace toe::gfx

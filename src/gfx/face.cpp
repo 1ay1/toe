@@ -6,8 +6,11 @@
 #include "toe/gfx/face.hpp"
 
 #include <cmath>
+#include <fstream>
 
 #include "stb/stb_truetype.h"
+
+#include "toe/gfx/font_discovery.hpp"
 
 namespace toe::gfx {
 
@@ -80,6 +83,63 @@ GlyphBitmap Face::rasterize(std::uint32_t glyph_index) const {
         stbtt_FreeBitmap(bmp, nullptr);
     }
     return out;
+}
+
+// --- FaceStack --------------------------------------------------------------
+
+namespace {
+[[nodiscard]] std::vector<std::uint8_t> slurp(const std::string &path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return {};
+    f.seekg(0, std::ios::end);
+    const std::streamoff sz = f.tellg();
+    if (sz <= 0) return {};
+    f.seekg(0);
+    std::vector<std::uint8_t> b(static_cast<std::size_t>(sz));
+    f.read(reinterpret_cast<char *>(b.data()), sz);
+    return b;
+}
+} // namespace
+
+FaceStack::FaceStack() = default;
+FaceStack::~FaceStack() = default;
+FaceStack::FaceStack(FaceStack &&) noexcept = default;
+FaceStack &FaceStack::operator=(FaceStack &&) noexcept = default;
+
+FaceStack::Resolved FaceStack::resolve(char32_t cp) {
+    // 1. Fast path: a loaded face already covers it (ASCII hits the primary).
+    for (const Face &f : faces_) {
+        if (const std::uint32_t gi = f.glyph_index(cp); gi != 0) return {&f, gi};
+    }
+
+    // 2. Total miss: lazily discover a system font that covers cp, load it, and
+    //    append it to the chain. Cached by Unicode block, so the next codepoint
+    //    in the same script skips straight to step 1. We may find a font whose
+    //    cmap covers cp but that the rasterizer can't load (e.g. a CBDT/sbix
+    //    COLOUR-BITMAP emoji font stb_truetype rejects) — skip those and keep
+    //    asking discovery to exclude them until we get a rasterizable face.
+    if (pixel_height_ > 0) {
+        if (!discovery_) discovery_ = std::make_unique<FontDiscovery>();
+        std::vector<std::string> tried = loaded_paths_;
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            auto path = discovery_->resolve(cp, tried);
+            if (!path) break; // nothing more on the system covers it
+            if (auto face = Face::load(slurp(*path), pixel_height_)) {
+                if (const std::uint32_t gi = face->glyph_index(cp); gi != 0) {
+                    loaded_paths_.push_back(*path);
+                    faces_.push_back(std::move(*face));
+                    const Face &nf = faces_.back();
+                    return {&nf, nf.glyph_index(cp)};
+                }
+            }
+            tried.push_back(std::move(*path)); // covers-but-unloadable: skip, try next
+        }
+    }
+
+    // 3. Nothing on the system has it: return the primary's .notdef (glyph 0),
+    //    which the atlas draws as a visible box — never a blank cell.
+    const Face &pf = faces_.front();
+    return {&pf, pf.glyph_index(cp)};
 }
 
 } // namespace toe::gfx
