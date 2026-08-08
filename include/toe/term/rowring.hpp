@@ -28,6 +28,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -222,6 +223,25 @@ public:
         // only live rows. Their slots stay put; we just forget the scrollback.
         head_ = view_base_slot();
         count_ = static_cast<std::size_t>(rows_);
+    }
+
+    // RIS: drop the scrollback AND guarantee no stale cell can resurface. The
+    // plain clear_scrollback only moves pointers, leaving old (possibly BCE-
+    // coloured) cells physically in slots that a later scroll will recycle. Two
+    // things then leak that stale colour: (1) the recycle fast path trusts
+    // `slot >= high_water_` as pristine `fill_`, and (2) blank_row only clears
+    // each slot's `used_` prefix, so colour past a now-smaller used_ survives.
+    // Fix both cheaply: force high_water_ to the whole arena (so every recycle
+    // takes the blank_row path, never the pristine fast path) and set every
+    // slot's used_ to full width (so blank_row clears the ENTIRE row). This is
+    // O(cap_slots) integer writes — NOT the O(cap_slots * cols) arena zero-fill a
+    // full reset() does, which made a RIS-heavy stream (mixednasty: 800k RIS)
+    // pathologically slow.
+    void reset_scrollback() noexcept {
+        clear_scrollback();
+        high_water_ = cap_slots_;                 // no slot is trusted pristine
+        std::fill(used_.begin(), used_.end(),     // blank_row will clear full width
+                  static_cast<std::size_t>(cols_));
     }
 
     // Resize to `new_rows` x `new_cols`, preserving as much content as possible.

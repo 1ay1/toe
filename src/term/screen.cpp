@@ -1566,14 +1566,17 @@ void Screen::esc(const vt::EscDispatch &d) {
     if (d.intermediates.empty()) {
         switch (d.final) {
         case 'c': // RIS — reset to initial state.
-            // Fully reset the ring: reset() reallocates/refills the arena with
-            // blank cells, so NO stale content survives. The old path only
-            // cleared the visible grid + forgot the scrollback pointers
-            // (clear_scrollback), leaving previously-written cells physically in
-            // the recycled scrollback slots — which a later scroll flood would
-            // expose with the ring's prefix-blank fast paths (garbage coloured
-            // rows from an earlier screenful).
-            ring_.reset(size_.rows, size_.cols, max_history_, Cell{});
+            // Blank the visible grid, then drop the scrollback in a way that no
+            // stale (e.g. BCE-coloured) cell can resurface when slots are later
+            // recycled — see RowRing::reset_scrollback. This is O(rows+cap), NOT
+            // a full arena zero-fill: a RIS-heavy stream (mixednasty emits 800k
+            // RIS) must not do O(cap*cols) work per reset.
+            for (std::int32_t r = 0; r < size_.rows; ++r) {
+                ring_.mark_view_full(r);              // clear the FULL width, not just used_
+                ring_.blank_view_row(r, Cell{});      // with the DEFAULT cell (resets the
+                ring_.set_view_wrapped(r, false);     // ring's cached blank from any BCE colour)
+            }
+            ring_.reset_scrollback();
             scroll_offset_ = 0;
             cursor_ = Pos{};
             pen_ = Pen{};
