@@ -505,9 +505,19 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
         if (cp == U' ' || cp == 0 || cell.spacer()) continue;
 
         // Foreground color for this cell's glyph.
-        const Rgb fgcol = on_cursor
-                              ? palette_.resolve(cell.pen.bg, /*is_fg=*/false)
-                              : palette_.resolve(reverse ? cell.pen.bg : cell.pen.fg, !reverse);
+        Rgb fgcol = on_cursor
+                        ? palette_.resolve(cell.pen.bg, /*is_fg=*/false)
+                        : palette_.resolve(reverse ? cell.pen.bg : cell.pen.fg, !reverse);
+
+        // Faint (SGR 2 / dim): mix the foreground ~55% toward the background so
+        // de-emphasised text (ls, git, prompts) reads as dimmed, not normal.
+        if (term::has(cell.pen.attr, term::Attr::Faint)) {
+            const Rgb bg = palette_.resolve(reverse ? cell.pen.fg : cell.pen.bg, reverse);
+            auto dim = [](std::uint8_t f, std::uint8_t b) {
+                return static_cast<std::uint8_t>((f * 45 + b * 55) / 100);
+            };
+            fgcol = {dim(fgcol.r, bg.r), dim(fgcol.g, bg.g), dim(fgcol.b, bg.b)};
+        }
 
         // Geometric block elements and box-drawing lines tile/connect pixel-
         // perfectly only when drawn as exact cell-relative rects — the font's
@@ -525,7 +535,11 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
             continue;
         }
 
-        const GlyphInfo *gi = atlas_.glyph(cp);
+        // Style: synthesize bold/italic from the cell's SGR attributes.
+        const auto style = static_cast<gfx::FontStyle>(
+            (term::has(cell.pen.attr, term::Attr::Bold) ? 1u : 0u) |
+            (term::has(cell.pen.attr, term::Attr::Italic) ? 2u : 0u));
+        const GlyphInfo *gi = atlas_.glyph(cp, style);
         if (!gi || gi->width == 0 || gi->height == 0) continue;
         const Rgb col = fgcol;
         const float gx = static_cast<float>(c * cw + gi->bearing_x);

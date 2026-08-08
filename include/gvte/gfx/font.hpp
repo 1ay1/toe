@@ -30,6 +30,16 @@ struct GlyphInfo {
     int advance{};                // horizontal advance in pixels
 };
 
+// Rendition style for a glyph. Bold/italic are SYNTHESIZED from the primary
+// face (FreeType embolden + shear) so any monospace font gets them. The four
+// values are a 2-bit field: bit0 = bold, bit1 = italic.
+enum class FontStyle : std::uint8_t {
+    Regular = 0,
+    Bold = 1,
+    Italic = 2,
+    BoldItalic = 3,
+};
+
 class FontAtlas {
 public:
     // Load a monospace font at `pixel_size`. If `family` is empty, Fontconfig
@@ -47,17 +57,21 @@ public:
     [[nodiscard]] int cell_height() const noexcept { return cell_h_; }
     [[nodiscard]] int ascent() const noexcept { return ascent_; }
 
-    // Look up (rasterizing + packing on first use) the glyph for a codepoint.
-    // Returns nullptr only if the codepoint has no glyph in the face.
-    const GlyphInfo *glyph(char32_t cp) {
-        // Fast path: Latin-1 lives in a flat array — an index, no hashing. This
-        // is the overwhelmingly common case (ASCII text) and the renderer's
-        // hottest lookup.
+    // Look up (rasterizing + packing on first use) the glyph for a codepoint
+    // in a given style. Bold/italic are synthesized from the primary face
+    // (embolden + shear) so they work with any monospace font, not just ones
+    // shipping separate bold/italic files. Returns nullptr only if the
+    // codepoint has no glyph in the face.
+    const GlyphInfo *glyph(char32_t cp, FontStyle style = FontStyle::Regular) {
+        const auto st = static_cast<std::size_t>(style);
+        // Fast path: Latin-1 lives in a flat per-style array — an index, no
+        // hashing. This is the overwhelmingly common case (ASCII text) and the
+        // renderer's hottest lookup.
         if (cp < kFastCount) {
-            FastSlot &s = fast_[cp];
+            FastSlot &s = fast_[st][cp];
             if (s.state == FastSlot::Ready) return &s.info;
             if (s.state == FastSlot::Missing) return nullptr;
-            const GlyphInfo *gi = rasterize(cp);
+            const GlyphInfo *gi = rasterize(cp, style);
             if (gi) {
                 s.info = *gi;
                 s.state = FastSlot::Ready;
@@ -66,10 +80,12 @@ public:
             s.state = FastSlot::Missing;
             return nullptr;
         }
-        if (auto it = cache_.find(cp); it != cache_.end()) {
+        // Rare codepoints: key the hash on (style, codepoint).
+        const std::uint64_t key = (static_cast<std::uint64_t>(st) << 32) | cp;
+        if (auto it = cache_.find(key); it != cache_.end()) {
             return &it->second;
         }
-        return rasterize(cp);
+        return rasterize(cp, style);
     }
 
     // The GL atlas texture id (GL_R8), for binding by the renderer.
@@ -79,7 +95,7 @@ public:
 private:
     FontAtlas() = default;
     void destroy() noexcept;
-    const GlyphInfo *rasterize(char32_t cp);
+    const GlyphInfo *rasterize(char32_t cp, FontStyle style);
 
     // opaque FreeType handles (kept as void* to avoid leaking ft2 into the hdr)
     void *ft_{nullptr};   // FT_Library
@@ -100,16 +116,17 @@ private:
 
     int cell_w_{0}, cell_h_{0}, ascent_{0};
 
-    std::unordered_map<char32_t, GlyphInfo> cache_{};
+    std::unordered_map<std::uint64_t, GlyphInfo> cache_{}; // key = style<<32 | cp
 
     // Flat cache for Latin-1 codepoints — the renderer's hot path. Indexed
-    // directly by codepoint, so no hashing on ASCII text.
+    // directly by codepoint per style, so no hashing on ASCII text.
     static constexpr char32_t kFastCount = 256;
+    static constexpr std::size_t kStyles = 4; // Regular, Bold, Italic, BoldItalic
     struct FastSlot {
         enum State : std::uint8_t { Empty, Ready, Missing } state = Empty;
         GlyphInfo info{};
     };
-    std::array<FastSlot, kFastCount> fast_{};
+    std::array<std::array<FastSlot, kFastCount>, kStyles> fast_{};
 };
 
 } // namespace gvte::gfx

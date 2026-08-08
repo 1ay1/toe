@@ -8,6 +8,7 @@
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#include FT_OUTLINE_H
 
 #include <fontconfig/fontconfig.h>
 #include <epoxy/gl.h>
@@ -218,13 +219,38 @@ void *FontAtlas::face_for(char32_t cp) {
     return fb;
 }
 
-const GlyphInfo *FontAtlas::rasterize(char32_t cp) {
+const GlyphInfo *FontAtlas::rasterize(char32_t cp, FontStyle style) {
     auto face = static_cast<FT_Face>(face_for(cp));
+    const bool bold = (static_cast<std::uint8_t>(style) & 1) != 0;
+    const bool italic = (static_cast<std::uint8_t>(style) & 2) != 0;
+    const std::uint64_t key = (static_cast<std::uint64_t>(style) << 32) | cp;
 
-    if (FT_Load_Char(face, cp, FT_LOAD_RENDER) != 0) {
+    // Load the outline (not a bitmap yet) so we can embolden / shear it, then
+    // render. Falls back gracefully if the face has no outlines.
+    if (FT_Load_Char(face, cp, FT_LOAD_DEFAULT) != 0) {
         return nullptr;
     }
     FT_GlyphSlot g = face->glyph;
+
+    if (g->format == FT_GLYPH_FORMAT_OUTLINE) {
+        if (italic) {
+            // Shear right by ~0.2 (≈12°) for a synthetic oblique.
+            FT_Matrix shear{0x10000, static_cast<FT_Fixed>(0.2 * 0x10000), 0, 0x10000};
+            FT_Outline_Transform(&g->outline, &shear);
+        }
+        if (bold) {
+            // Embolden proportional to the font size so it scales. ~ x_ppem/14
+            // pixels of outward growth gives a natural medium-bold weight
+            // without ballooning the glyph out of its cell. Value is in 26.6
+            // fixed point (×64).
+            const FT_Pos strength = (face->size->metrics.x_ppem * 64) / 14;
+            FT_Outline_Embolden(&g->outline, strength);
+        }
+    }
+    if (FT_Render_Glyph(g, FT_RENDER_MODE_NORMAL) != 0) {
+        return nullptr;
+    }
+
     const int w = static_cast<int>(g->bitmap.width);
     const int h = static_cast<int>(g->bitmap.rows);
 
@@ -237,7 +263,7 @@ const GlyphInfo *FontAtlas::rasterize(char32_t cp) {
 
     if (w == 0 || h == 0) {
         // Whitespace / zero-area glyph: no bitmap to pack, UVs stay zero.
-        auto [it, _] = cache_.emplace(cp, info);
+        auto [it, _] = cache_.emplace(key, info);
         return &it->second;
     }
 
@@ -266,7 +292,7 @@ const GlyphInfo *FontAtlas::rasterize(char32_t cp) {
     pen_x_ += w + 1;
     shelf_h_ = std::max(shelf_h_, h);
 
-    auto [it, _] = cache_.emplace(cp, info);
+    auto [it, _] = cache_.emplace(key, info);
     return &it->second;
 }
 
