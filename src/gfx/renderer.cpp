@@ -185,6 +185,17 @@ inline int cell_fills(char32_t cp, CellRect out[5]) noexcept {
 
 } // namespace
 
+namespace {
+// Host-controllable opt-out for the GL 4.4 persistent-mapped instance ring.
+// Defaults to allowed; the library still auto-detects the GL capability and
+// falls back on a failed map. Replaces the former GVTE_NO_PERSISTENT env read.
+bool g_persistent_mapping_allowed = true;
+} // namespace
+
+void Renderer::set_persistent_mapping(bool enabled) noexcept {
+    g_persistent_mapping_allowed = enabled;
+}
+
 Result<Renderer> Renderer::create(FontAtlas &&atlas) {
     auto prog = Program::build(kVert, kFrag);
     if (!prog) {
@@ -310,7 +321,7 @@ void Renderer::ensure_buffers() {
     // orphan+realloc. We fence each ring region so the CPU never scribbles over
     // instances the GPU is still reading.
     persistent_ = epoxy_gl_version() >= 44 || epoxy_has_gl_extension("GL_ARB_buffer_storage");
-    if (std::getenv("GVTE_NO_PERSISTENT")) persistent_ = false;
+    if (!g_persistent_mapping_allowed) persistent_ = false;
     if (persistent_) {
         // Worst case is ~2 instances/cell (bg + glyph); size a region to cover
         // a 4K screen with slack so a frame never overflows one region.

@@ -25,6 +25,14 @@ class Renderer {
 public:
     static Result<Renderer> create(FontAtlas &&atlas);
 
+    // Opt out of the GL 4.4 persistent-mapped instance ring (a debug/driver
+    // escape hatch — some broken drivers advertise GL_ARB_buffer_storage but
+    // mishandle coherent mapping). Off by default; the library auto-detects the
+    // capability and already falls back on a failed map. Call before create().
+    // Replaces the former GVTE_NO_PERSISTENT environment variable: policy is a
+    // host decision, not an env read inside the library.
+    static void set_persistent_mapping(bool enabled) noexcept;
+
     Renderer(const Renderer &) = delete;
     Renderer &operator=(const Renderer &) = delete;
     Renderer(Renderer &&) noexcept;

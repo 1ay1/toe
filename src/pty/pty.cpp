@@ -74,7 +74,11 @@ Result<Pty> Pty::spawn(const SpawnCommand &cmd, Extent size) {
         // Host hook: setenv/chdir/setsid/drop-privs, before exec.
         if (cmd.pre_exec) cmd.pre_exec();
         ::execvp(cargv[0], cargv.data());
-        std::perror("execvp");
+        // exec failed. perror is not async-signal-safe after fork; write a
+        // fixed diagnostic via the raw syscall, then leave with 127.
+        const char msg[] = "gvte: exec failed\n";
+        ssize_t ignored = ::write(STDERR_FILENO, msg, sizeof(msg) - 1);
+        (void)ignored;
         ::_exit(127);
     }
 

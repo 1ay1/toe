@@ -1,11 +1,77 @@
-# gvte — a GPU-accelerated terminal engine, built on The Elm Architecture
+# gvte — a GPU terminal engine you can drop into any project
 
 `gvte` is a from-scratch terminal emulator **library** — no VTE, no GTK, no
 SDL. It owns the entire stack (PTY → escape-sequence parser → grid model →
-GPU renderer) and talks to Wayland and X11 directly. It is the engine behind
-[`hand`](../hand).
+GPU renderer) and is the engine behind [`hand`](../hand).
 
-Its defining feature is not a feature at all — it's the **architecture**.
+It is a *real* library, not an application wearing a library's clothes. The
+engine (`gvte::core`) knows nothing about your window system, does not own your
+GL context, and does not decide how your shell is spawned. The three things a
+terminal library should *not* dictate — **the window, the GL context, and the
+child process** — are handed to the host, and each boundary is encoded in the
+type system so illegal wiring is a compile error.
+
+```cmake
+find_package(gvte CONFIG REQUIRED COMPONENTS Core)          # bring your own window
+find_package(gvte CONFIG REQUIRED COMPONENTS Core Platform) # or use the Linux backends
+target_link_libraries(app PRIVATE gvte::core [gvte::platform])
+```
+
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — the Elm-architecture core and the type-theoretic design.
+- **[docs/INTEGRATION.md](docs/INTEGRATION.md)** — how to embed gvte, with a complete minimal host.
+- **[docs/API.md](docs/API.md)** — the public surface, header by header.
+
+## Two libraries, one strict boundary
+
+| Target | What it is | Links |
+|--------|-----------|-------|
+| **`gvte::core`** | the whole terminal — pty, VT parser, grid model, TEA reducer, inline graphics, GPU renderer, keymap — **plus the `Surface` contract** | freetype, harfbuzz, fontconfig, libpng, epoxy (all **private**) |
+| **`gvte::platform`** *(optional)* | batteries-included Linux `Surface` backends: Wayland / X11 / offscreen EGL + `open_surface()` | core + wayland, x11, xcb, xkbcommon, egl |
+
+`gvte::core` links **zero** windowing libraries. A host on macOS, Windows, or an
+embedded compositor consumes `gvte::core` and provides its own `Surface`; a
+Linux terminal like `hand` also links `gvte::platform` and gets a window for
+free. The dependency arrow only ever points `core ← platform ← host`.
+
+## The three boundaries that give the host all the power
+
+### 1. `Surface` is a concept, not a base class
+
+Bring your own window (GLFW, Qt, SDL, Win32, Cocoa) by *modelling* the
+`gvte::platform::Surface` **C++23 concept** — a structural contract. No
+inheritance, no vtable forced on your type, no gvte header pulled into your
+window class beyond the contract. Optional capabilities (title, clipboard,
+key-repeat, flush) are refinement concepts, so a minimal host implements five
+methods. `AnySurface` offers opt-in type erasure for hosts that want runtime
+polymorphism. The shipped Wayland/X11 backends are just models of the same
+concept.
+
+### 2. `RenderContext` — a capability token for the GL context
+
+`Session::render()` requires a `gfx::RenderContext&`. Its existence is the
+*proof* that a GL context is current on this thread — a fact the compiler now
+checks instead of a comment nobody read. The token also carries a strong-typed
+target `Framebuffer`, so the host says exactly where the terminal composites
+(default: the window's back buffer; or an offscreen FBO / a texture you own).
+
+```cpp
+auto rc = gvte::gfx::RenderContext::adopt_current();  // "my GL context is live"
+session.render(rc, px);                                // impossible to call without proof
+```
+
+### 3. `PtySource` — you choose where the child comes from
+
+`Config::source` is a closed sum type. Spawn a shell the batteries-included way
+(with `TERM` and a `pre_exec` hook as *fields*, not hard-coded), or adopt a PTY
+fd you already own — an SSH channel, a container, a recorded session — so gvte
+never `fork`s:
+
+```cpp
+Config cfg;
+cfg.source = SpawnCommand{ .argv = {"/bin/zsh"}, .term = "xterm-kitty" };
+// or:
+cfg.source = AdoptFd{ .master_fd = my_fd, .child = my_pid };
+```
 
 ## The Elm Architecture, in C++
 
@@ -24,65 +90,72 @@ function that a thin runtime interprets.
    └──────────────── Runtime (the ONLY impure code) executes [Cmd] ───────────────┘
 ```
 
-- **`Msg`** (`core/tea.hpp`) — a closed sum type of every input: a chunk of
-  child output, a keypress, a paste, a resize, a mouse event, the child
-  exiting.
-- **`Cmd`** — a closed sum type of every effect: `WriteChild`, `SetTitle`,
-  `SetClipboard`, `ResizePty`, `RingBell`, `Quit`. Effects are **data**, not
-  actions.
-- **`update`** (`term::feed_output`, `Session::update`) — pure and total. It
-  mutates the `Model` and *returns* the `Cmd`s it wants performed. It never
-  touches the PTY, clipboard, window or clock.
-- **Runtime** (`Session::Impl::interpret`) — the single, small interpreter that
-  executes `Cmd`s. It is the only code in the library that does I/O.
-
-### Why this matters
-
-The terminal's response to *any* byte stream is now a pure function you can
-assert on with zero mocks:
+The terminal's response to *any* byte stream is a pure function you can assert
+on with zero mocks:
 
 ```cpp
 term::Model m{cfg, {80, 24}};
-Cmds fx = term::feed_output(m, "\x1b[c");          // fish's DA1 query
-assert(writes(fx) == "\x1b[?62;1;6;22c");           // the reply, as data
+Cmds fx = term::feed_output(m, "\x1b[c");     // fish's DA1 query
+assert(writes(fx) == "\x1b[?62;1;6;22c");      // the reply, as data
 ```
 
-The whole `tea_test` suite is written this way. When fish hung for 10s on an
-unanswered Primary Device Attributes query, the fix was to make the reply a
-returned `WriteChild` `Cmd` instead of a buried `pty.write()` — pure,
-auditable, and impossible to forget to wire up.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full treatment.
 
 ## Type-theoretic design
 
 - Strong coordinate newtypes (`Row`, `Col`, `Extent`, `PixelSize`) — grid math
   cannot mix axes or confuse cells with pixels.
 - `std::expected<T, Error>` at every fallible boundary (PTY, GL, fonts,
-  surface).
-- Sum types everywhere illegal states would otherwise be representable: the VT
-  parser action, cell colour (`Default | Indexed | TrueColor`), the terminal
+  surface). No exceptions across the seams; no half-built objects.
+- Sum types everywhere illegal states would otherwise be representable: VT
+  parser action, cell colour (`Default | Indexed | TrueColor`), terminal
   lifecycle (`Running(Session) | Exited(code)`), `KeyEvent`
-  (`Text | SpecialKey`).
+  (`Text | SpecialKey`), and now `PtySource` and the `Surface` `Event`.
 - RAII over every C handle; `std::span` / `std::string_view` over raw
   pointer+length pairs.
 
-## Stack
+## Library hygiene
 
-- **C++23**
-- **Wayland + EGL** and **X11 (Xlib/xcb) + EGL** — direct, runtime-selected;
-  no SDL, no GTK
-- **OpenGL 3.3 core** — instanced quads, SDF rounded-rects (GPUI-style),
-  glyph atlas
-- **FreeType + HarfBuzz + Fontconfig** — rasterization and shaping
-- **PCRE2**, **xkbcommon** — search regex, keymaps
-- glibc **forkpty** — the child shell
+gvte::core behaves like a guest in the host's process:
+
+- **No environment reads for policy.** Backend selection is an explicit
+  `Backend` argument; the persistent-mapping escape hatch is
+  `Renderer::set_persistent_mapping()`, not an env var. (`$SHELL`/`$TERM` are
+  used only inside the opt-in `SpawnCommand` default and in the child after
+  `fork`.)
+- **No `abort()` / `exit()`** across the API. Fallible paths return
+  `Result<T>`; internal invariants use debug `assert` that compiles out.
+- **No stray stderr.** Diagnostics travel in `Error::message`. The one
+  post-`fork` write is async-signal-safe.
+- **Per-instance C handles.** Each `FontAtlas` owns its own `FT_Library`; the
+  only process-global touch is Fontconfig's idempotent, refcounted `FcInit()`.
+- **Fully packaged.** `install()` + `find_package(gvte COMPONENTS Core [Platform])`,
+  versioned SONAMEs, pkg-config. Private deps stay private — no GL type leaks
+  through a public header.
 
 ## Building
 
 ```sh
 cmake -S . -B build
 cmake --build build -j
-ctest --test-dir build          # parser, screen, render, tea
+ctest --test-dir build          # parser, screen, tea, keymap, render, cache
 ./build/gvte-demo               # a minimal host that drives the library
+```
+
+Useful options:
+
+| Option | Default | Effect |
+|--------|---------|--------|
+| `GVTE_BUILD_PLATFORM` | `ON` | build the Linux Surface backends |
+| `GVTE_BUILD_DEMO` | top-level | build `gvte-demo` (needs platform) |
+| `GVTE_BUILD_TESTS` | top-level | build the test suite |
+| `GVTE_INSTALL` | top-level | emit install + `find_package` rules |
+
+A core-only build has no windowing dependencies:
+
+```sh
+cmake -S . -B build -DGVTE_BUILD_PLATFORM=OFF -DGVTE_BUILD_DEMO=OFF
+# libgvte links no wayland / xcb / x11 / egl
 ```
 
 ## Layout
@@ -92,15 +165,22 @@ ctest --test-dir build          # parser, screen, render, tea
 | `core/tea.hpp` | `Cmd` / `Msg` sum types — the architecture's spine |
 | `core/types.hpp` | strong coords, `Result<T>`, `Rgb` |
 | `vt/parser.*` | Williams ANSI state machine → typed actions (incl. DCS) |
-| `term/cell.hpp` | `Cell` / `Pen` / `Color` value types |
 | `term/screen.*` | the grid `Model`: scroll regions, alt screen, selection |
 | `term/update.*` | the **pure reducer** — `feed_output(Model, bytes) -> Cmds` |
+| `pty/pty_source.hpp` | `PtySource` — spawn a shell or adopt an fd (**boundary 3**) |
+| `gfx/render_target.hpp` | `RenderContext` capability token (**boundary 2**) |
 | `gfx/*` | font atlas, palette, SDF shaders, instanced renderer (`view`) |
-| `platform/*` | Wayland / X11 surfaces + input, behind one `Surface` interface |
-| `terminal.*` | `Terminal` lifecycle SM + `Session` (`update` / `run`) + Runtime |
+| `platform/surface.hpp` | the `Surface` **concept** + `Event` + `AnySurface` (**boundary 1**) |
+| `platform/*.cpp` | Wayland / X11 / offscreen backends (`gvte::platform`) |
+| `terminal.*` | `Terminal` lifecycle SM + `Session` + Runtime |
 
 ## Status
 
 A real terminal: runs vim, tmux, htop; scroll regions, alt screen, selection
 (char/word/line/block), mouse in and out, clipboard (Wayland + X11), OSC
-titles/hyperlinks/52, full device-query replies (DA/DSR/XTVERSION/XTGETTCAP).
+titles/hyperlinks/52, full device-query replies (DA/DSR/XTVERSION/XTGETTCAP),
+inline images with animation.
+
+## License
+
+LGPL-2.0-or-later.
