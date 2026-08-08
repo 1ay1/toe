@@ -46,6 +46,7 @@ add_library(gvte
   src/platform/surface.cpp
   src/platform/wayland.cpp
   src/platform/x11.cpp
+  src/platform/offscreen.cpp
   "${GEN}/xdg-shell-protocol.c"
   "${GEN}/xdg-shell-client-protocol.h"
   src/gfx/font.cpp
@@ -103,6 +104,10 @@ add_test(NAME render COMMAND render_test)
 add_executable(cache_test tests/cache_test.cpp)
 target_link_libraries(cache_test PRIVATE gvte)
 add_test(NAME cache COMMAND cache_test)
+
+# The GL tests run against an offscreen EGL context so they don't need a live
+# Wayland/X11 compositor (works in CI and headless shells).
+set_tests_properties(render cache PROPERTIES ENVIRONMENT "GVTE_HEADLESS=1")
 
 add_executable(tea_test tests/tea_test.cpp)
 target_link_libraries(tea_test PRIVATE gvte)
