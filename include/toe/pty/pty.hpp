@@ -17,9 +17,10 @@
 //    std::visit forces the caller to handle the hangup — it can't be forgotten,
 //    and it isn't an error-channel abuse.
 //
-// 2. EXIT AS A POLLABLE FD. The child is a `Child` (child.hpp) backed by a
-//    pidfd, so its exit is a reactor source (exit_fd()) and its reap is
-//    race-free (waitid(P_PIDFD)) — no waitpid() polling per frame.
+// 2. EXIT AS A CHILD HANDLE. The child is a `Child` (child.hpp): try_reap()
+//    harvests its ExitCode via waitpid without blocking. toe never forks — the
+//    host owns process creation and hands toe an already-open master fd (see
+//    AdoptFd), so the child's lifetime and reaping policy live with the host.
 //
 // The master fd is non-blocking; ownership of every descriptor is an `Fd`
 // (fd.hpp), never a raw int + bool.
@@ -61,11 +62,10 @@ using ReadResult = std::variant<pty::Data, pty::WouldBlock, pty::Hungup>;
 
 class Pty {
 public:
-    // Spawn `argv[0]` (a shell) on a fresh PTY sized to `size` cells.
-    [[nodiscard]] static Result<Pty> spawn(std::span<const char *const> argv, Extent size);
-    // Spawn from a SpawnCommand: honors its TERM value and pre_exec hook.
-    [[nodiscard]] static Result<Pty> spawn(const SpawnCommand &cmd, Extent size);
-    // Adopt a PTY master fd the host already owns. toe never forks.
+    // Adopt a PTY master fd the host already owns (see toe/pty/pty_source.hpp).
+    // toe NEVER forks: process creation is the host's job — it forkpty()s (or
+    // uses ConPTY/ssh/tmux/…) and hands the master fd + child pid in an AdoptFd.
+    // This is the SOLE way to build a Pty, and it is pure POSIX fd wiring.
     [[nodiscard]] static Result<Pty> adopt(const AdoptFd &src);
 
     Pty(const Pty &) = delete;
@@ -77,8 +77,8 @@ public:
     // The master fd, for the host's reactor. Borrowed — the Pty owns it.
     [[nodiscard]] int fd() const noexcept { return master_.get(); }
 
-    // The child handle: its exit_fd() joins the reactor; try_reap() harvests
-    // the ExitCode race-free.
+    // The child handle: try_reap() harvests the ExitCode via waitpid. Only
+    // meaningful when the host passed a child pid in AdoptFd.
     [[nodiscard]] Child &child() noexcept { return child_; }
     [[nodiscard]] const Child &child() const noexcept { return child_; }
 

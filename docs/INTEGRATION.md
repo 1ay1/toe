@@ -169,25 +169,22 @@ If you want runtime backend selection, wrap any model in `AnySurface`:
 toe::platform::AnySurface surf{ MyWindow{...} };   // erased; still a Surface
 ```
 
-## Configuring the child (`PtySource`)
+## Configuring the child (`AdoptFd`)
+
+toe never forks — the HOST opens the PTY master and hands it in. Do the
+`forkpty` (or ConPTY / SSH / replay) yourself, then:
 
 ```cpp
 toe::Config cfg;
 
-// Default: spawn $SHELL (then /bin/sh) with TERM=xterm-256color.
-// cfg.source is already SpawnCommand{}.
-
-// A specific shell + terminfo + a child hook (runs after fork, before exec):
-cfg.source = toe::SpawnCommand{
-    .argv     = {"/usr/bin/fish"},
-    .term     = "xterm-kitty",
-    .pre_exec = [] { ::setsid(); ::setenv("MYVAR", "1", 1); },   // async-signal-safe
-};
-
-// Or adopt a PTY you already own (SSH channel, container, replay) — toe
-// never forks; it drives your fd:
+// Adopt the PTY you opened. toe drives your fd and reaps `child` on exit
+// (set owns_fd=false to keep ownership of the fd).
 cfg.source = toe::AdoptFd{ .master_fd = my_master, .child = my_pid, .owns_fd = true };
 ```
+
+argv/`$SHELL`, `TERM`, and any post-fork child hook are yours to set in the
+child before `execvp` — see hand's `posix_pty.cpp` for a complete `forkpty`
+helper that returns an `AdoptFd`.
 
 ## Efficiency checklist
 

@@ -3,13 +3,11 @@
 #include "toe/pty/pty.hpp"
 
 #include <cerrno>
-#include <csignal>
 #include <cstring>
 #include <string>
 #include <vector>
 
 #include <fcntl.h>
-#include <pty.h> // forkpty (glibc / util-linux)
 #include <sys/ioctl.h>
 #include <unistd.h>
 
@@ -39,61 +37,6 @@ Result<void> set_nonblocking(int fd) {
 
 } // namespace
 
-Result<Pty> Pty::spawn(std::span<const char *const> argv, Extent size) {
-    SpawnCommand cmd;
-    for (const char *const *p = argv.data(); p != argv.data() + argv.size() && *p; ++p) {
-        cmd.argv.emplace_back(*p);
-    }
-    return spawn(cmd, size);
-}
-
-Result<Pty> Pty::spawn(const SpawnCommand &cmd, Extent size) {
-    // Resolve argv: explicit -> $SHELL -> /bin/sh.
-    std::vector<std::string> args = cmd.argv;
-    if (args.empty()) {
-        const char *shell = ::getenv("SHELL");
-        args.emplace_back(shell && *shell ? shell : "/bin/sh");
-    }
-    std::vector<char *> cargv;
-    cargv.reserve(args.size() + 1);
-    for (auto &a : args) cargv.push_back(a.data());
-    cargv.push_back(nullptr);
-
-    winsize ws = to_winsize(size);
-    int master = -1;
-    const ::pid_t pid = ::forkpty(&master, nullptr, nullptr, &ws);
-
-    if (pid < 0) {
-        return fail(std::string{"forkpty failed: "} + std::strerror(errno));
-    }
-
-    if (pid == 0) {
-        // --- child --- TERM is a host-chosen value, not hard-coded.
-        ::setenv("TERM", cmd.term.empty() ? "xterm-256color" : cmd.term.c_str(), 1);
-        // Host hook: setenv/chdir/setsid/drop-privs, before exec.
-        if (cmd.pre_exec) cmd.pre_exec();
-        ::execvp(cargv[0], cargv.data());
-        // exec failed. perror is not async-signal-safe after fork; write a
-        // fixed diagnostic via the raw syscall, then leave with 127.
-        const char msg[] = "toe: exec failed\n";
-        ssize_t ignored = ::write(STDERR_FILENO, msg, sizeof(msg) - 1);
-        (void)ignored;
-        ::_exit(127);
-    }
-
-    // --- parent ---
-    if (auto nb = set_nonblocking(master); !nb) {
-        ::close(master);
-        ::kill(pid, SIGHUP);
-        return std::unexpected(nb.error());
-    }
-
-    Pty pty;
-    pty.master_ = Fd::owned(master);
-    pty.child_ = Child::spawned(pid);
-    return pty;
-}
-
 Result<Pty> Pty::adopt(const AdoptFd &src) {
     if (src.master_fd < 0) {
         return fail("Pty::adopt: master_fd must be >= 0");
@@ -104,8 +47,9 @@ Result<Pty> Pty::adopt(const AdoptFd &src) {
     Pty pty;
     // Ownership of the master fd is the host's choice, encoded in the Fd type.
     pty.master_ = src.owns_fd ? Fd::owned(src.master_fd) : Fd::borrowed(src.master_fd);
-    // We observe (but never reap) a host-managed child; if pid < 0, no child.
-    pty.child_ = (src.child >= 0) ? Child::adopted(src.child) : Child::none();
+    // The host handed us a child pid but does not itself waitpid() it, so WE own
+    // the reap (consume the zombie on exit). If no pid, there's no child here.
+    pty.child_ = (src.child >= 0) ? Child::spawned(src.child) : Child::none();
     return pty;
 }
 
@@ -124,7 +68,7 @@ ReadResult Pty::read() {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             return pty::WouldBlock{};
         }
-        // EIO is Linux's way of reporting the child's exit on the master side.
+        // EIO on the master reports the child's exit / pty teardown.
         return pty::Hungup{};
     }
 }

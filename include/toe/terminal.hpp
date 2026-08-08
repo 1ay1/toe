@@ -49,14 +49,11 @@ struct Config {
     Rgb default_fg = rgb(220, 220, 220);
     Rgb default_bg = rgb(23, 23, 28);
 
-    // Where the child terminal comes from. Defaults to spawning $SHELL via
-    // forkpty (SpawnCommand{}), but a host may inject an already-open PTY fd
-    // (AdoptFd) so toe never forks — see toe/pty/pty_source.hpp.
-    PtySource source = SpawnCommand{};
-
-    // Legacy convenience: if non-empty AND `source` still holds a default
-    // SpawnCommand, these become the spawned argv. Prefer setting `source`.
-    std::vector<std::string> command{};
+    // The child terminal, adopted from the host. toe NEVER forks: the host
+    // opens the PTY master (forkpty/ConPTY/ssh/tmux) and hands the fd + child
+    // pid here — see toe/pty/pty_source.hpp. Must carry a valid fd (>= 0);
+    // Terminal::create returns an error otherwise.
+    AdoptFd source{};
 };
 
 // --- lifecycle states ------------------------------------------------------

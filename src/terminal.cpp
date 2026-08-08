@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <vector>
 #include <cctype>
+#include <ctime>
 #include <filesystem>
 #include <optional>
 #include <algorithm>
@@ -395,7 +396,9 @@ std::string resolve_font_path(std::string family) {
             if (ec) break;
             const auto &p = it->path();
             const auto ext = p.extension().string();
-            if (ext != ".ttf" && ext != ".otf" && ext != ".TTF" && ext != ".OTF") continue;
+            if (ext != ".ttf" && ext != ".otf" && ext != ".ttc" && ext != ".TTF" &&
+                ext != ".OTF" && ext != ".TTC")
+                continue;
             std::string name;
             for (char c : p.filename().string())
                 name += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -456,23 +459,9 @@ Result<Terminal> Terminal::create(const Config &cfg, PixelSize px) {
 
     const Extent grid = renderer->cells_for(px);
 
-    // Obtain the child PTY from the configured source. The host owns this
-    // policy: spawn a shell (honoring TERM + pre_exec) or adopt an existing fd.
-    auto pty = std::visit(
-        [&](const auto &src) -> Result<Pty> {
-            using T = std::decay_t<decltype(src)>;
-            if constexpr (std::is_same_v<T, AdoptFd>) {
-                return Pty::adopt(src);
-            } else { // SpawnCommand
-                SpawnCommand cmd = src;
-                // Legacy convenience: cfg.command fills a still-default argv.
-                if (cmd.argv.empty() && !cfg.command.empty()) {
-                    cmd.argv = cfg.command;
-                }
-                return Pty::spawn(cmd, grid);
-            }
-        },
-        cfg.source);
+    // Adopt the child PTY the host opened. toe owns no process-creation policy;
+    // it just drives the fd it was handed (see toe/pty/pty_source.hpp).
+    auto pty = Pty::adopt(cfg.source);
     if (!pty) {
         return std::unexpected(pty.error());
     }
@@ -491,11 +480,15 @@ Terminal::Poll Terminal::poll() {
         if (alive) {
             result.running = session;
         } else {
-            // The child closed the pty. Reap it race-free via the pidfd (the
-            // Child falls back to waitpid where pidfd is unavailable).
-            const ExitCode ec =
-                session->impl_->pty.child().try_reap().value_or(ExitCode{0});
-            state_ = Exited{ec.value};
+            // The child closed the pty. It is terminating; give the zombie a
+            // brief window to appear so we capture the real exit code rather
+            // than racing waitpid (EOF on the master can precede the zombie).
+            std::optional<ExitCode> ec;
+            for (int i = 0; i < 200 && !(ec = session->impl_->pty.child().try_reap()); ++i) {
+                struct timespec ts{0, 500'000}; // 0.5ms
+                ::nanosleep(&ts, nullptr);
+            }
+            state_ = Exited{ec.value_or(ExitCode{0}).value};
             result.exited = &std::get<Exited>(state_);
         }
     } else {

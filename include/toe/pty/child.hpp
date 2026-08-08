@@ -1,24 +1,21 @@
 // SPDX-License-Identifier: LGPL-2.0-or-later
 //
-// Child — a process handle built on a pidfd (Linux ≥ 5.3), so the child's exit
-// is a POLLABLE fd event, not a waitpid() poll.
+// Child — a process handle whose exit is harvested via a non-blocking waitpid.
 //
-// The old design asked "has the child exited?" by calling waitpid(WNOHANG) on
-// every host poll — a syscall per frame, and a classic race between the check
-// and the reap. `pidfd_open(pid)` returns a descriptor that becomes READABLE
-// exactly when the process terminates; the host's reactor waits on it like any
-// other source (see hand's TerminalWait), so exit detection costs ZERO polling
-// and can never miss or double-fire. Reaping via waitid(P_PIDFD) is likewise
-// race-free — the pidfd names the exact process, immune to pid reuse.
+// toe NEVER creates the process: the host owns forkpty/ConPTY/ssh/tmux and
+// hands toe an already-open PTY master fd plus (optionally) the child pid in an
+// AdoptFd. So `Child` is deliberately minimal and 100% portable POSIX: it holds
+// a pid and answers one question — "has it exited, and with what code?" — with a
+// non-blocking waitpid. No pidfd, no Linux syscalls, no #ifdef; every Unix host
+// shares this exact code, and a non-Unix host simply passes pid == -1 and owns
+// exit detection itself.
 //
-// Two flavours, chosen at construction:
-//   • a child WE spawned (forkpty) — we own the pidfd and reap it;
-//   • an AdoptFd child the host manages — we may or may not have a pid; if we do
-//     we still open a pidfd for exit notification, else exit is the host's job.
+//   • a child WE reap (reap == true)   — try_reap() consumes the zombie;
+//   • a child the host reaps (adopted) — try_reap() peeks with WNOWAIT so the
+//                                        host still gets to reap it.
 //
-// pidfd_open / waitid(P_PIDFD) degrade gracefully: if the kernel lacks pidfd
-// support, exit_fd() is -1 (the reactor simply won't have that source) and
-// try_reap() falls back to waitpid on the pid.
+// A pid of -1 means "no child here" — try_reap() is then a no-op returning
+// nullopt, and exit detection is entirely the host's responsibility.
 
 #ifndef TOE_PTY_CHILD_HPP
 #define TOE_PTY_CHILD_HPP
@@ -26,8 +23,6 @@
 #include <optional>
 
 #include <sys/types.h>
-
-#include "toe/pty/fd.hpp"
 
 namespace toe {
 
@@ -39,14 +34,12 @@ struct ExitCode {
 
 class Child {
 public:
-    // A child we spawned and will reap. Opens a pidfd for `pid` when the kernel
-    // supports it (exit becomes pollable); owns_pid means try_reap() calls
-    // waitid on it.
+    // A child we own the reap for. try_reap() consumes the zombie via waitpid.
     [[nodiscard]] static Child spawned(::pid_t pid) noexcept;
 
     // A host-managed child (AdoptFd). `pid` may be -1 (host owns the lifetime,
-    // no exit detection here) or a real pid we merely observe (open a pidfd for
-    // notification but do NOT reap — the host reaps).
+    // no exit detection here) or a real pid we merely OBSERVE with WNOWAIT so we
+    // can report the exit without stealing the reap from the host.
     [[nodiscard]] static Child adopted(::pid_t pid) noexcept;
 
     // No child at all (an adopted fd with pid == -1).
@@ -61,24 +54,18 @@ public:
     // The child pid, or -1 if unknown/none.
     [[nodiscard]] ::pid_t pid() const noexcept { return pid_; }
 
-    // A descriptor that becomes readable when the child exits, for the host's
-    // reactor to wait on. -1 if unavailable (no pid, or no kernel pidfd support)
-    // — then the host must fall back to periodic try_reap().
-    [[nodiscard]] int exit_fd() const noexcept { return pidfd_.get(); }
-
     // Non-blocking: if the child has exited, reap it (if we own the reap) and
     // return its ExitCode; otherwise std::nullopt. Idempotent after exit.
     [[nodiscard]] std::optional<ExitCode> try_reap() noexcept;
 
 private:
     Child() = default;
-    Child(::pid_t pid, bool reap) noexcept;
+    Child(::pid_t pid, bool reap) noexcept : pid_(pid), reap_(reap) {}
 
     ::pid_t pid_{-1};
-    Fd pidfd_{};          // pollable exit notification, when available
-    bool reap_{false};    // do WE reap (spawned), or does the host (adopted)?
-    bool reaped_{false};  // exit already observed + reaped
-    ExitCode code_{};     // cached once reaped
+    bool reap_{false};   // do WE reap (spawned), or does the host (adopted)?
+    bool reaped_{false}; // exit already observed + reaped
+    ExitCode code_{};    // cached once reaped
 };
 
 } // namespace toe

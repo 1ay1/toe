@@ -147,20 +147,19 @@ The token also carries a strong-typed target `Framebuffer` (0 = the window's
 back buffer, or any FBO the host names), giving the host a type-checked
 "composite the terminal into a surface I control" path.
 
-### 3. `PtySource` — a sum type (`pty/pty_source.hpp`)
+### 3. `AdoptFd` — the PTY the host owns (`pty/pty_source.hpp`)
 
-Where the child comes from is the host's policy, so it's a closed sum:
+toe never creates the process — that's host policy and host mechanism. The host
+opens a PTY master (`forkpty` on Linux/macOS, ConPTY on Windows, or an SSH/
+container/replay fd) and hands it in:
 
 ```cpp
-struct SpawnCommand { std::vector<std::string> argv; std::string term; std::function<void()> pre_exec; };
-struct AdoptFd      { int master_fd; pid_t child; bool owns_fd; };
-using  PtySource    = std::variant<SpawnCommand, AdoptFd>;
+struct AdoptFd { int master_fd; pid_t child; bool owns_fd; };
 ```
 
-`SpawnCommand` is the batteries-included path — toe `forkpty`s, but `TERM` and
-a `pre_exec` child hook are fields, not hard-coded. `AdoptFd` hands toe a PTY
-you already own (SSH, container, replay) and it never forks. `Config::source`
-selects between them.
+toe adopts the fd and drives it; it never `forkpty`s, so the engine carries no
+`<pty.h>`, no OS branch. argv/`$SHELL`, `TERM`, and a `pre_exec` child hook live
+in the host, above this boundary. `Config::source` is an `AdoptFd`.
 
 ## The terminal lifecycle: illegal states unrepresentable
 
@@ -193,7 +192,7 @@ compile error, not a runtime guard.
   surface). No exceptions across the seams; no half-constructed objects.
 - **Sum types** wherever illegal states would otherwise be representable: VT
   parser action, cell colour (`Default | Indexed | TrueColor`), `KeyEvent`
-  (`Text | SpecialKey`), the `Event` stream, `PtySource`, the terminal
+  (`Text | SpecialKey`), the `Event` stream, the terminal
   lifecycle.
 - **RAII** over every C handle; **`std::span`/`std::string_view`** over raw
   pointer+length pairs.

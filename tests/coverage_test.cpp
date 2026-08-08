@@ -34,6 +34,11 @@ static std::vector<std::uint8_t> slurp(const std::string &p) {
 // Find any plausible monospace primary on the system.
 static std::string find_primary() {
     const char *cands[] = {
+        // macOS built-ins
+        "/System/Library/Fonts/Menlo.ttc",
+        "/System/Library/Fonts/SFNSMono.ttf",
+        "/System/Library/Fonts/Monaco.ttf",
+        // Linux
         "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
         "/usr/share/fonts/dejavu/DejaVuSansMono.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",

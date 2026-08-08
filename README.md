@@ -62,19 +62,20 @@ auto rc = toe::gfx::RenderContext::adopt_current();  // "my GL context is live"
 session.render(rc, px);                                // impossible to call without proof
 ```
 
-### 3. `PtySource` — you choose where the child comes from
+### 3. `AdoptFd` — the host opens the child, toe drives it
 
-`Config::source` is a closed sum type. Spawn a shell the batteries-included way
-(with `TERM` and a `pre_exec` hook as *fields*, not hard-coded), or adopt a PTY
-fd you already own — an SSH channel, a container, a recorded session — so toe
-never `fork`s:
+toe never `fork`s. The host opens a PTY master by whatever native means —
+`forkpty` on Linux/macOS, ConPTY on Windows, an SSH channel, a container, a
+recorded session — and hands it to toe. `Config::source` is an `AdoptFd`:
 
 ```cpp
 Config cfg;
-cfg.source = SpawnCommand{ .argv = {"/bin/zsh"}, .term = "xterm-kitty" };
-// or:
-cfg.source = AdoptFd{ .master_fd = my_fd, .child = my_pid };
+cfg.source = AdoptFd{ .master_fd = my_master, .child = my_pid, .owns_fd = true };
 ```
+
+So the engine carries no `<pty.h>`, no `forkpty`, no OS branch. argv/`$SHELL`,
+`TERM`, and any post-fork child hook are host policy (see hand's
+`posix_pty.cpp`).
 
 ## The Elm Architecture, in C++
 
@@ -113,7 +114,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full treatment.
 - Sum types everywhere illegal states would otherwise be representable: VT
   parser action, cell colour (`Default | Indexed | TrueColor`), terminal
   lifecycle (`Running(Session) | Exited(code)`), `KeyEvent`
-  (`Text | SpecialKey`), and now `PtySource` and the `Surface` `Event`.
+  (`Text | SpecialKey`), and the `Surface` `Event`.
 - RAII over every C handle; `std::span` / `std::string_view` over raw
   pointer+length pairs.
 
@@ -123,9 +124,9 @@ toe::core behaves like a guest in the host's process:
 
 - **No environment reads for policy.** Backend selection is an explicit
   `Backend` argument; the persistent-mapping escape hatch is
-  `Renderer::set_persistent_mapping()`, not an env var. (`$SHELL`/`$TERM` are
-  used only inside the opt-in `SpawnCommand` default and in the child after
-  `fork`.)
+  `Renderer::set_persistent_mapping()`, not an env var. toe never forks, so it
+  reads neither `$SHELL` nor `$TERM` — the host resolves those before handing
+  toe an `AdoptFd`.
 - **No `abort()` / `exit()`** across the API. Fallible paths return
   `Result<T>`; internal invariants use debug `assert` that compiles out.
 - **No stray stderr.** Diagnostics travel in `Error::message`. The one

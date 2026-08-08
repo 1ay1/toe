@@ -19,11 +19,11 @@ The main entry point. A `Terminal` is a two-state machine; you only ever touch a
 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
-| `font_family` | `std::string` | `"monospace"` | fontconfig family; empty → system monospace |
+| `font_family` | `std::string` | `"monospace"` | family substring; empty → system monospace |
+| `font_file` | `std::string` | `""` | explicit font-file path; when set, bypasses discovery (a host on macOS/Windows sets this) |
 | `font_pixel_size` | `int` | `18` | glyph size in device pixels |
 | `default_fg` / `default_bg` | `Rgb` | light-on-dark | default palette colours |
-| `source` | `PtySource` | `SpawnCommand{}` | where the child comes from (see `pty_source.hpp`) |
-| `command` | `vector<string>` | `{}` | legacy convenience: fills a default `SpawnCommand`'s argv |
+| `source` | `AdoptFd` | `{}` | the child PTY the host opened — toe never forks (see `pty_source.hpp`) |
 
 ### `class Terminal`
 
@@ -113,20 +113,17 @@ bool   on_alt_screen() const noexcept;
 ## `toe/pty/pty_source.hpp` — boundary 3
 
 ```cpp
-struct SpawnCommand {
-    std::vector<std::string> argv;          // empty -> $SHELL, then /bin/sh
-    std::string term = "xterm-256color";    // advertised TERM
-    std::function<void()> pre_exec;         // runs in child after fork, before exec
-};
 struct AdoptFd {
-    int   master_fd = -1;   // an open PTY master (>= 0)
-    pid_t child     = -1;   // child pid for reaping, or -1 (host manages it)
+    int   master_fd = -1;   // an open PTY master (>= 0) the host opened
+    pid_t child     = -1;   // child pid for exit/reaping, or -1 (host manages it)
     bool  owns_fd   = true; // toe close()s the fd on teardown when true
 };
-using PtySource = std::variant<SpawnCommand, AdoptFd>;
 ```
 
-Set `Config::source`. `pre_exec` must be async-signal-safe.
+toe **never creates the process**. The host opens the PTY master by whatever
+native means (`forkpty` on Linux/macOS, ConPTY on Windows, an SSH/tmux channel,
+a replay fd) and hands it to toe via `Config::source`. argv/`$SHELL`, `TERM`,
+and any `pre_exec` child hook are host policy, above this boundary.
 
 ---
 
