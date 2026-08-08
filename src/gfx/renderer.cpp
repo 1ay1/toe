@@ -474,9 +474,11 @@ template <class T> inline void hash_val(std::uint64_t &h, const T &v) noexcept {
 // row was rebuilt.
 bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
                          bool row_has_cursor, int cur_col, std::int64_t abs_row,
-                         bool any_selection) {
+                         bool any_selection, bool blink_on) {
     RowCache &rc = rows_[static_cast<std::size_t>(r)];
-    if (rc.valid && rc.key == key) return false; // clean — shadow already current
+    // Clean row: reuse the shadow — unless it holds blinking cells and the
+    // blink phase just flipped, which needs a rebuild to hide/show them.
+    if (rc.valid && rc.key == key && !(rc.has_blink && blink_flip_)) return false;
 
     const int cw = cache_cw_, ch = cache_ch_, ascent = cache_ascent_;
     const auto cells = screen.row(Row{r});
@@ -484,6 +486,7 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
     const int base_gy = r * ch + ascent;
     rc.bg.clear();
     rc.glyphs.clear();
+    rc.has_blink = false;
 
     for (int c = 0; c < cache_cols_; ++c) {
         const auto &cell = cells[static_cast<std::size_t>(c)];
@@ -502,6 +505,11 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
         }
 
         const char32_t cp = cell.cp;
+
+        // Blink (SGR 5): during the OFF phase the glyph is hidden. Track that
+        // the row has blinking cells so the phase flip forces a rebuild.
+        const bool blink = term::has(cell.pen.attr, term::Attr::Blink);
+        if (blink) rc.has_blink = true;
 
         // Text decorations (underline styles, strikethrough, overline) are thin
         // fg-coloured bars that must render even on blank cells — git diff and
@@ -573,8 +581,7 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
         }
 
         if (cp == U' ' || cp == 0 || cell.spacer()) continue;
-
-        // Foreground color for this cell's glyph.
+        if (blink && !blink_on) continue; // blink OFF phase: hide the glyph
         Rgb fgcol = on_cursor
                         ? palette_.resolve(cell.pen.bg, /*is_fg=*/false)
                         : palette_.resolve(reverse ? cell.pen.bg : cell.pen.fg, !reverse);
@@ -625,7 +632,7 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
     return true;
 }
 
-void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on) {
+void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on, bool blink_on) {
     const Rgb bgc = palette_.default_bg();
     glClearColor(fr(bgc.r), fr(bgc.g), fr(bgc.b), 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -664,6 +671,13 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on) {
         cache_ch_ = ch;
         cache_ascent_ = ascent;
     }
+
+    // A blink-phase flip must rebuild the rows that contain blinking cells (so
+    // their glyphs appear/disappear); non-blink rows stay cached, keeping idle
+    // blink cheap. Detected before the build loop so build_row can act on it.
+    const bool blink_flipped = (blink_on != blink_on_);
+    blink_on_ = blink_on;
+    blink_flip_ = blink_flipped;
 
     // Rebuild only the rows whose fingerprint changed; the rest keep their
     // shadow instances untouched. We reassemble the flat draw buffers only when
@@ -705,8 +719,10 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on) {
             key = mix(h) & 0x7fffffffffffffffULL; // clear tag bit: distinct from epoch keys
         }
 
-        any_row_dirty |= build_row(screen, r, key, row_has_cursor, cur_col, abs_row, any_selection);
+        any_row_dirty |=
+            build_row(screen, r, key, row_has_cursor, cur_col, abs_row, any_selection, blink_on);
     }
+
 
     // Reassemble the flat draw buffers only when a row changed. Clean frames
     // (only reached when the host detected damage elsewhere) reuse the buffers

@@ -129,7 +129,9 @@ Session::Session(Session &&) noexcept = default;
 Session &Session::operator=(Session &&) noexcept = default;
 Session::~Session() = default;
 
-void Session::render(PixelSize px, bool cursor_on) { impl_->renderer.draw(impl_->model.screen, px, cursor_on); }
+void Session::render(PixelSize px, bool cursor_on, bool blink_on) {
+    impl_->renderer.draw(impl_->model.screen, px, cursor_on, blink_on);
+}
 
 void Session::resize(PixelSize px) {
     const Extent ng = impl_->renderer.cells_for(px);

@@ -36,7 +36,8 @@ public:
     [[nodiscard]] const FontAtlas &font() const noexcept { return atlas_; }
 
     // Draw the whole screen into the current framebuffer of size `px`.
-    void draw(const term::Screen &screen, PixelSize px, bool cursor_on = true);
+    void draw(const term::Screen &screen, PixelSize px, bool cursor_on = true,
+              bool blink_on = true);
 
 private:
     // One instance: a colored (and optionally textured) quad in pixel space.
@@ -71,17 +72,20 @@ private:
     struct RowCache {
         std::uint64_t key{0};              // fingerprint of cells + render state
         bool valid{false};
+        bool has_blink{false};             // row contains SGR-blink cells
         std::vector<Instance> bg;          // background / selection rects
         std::vector<Instance> glyphs;      // textured glyph quads
     };
     std::vector<RowCache> rows_{};
+    bool blink_on_{true};   // last blink phase the cache was built against
+    bool blink_flip_{false}; // true for the frame where the blink phase flipped
     // Geometry the cache was built against; a change invalidates everything.
     int cache_cols_{-1}, cache_rows_{-1}, cache_cw_{0}, cache_ch_{0}, cache_ascent_{0};
     // Build (or reuse) one row's instances into rows_[r]. Returns true if the
     // row was rebuilt (its key changed).
     bool build_row(const term::Screen &screen, int r, std::uint64_t key,
                    bool row_has_cursor, int cur_col, std::int64_t abs_row,
-                   bool any_selection);
+                   bool any_selection, bool blink_on);
 
     FontAtlas atlas_;
     Palette palette_{};

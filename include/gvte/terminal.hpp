@@ -59,7 +59,7 @@ public:
 
     // Draw the current grid. `cursor_on` lets the host drive cursor blink from
     // a wall-clock phase; pass true for a steady cursor.
-    void render(PixelSize px, bool cursor_on = true);
+    void render(PixelSize px, bool cursor_on = true, bool blink_on = true);
     void resize(PixelSize px);
     void send_key(const KeyEvent &ev);
     void send_text(std::string_view utf8);
