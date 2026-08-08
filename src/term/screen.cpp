@@ -595,6 +595,19 @@ void Screen::set_private_mode(int mode, bool set) {
     case 2004: // bracketed paste.
         bracketed_paste_ = set;
         break;
+    case 2026: // synchronized output: batch a frame, present atomically.
+        if (set) {
+            if (!sync_output_) sync_frozen_gen_ = generation_; // freeze at the
+            sync_output_ = true;                                // start of the batch
+        } else {
+            sync_output_ = false; // unfreeze -> generation() jumps, host draws once
+        }
+        break;
+    case 1004: // focus reporting (CSI I / CSI O on focus in/out).
+        focus_events_ = set;
+        break;
+    case 12: // cursor blink (att610). Accepted; the host drives blink timing.
+        break;
     case 1047: // alternate screen buffer (no clear-on-enter).
     case 1049: // alternate screen + save/restore cursor (the common one).
     case 47:   // legacy alternate screen.
@@ -869,6 +882,8 @@ void Screen::esc(const vt::EscDispatch &d) {
             scroll_bottom_ = size_.rows - 1;
             charset_g0_ = charset_g1_ = Charset::Ascii;
             charset_use_g1_ = false;
+            sync_output_ = false; // never leave rendering frozen after a reset
+            focus_events_ = false;
             stamp_all();
             touch();
             return;

@@ -120,8 +120,13 @@ public:
     }
 
     // Monotonic damage counter — bumped on any mutation so the renderer can
-    // skip re-uploading an unchanged grid.
-    [[nodiscard]] std::uint64_t generation() const noexcept { return generation_; }
+    // skip re-uploading an unchanged grid. While synchronized output (DEC mode
+    // 2026) is active the reported value is FROZEN: the app is mid-frame and
+    // doesn't want the host to draw a partial update. It jumps once when the
+    // app ends the batch (?2026l), so the whole frame appears atomically.
+    [[nodiscard]] std::uint64_t generation() const noexcept {
+        return sync_output_ ? sync_frozen_gen_ : generation_;
+    }
 
     // Per-row damage token for the renderer's cache. Returns a 64-bit value
     // that changes iff viewport row `vrow`'s displayed content changed since
@@ -221,6 +226,9 @@ private:
     Pen pen_{};
     bool wrap_pending_{false};   // DEC-style deferred wrap at right margin
     std::uint64_t generation_{1};
+    bool sync_output_{false};          // DEC 2026 synchronized-output active?
+    std::uint64_t sync_frozen_gen_{1}; // generation reported while sync is on
+    bool focus_events_{false};         // DEC 1004 focus reporting requested?
 
     // Transient effect accumulator: valid only for the duration of an apply()
     // call, so query handlers (csi/esc/dcs) can emit Cmds without an I/O sink.

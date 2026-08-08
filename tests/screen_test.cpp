@@ -571,6 +571,20 @@ int main() {
         expect(s.hover_link() == 0, "no link hovered off the link run");
     }
 
+    // DEC 2026 synchronized output: while active, the reported damage counter
+    // is frozen so the host doesn't draw a partial frame; it jumps once when
+    // the batch ends, presenting the whole update atomically.
+    {
+        term::Screen s{Extent{20, 3}};
+        feed(s, "before");
+        const std::uint64_t g0 = s.generation();
+        feed(s, "\x1b[?2026h"); // begin synchronized update
+        feed(s, "aaa\r\nbbb\r\nccc"); // several mutations mid-batch
+        expect(s.generation() == g0, "generation frozen during synchronized output");
+        feed(s, "\x1b[?2026l"); // end batch
+        expect(s.generation() != g0, "generation jumps once when the batch ends");
+    }
+
     if (failures == 0) {
         std::printf("all screen tests passed\n");
         return 0;
