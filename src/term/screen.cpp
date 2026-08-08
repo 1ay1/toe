@@ -153,6 +153,12 @@ void Screen::apply(const vt::Action &action, Cmds &out) {
                 // owning Terminal (which knows the palette); ignored here.
             } else if constexpr (std::is_same_v<T, vt::DcsDispatch>) {
                 dcs(a.prefix, a.data);
+            } else if constexpr (std::is_same_v<T, vt::ApcDispatch>) {
+                // Kitty graphics: anchor a display at the cursor's absolute row.
+                const std::int64_t abs = viewport_to_abs(cursor_.row.get());
+                if (graphics_.handle_apc(a.data, abs, cursor_.col.get(), cell_w_, cell_h_)) {
+                    touch();
+                }
             }
         },
         action);

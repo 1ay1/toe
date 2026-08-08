@@ -71,7 +71,7 @@ void Parser::step(std::uint8_t b, Sink &sink) {
     // strings are terminated BY ESC (as part of ST, ESC \), so they handle it
     // themselves rather than aborting.
     if (b == 0x1B && state_ != State::OscString && state_ != State::DcsPassthrough &&
-        state_ != State::DcsIgnore) {
+        state_ != State::DcsIgnore && state_ != State::ApcString) {
         state_ = State::Escape;
         return;
     }
@@ -98,6 +98,10 @@ void Parser::step(std::uint8_t b, Sink &sink) {
             dcs_saw_esc_ = false;
             params_.clear();
             state_ = State::DcsEntry;
+        } else if (b == '_') { // APC (kitty graphics)
+            apc_.clear();
+            apc_saw_esc_ = false;
+            state_ = State::ApcString;
         } else if (b >= 0x20 && b <= 0x2F) { // intermediate
             intermediates_.push_back(static_cast<char>(b));
             state_ = State::EscapeIntermediate;
@@ -260,6 +264,25 @@ void Parser::step(std::uint8_t b, Sink &sink) {
             state_ = State::Ground;
         } else {
             dcs_saw_esc_ = false;
+        }
+        break;
+
+    case State::ApcString:
+        // ESC _ <data> ST. Collect the payload until ST (ESC \ or 8-bit 0x9C).
+        // kitty graphics packets can be large, so this just accumulates bytes.
+        if (apc_saw_esc_) {
+            if (b == '\\') {
+                sink(Action{ApcDispatch{apc_}});
+            }
+            apc_saw_esc_ = false;
+            state_ = State::Ground;
+        } else if (b == 0x1B) {
+            apc_saw_esc_ = true;
+        } else if (b == 0x9C) { // 8-bit ST
+            sink(Action{ApcDispatch{apc_}});
+            state_ = State::Ground;
+        } else {
+            apc_.push_back(static_cast<char>(b));
         }
         break;
     }

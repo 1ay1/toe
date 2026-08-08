@@ -43,7 +43,9 @@ struct Session::Impl {
 
     Impl(Config c, Extent g, gfx::Renderer r, Pty p, int cw, int ch)
         : model(std::move(c), g), renderer(std::move(r)), pty(std::move(p)), grid(g), cell_w(cw),
-          cell_h(ch) {}
+          cell_h(ch) {
+        model.screen.set_cell_size(cw, ch); // for kitty-graphics placement sizing
+    }
 
     // The Cmd interpreter — the sole side-effecting code in the core. Runs of
     // WriteChild bytes are coalesced into ONE pty.write() so a burst of input

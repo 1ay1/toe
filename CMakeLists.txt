@@ -20,6 +20,7 @@ pkg_check_modules(EGL REQUIRED IMPORTED_TARGET egl)
 pkg_check_modules(WAYLAND REQUIRED IMPORTED_TARGET wayland-client wayland-egl wayland-cursor)
 pkg_check_modules(XKB REQUIRED IMPORTED_TARGET xkbcommon)
 pkg_check_modules(X11 REQUIRED IMPORTED_TARGET x11 x11-xcb xcb xkbcommon-x11)
+pkg_check_modules(PNG REQUIRED IMPORTED_TARGET libpng)
 
 # --- generate xdg-shell protocol from wayland-protocols -------------------
 find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
@@ -55,7 +56,8 @@ add_library(gvte
   src/gfx/renderer.cpp
   src/input/keymap.cpp
   src/term/screen.cpp
-  src/term/update.cpp)
+  src/term/update.cpp
+  src/term/graphics.cpp)
 
 target_include_directories(gvte PUBLIC include PRIVATE "${GEN}")
 
@@ -71,6 +73,7 @@ target_link_libraries(gvte PUBLIC
   PkgConfig::WAYLAND
   PkgConfig::XKB
   PkgConfig::X11
+  PkgConfig::PNG
   util)  # forkpty
 
 add_library(gvte::gvte ALIAS gvte)
@@ -92,8 +95,10 @@ target_compile_options(parser_test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME parser COMMAND parser_test)
 
 add_executable(screen_test tests/screen_test.cpp
-  src/term/screen.cpp)
+  src/term/screen.cpp
+  src/term/graphics.cpp)
 target_include_directories(screen_test PRIVATE include)
+target_link_libraries(screen_test PRIVATE PkgConfig::PNG)
 target_compile_options(screen_test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME screen COMMAND screen_test)
 

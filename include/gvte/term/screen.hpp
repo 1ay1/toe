@@ -20,6 +20,7 @@
 
 #include "gvte/core/tea.hpp"
 #include "gvte/core/types.hpp"
+#include "gvte/term/graphics.hpp"
 #include "gvte/term/cell.hpp"
 #include "gvte/vt/parser.hpp"
 
@@ -268,6 +269,10 @@ private:
     std::vector<std::string> links_{};        // id-1 -> URI
     std::uint16_t hover_link_{0};             // link id under the pointer, 0=none
 
+    // Inline images (kitty graphics). Placements are anchored in absolute rows.
+    Graphics graphics_{};
+    int cell_w_{0}, cell_h_{0}; // host-provided, for sizing image placements
+
     // Tab stops: one flag per column (default every 8th).
     std::vector<bool> tab_stops_{};
 
@@ -285,6 +290,12 @@ public:
     // changed (the host uses that to trigger a redraw).
     bool set_hover(std::int32_t vrow, std::int32_t col) noexcept;
     [[nodiscard]] std::uint16_t hover_link() const noexcept { return hover_link_; }
+
+    // Inline images (kitty graphics protocol). The renderer reads placements
+    // and image pixels to draw them over the grid.
+    [[nodiscard]] const Graphics &graphics() const noexcept { return graphics_; }
+    // Cell metrics the graphics layer needs to size placements; set by the host.
+    void set_cell_size(int w, int h) noexcept { cell_w_ = w; cell_h_ = h; }
 
 private:
     // Character-set state (VT100 line-drawing). G0/G1 each hold ASCII or the

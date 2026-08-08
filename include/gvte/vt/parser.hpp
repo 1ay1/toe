@@ -65,7 +65,14 @@ struct DcsDispatch {
     std::string_view data;   // payload between the final and ST
 };
 
-using Action = std::variant<Print, Execute, CsiDispatch, EscDispatch, OscDispatch, DcsDispatch>;
+// A completed APC (Application Program Command) string: ESC _ <data> ST. The
+// kitty graphics protocol lives here (ESC _ G <control> ; <payload> ST).
+struct ApcDispatch {
+    std::string_view data; // everything between ESC _ and ST
+};
+
+using Action =
+    std::variant<Print, Execute, CsiDispatch, EscDispatch, OscDispatch, DcsDispatch, ApcDispatch>;
 
 // --- the parser ------------------------------------------------------------
 class Parser {
@@ -89,6 +96,7 @@ private:
         DcsEntry,        // just saw ESC P
         DcsPassthrough,  // collecting the DCS payload until ST
         DcsIgnore,
+        ApcString,       // ESC _ ... ST (kitty graphics)
         // UTF-8 continuation is handled inline in Ground via utf8_.
     };
 
@@ -119,6 +127,10 @@ private:
     std::string dcs_prefix_{}; // intermediates + final selecting the DCS kind
     std::string dcs_data_{};   // payload until ST
     bool dcs_saw_esc_{false};  // saw ESC inside DCS (waiting for the ST '\\')
+
+    // APC accumulation (kitty graphics: ESC _ ... ST)
+    std::string apc_{};
+    bool apc_saw_esc_{false};
 
     // UTF-8 decoding of printable text in Ground.
     char32_t utf8_cp_{0};

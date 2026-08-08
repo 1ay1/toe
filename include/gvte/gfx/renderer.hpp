@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <span>
+#include <unordered_map>
 #include <vector>
 
 #include "gvte/core/types.hpp"
@@ -120,6 +121,18 @@ private:
     DrawCall last_draws_[2]{};
     int last_draw_n_{0};
     bool redraw_from_cache(PixelSize px); // returns false if no cached draws yet
+
+    // --- inline images (kitty graphics) ------------------------------------
+    // A separate RGBA-textured-quad pass drawn over the glyphs. Each image id
+    // gets one GL texture, uploaded lazily when the graphics revision advances.
+    Program image_prog_{};
+    std::int32_t img_u_screen_{-1}, img_u_tex_{-1};
+    std::uint32_t image_vao_{0}, image_vbo_{0};
+    std::uint32_t image_vbo_rect_{0}; // per-image rect (x,y,w,h)
+    std::unordered_map<std::uint32_t, std::uint32_t> image_tex_{}; // image id -> GL tex
+    std::uint64_t images_revision_{0};
+    void ensure_image_pipeline();
+    void draw_images(const term::Screen &screen, PixelSize px);
     // Cache the last uniform/texture state so repeated flushes in a frame (and
     // across static frames) skip redundant GL calls.
     float u_px_w_{-1.0f}, u_px_h_{-1.0f};

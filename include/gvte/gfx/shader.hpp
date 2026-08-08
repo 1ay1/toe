@@ -16,6 +16,9 @@ class Program {
 public:
     static Result<Program> build(std::string_view vertex_src, std::string_view fragment_src);
 
+    // A default-constructed Program is empty/invalid (id 0) until assigned from
+    // Program::build(); valid() reports false.
+    Program() = default;
     Program(const Program &) = delete;
     Program &operator=(const Program &) = delete;
     Program(Program &&) noexcept;
@@ -24,10 +27,10 @@ public:
 
     void use() const noexcept;
     [[nodiscard]] std::uint32_t id() const noexcept { return prog_; }
+    [[nodiscard]] bool valid() const noexcept { return prog_ != 0; }
     [[nodiscard]] int uniform(const char *name) const noexcept;
 
 private:
-    Program() = default;
     void destroy() noexcept;
     std::uint32_t prog_{0};
 };

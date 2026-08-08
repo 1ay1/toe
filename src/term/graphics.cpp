@@ -1,0 +1,299 @@
+// SPDX-License-Identifier: LGPL-2.0-or-later
+
+#include "gvte/term/graphics.hpp"
+
+#include <algorithm>
+#include <array>
+#include <charconv>
+#include <cstring>
+
+#include <png.h>
+
+namespace gvte::term {
+
+namespace {
+
+// Standard base64 decode. Skips whitespace; stops at padding. Returns bytes.
+std::vector<std::uint8_t> b64_decode(std::string_view in) {
+    static const auto table = [] {
+        std::array<std::int8_t, 256> t{};
+        t.fill(-1);
+        const char *a = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        for (int i = 0; i < 64; ++i) t[static_cast<std::uint8_t>(a[i])] = static_cast<std::int8_t>(i);
+        return t;
+    }();
+    std::vector<std::uint8_t> out;
+    out.reserve(in.size() * 3 / 4);
+    std::uint32_t buf = 0;
+    int bits = 0;
+    for (char ch : in) {
+        const std::int8_t v = table[static_cast<std::uint8_t>(ch)];
+        if (v < 0) continue; // skip '=' and whitespace
+        buf = (buf << 6) | static_cast<std::uint32_t>(v);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(static_cast<std::uint8_t>((buf >> bits) & 0xFF));
+        }
+    }
+    return out;
+}
+
+int to_int(std::string_view s, int def = 0) {
+    int v = def;
+    std::from_chars(s.data(), s.data() + s.size(), v);
+    return v;
+}
+long long to_ll(std::string_view s, long long def = 0) {
+    long long v = def;
+    std::from_chars(s.data(), s.data() + s.size(), v);
+    return v;
+}
+
+// Decode a PNG (from memory) to tightly-packed RGBA8 via libpng. Returns false
+// on any error. Kept self-contained so the rest of the protocol is decoder-free.
+bool decode_png(const std::uint8_t *data, std::size_t len, int &w, int &h,
+                std::vector<std::uint8_t> &rgba) {
+    if (len < 8 || png_sig_cmp(data, 0, 8) != 0) return false;
+    png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
+    if (!png) return false;
+    png_infop info = png_create_info_struct(png);
+    if (!info) {
+        png_destroy_read_struct(&png, nullptr, nullptr);
+        return false;
+    }
+    if (setjmp(png_jmpbuf(png))) { // libpng error handler
+        png_destroy_read_struct(&png, &info, nullptr);
+        return false;
+    }
+
+    struct Src {
+        const std::uint8_t *p;
+        std::size_t left;
+    } src{data, len};
+    png_set_read_fn(png, &src, [](png_structp pp, png_bytep out, png_size_t n) {
+        auto *s = static_cast<Src *>(png_get_io_ptr(pp));
+        const std::size_t take = std::min<std::size_t>(n, s->left);
+        std::memcpy(out, s->p, take);
+        s->p += take;
+        s->left -= take;
+    });
+    png_read_info(png, info);
+
+    w = static_cast<int>(png_get_image_width(png, info));
+    h = static_cast<int>(png_get_image_height(png, info));
+    const png_byte color = png_get_color_type(png, info);
+    const png_byte depth = png_get_bit_depth(png, info);
+
+    // Normalise everything to 8-bit RGBA.
+    if (depth == 16) png_set_strip_16(png);
+    if (color == PNG_COLOR_TYPE_PALETTE) png_set_palette_to_rgb(png);
+    if (color == PNG_COLOR_TYPE_GRAY && depth < 8) png_set_expand_gray_1_2_4_to_8(png);
+    if (png_get_valid(png, info, PNG_INFO_tRNS)) png_set_tRNS_to_alpha(png);
+    if (color == PNG_COLOR_TYPE_GRAY || color == PNG_COLOR_TYPE_GRAY_ALPHA)
+        png_set_gray_to_rgb(png);
+    if (color == PNG_COLOR_TYPE_RGB || color == PNG_COLOR_TYPE_GRAY ||
+        color == PNG_COLOR_TYPE_PALETTE)
+        png_set_filler(png, 0xFF, PNG_FILLER_AFTER);
+    png_read_update_info(png, info);
+
+    if (w <= 0 || h <= 0 || static_cast<long long>(w) * h > (64LL << 20)) return false; // sanity cap
+    rgba.assign(static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4, 0);
+    std::vector<png_bytep> rows(static_cast<std::size_t>(h));
+    for (int y = 0; y < h; ++y)
+        rows[static_cast<std::size_t>(y)] =
+            rgba.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(w) * 4;
+    png_read_image(png, rows.data());
+    png_destroy_read_struct(&png, &info, nullptr);
+    return true;
+}
+
+} // namespace
+
+void Graphics::clear() {
+    images_.clear();
+    placements_.clear();
+    pending_.clear();
+    ++revision_;
+}
+
+bool Graphics::handle_apc(std::string_view data, std::int64_t cursor_abs_row,
+                          std::int32_t cursor_col, int cell_w, int cell_h) {
+    // kitty graphics packets start with 'G'. Anything else isn't ours.
+    if (data.empty() || data.front() != 'G') return false;
+    data.remove_prefix(1);
+
+    // Split control ; payload.
+    std::string_view control = data;
+    std::string_view payload;
+    if (const auto semi = data.find(';'); semi != std::string_view::npos) {
+        control = data.substr(0, semi);
+        payload = data.substr(semi + 1);
+    }
+
+    // Parse comma-separated key=value control pairs.
+    char action = 'T';   // default transmit+display in practice varies; kitty uses per-cmd
+    int format = 32;     // 32=RGBA, 24=RGB, 100=PNG
+    int width = 0, height = 0;
+    int more = 0;        // m=1 => more chunks follow
+    std::uint32_t id = 0, pid = 0;
+    int cols = 0, rows = 0, z = 0;
+    bool have_action = false;
+    {
+        std::size_t i = 0;
+        while (i < control.size()) {
+            std::size_t comma = control.find(',', i);
+            if (comma == std::string_view::npos) comma = control.size();
+            std::string_view kv = control.substr(i, comma - i);
+            i = comma + 1;
+            const auto eq = kv.find('=');
+            if (eq == std::string_view::npos) continue;
+            const std::string_view k = kv.substr(0, eq);
+            const std::string_view v = kv.substr(eq + 1);
+            if (k == "a") { action = v.empty() ? 'T' : v.front(); have_action = true; }
+            else if (k == "f") format = to_int(v, 32);
+            else if (k == "s") width = to_int(v);
+            else if (k == "v") height = to_int(v);
+            else if (k == "m") more = to_int(v);
+            else if (k == "i") id = static_cast<std::uint32_t>(to_ll(v));
+            else if (k == "p") pid = static_cast<std::uint32_t>(to_ll(v));
+            else if (k == "c") cols = to_int(v);
+            else if (k == "r") rows = to_int(v);
+            else if (k == "z") z = to_int(v);
+        }
+    }
+    (void)have_action;
+
+    bool changed = false;
+
+    if (action == 'd') { // delete placements/images
+        do_delete(control, changed);
+        if (changed) ++revision_;
+        return changed;
+    }
+
+    // Transmit (a=t) or transmit+display (a=T). Both accumulate payload, keyed
+    // by id; a=q (query) is ignored. Auto-assign an id when none is given so
+    // chunked transfers can coalesce.
+    if (action != 't' && action != 'T') {
+        return false;
+    }
+    if (id == 0) id = next_auto_id_++; // ephemeral
+
+    Pending &p = pending_[id];
+    if (p.b64.empty()) { // first chunk: capture params
+        p.format = format;
+        p.width = width;
+        p.height = height;
+        p.id = id;
+        p.placement_id = pid;
+        p.display = (action == 'T');
+        p.cols = cols;
+        p.rows = rows;
+        p.z = z;
+    }
+    p.b64.append(payload);
+    if (p.b64.size() > (32u << 20)) { // 32MB guard
+        pending_.erase(id);
+        return false;
+    }
+
+    if (more == 0) { // final chunk: decode + store
+        commit(p, cursor_abs_row, cursor_col, cell_w, cell_h, changed);
+        pending_.erase(id);
+    }
+    if (changed) ++revision_;
+    return changed;
+}
+
+void Graphics::commit(Pending &p, std::int64_t cursor_abs_row, std::int32_t cursor_col,
+                      int cell_w, int cell_h, bool &changed) {
+    std::vector<std::uint8_t> raw = b64_decode(p.b64);
+    Image img;
+    img.id = p.id;
+
+    if (p.format == 100) { // PNG
+        int w = 0, h = 0;
+        if (!decode_png(raw.data(), raw.size(), w, h, img.rgba)) return;
+        img.width = w;
+        img.height = h;
+    } else if (p.format == 24) { // RGB -> RGBA
+        if (p.width <= 0 || p.height <= 0) return;
+        const std::size_t need = static_cast<std::size_t>(p.width) *
+                                 static_cast<std::size_t>(p.height) * 3;
+        if (raw.size() < need) return;
+        img.width = p.width;
+        img.height = p.height;
+        img.rgba.resize(static_cast<std::size_t>(p.width) * static_cast<std::size_t>(p.height) * 4);
+        for (std::size_t i = 0, o = 0; i + 2 < need; i += 3, o += 4) {
+            img.rgba[o] = raw[i];
+            img.rgba[o + 1] = raw[i + 1];
+            img.rgba[o + 2] = raw[i + 2];
+            img.rgba[o + 3] = 0xFF;
+        }
+    } else { // 32 = RGBA
+        if (p.width <= 0 || p.height <= 0) return;
+        const std::size_t need = static_cast<std::size_t>(p.width) *
+                                 static_cast<std::size_t>(p.height) * 4;
+        if (raw.size() < need) return;
+        img.width = p.width;
+        img.height = p.height;
+        img.rgba.assign(raw.begin(), raw.begin() + static_cast<std::ptrdiff_t>(need));
+    }
+    if (img.width <= 0 || img.height <= 0) return;
+
+    images_[img.id] = std::move(img);
+    changed = true;
+
+    if (p.display) {
+        const Image &stored = images_[p.id];
+        Placement pl;
+        pl.image_id = p.id;
+        pl.placement_id = p.placement_id;
+        pl.abs_row = cursor_abs_row;
+        pl.col = cursor_col;
+        pl.z = p.z;
+        // Derive cell span from the image size when not given.
+        pl.cols = p.cols > 0 ? p.cols
+                             : (cell_w > 0 ? (stored.width + cell_w - 1) / cell_w : 1);
+        pl.rows = p.rows > 0 ? p.rows
+                             : (cell_h > 0 ? (stored.height + cell_h - 1) / cell_h : 1);
+        // Replace an existing placement with the same (image,placement) id.
+        std::erase_if(placements_, [&](const Placement &e) {
+            return e.image_id == pl.image_id && e.placement_id == pl.placement_id;
+        });
+        placements_.push_back(pl);
+    }
+}
+
+void Graphics::do_delete(std::string_view control, bool &changed) {
+    // Parse the delete target: d=<what>[,i=<id>]. Common cases:
+    //   a (or A): all placements  |  i=<id>: by image id  |  default: visible.
+    char what = 'a';
+    std::uint32_t id = 0;
+    std::size_t i = 0;
+    while (i < control.size()) {
+        std::size_t comma = control.find(',', i);
+        if (comma == std::string_view::npos) comma = control.size();
+        std::string_view kv = control.substr(i, comma - i);
+        i = comma + 1;
+        const auto eq = kv.find('=');
+        if (eq == std::string_view::npos) continue;
+        const std::string_view k = kv.substr(0, eq);
+        const std::string_view v = kv.substr(eq + 1);
+        if (k == "d" && !v.empty()) what = v.front();
+        else if (k == "i") id = static_cast<std::uint32_t>(to_ll(v));
+    }
+    const std::size_t before = placements_.size();
+    if (what == 'i' || id != 0) {
+        std::erase_if(placements_, [&](const Placement &e) { return e.image_id == id; });
+        // 'I' (uppercase) also frees the image data.
+        if (what == 'I') images_.erase(id);
+    } else { // 'a'/'A' or unrecognised: clear all placements.
+        placements_.clear();
+        if (what == 'A') images_.clear();
+    }
+    changed = placements_.size() != before;
+}
+
+} // namespace gvte::term

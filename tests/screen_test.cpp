@@ -597,6 +597,48 @@ int main() {
         expect(s.generation() != g0, "generation jumps once when the batch ends");
     }
 
+    // Kitty graphics (APC): transmit+display an RGBA image, then delete it.
+    {
+        term::Screen s{Extent{40, 10}};
+        s.set_cell_size(8, 16);
+        // 2x2 RGBA (red,green / blue,white), displayed at the cursor.
+        auto b64 = [](const std::string &in) {
+            static const char *a =
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            std::string out;
+            unsigned val = 0;
+            int bits = 0;
+            for (unsigned char c : in) {
+                val = (val << 8) | c;
+                bits += 8;
+                while (bits >= 6) { bits -= 6; out += a[(val >> bits) & 0x3F]; }
+            }
+            if (bits) out += a[(val << (6 - bits)) & 0x3F];
+            while (out.size() % 4) out += '=';
+            return out;
+        };
+        std::string pix;
+        for (int k = 0; k < 4; ++k) { pix += char(255); pix += char(0); pix += char(0); pix += char(255); }
+        std::string apc = "\x1b_Ga=T,f=32,s=2,v=2;";
+        apc += b64(pix);
+        apc += '\x1b';
+        apc += '\\';
+        feed(s, apc);
+        expect(s.graphics().placements().size() == 1, "kitty a=T creates a placement");
+        if (!s.graphics().placements().empty()) {
+            const auto &pl = s.graphics().placements()[0];
+            const auto *img = s.graphics().image(pl.image_id);
+            expect(img && img->width == 2 && img->height == 2, "image decoded to 2x2");
+            expect(img && img->rgba.size() == 16 && img->rgba[0] == 255 && img->rgba[1] == 0,
+                   "image RGBA pixels intact (first = red)");
+        }
+        std::string del = "\x1b_Ga=d";
+        del += '\x1b';
+        del += '\\';
+        feed(s, del);
+        expect(s.graphics().placements().empty(), "kitty a=d removes the placement");
+    }
+
     if (failures == 0) {
         std::printf("all screen tests passed\n");
         return 0;

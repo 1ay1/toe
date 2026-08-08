@@ -639,6 +639,118 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
     return true;
 }
 
+// --- inline image (kitty graphics) pipeline --------------------------------
+namespace {
+constexpr const char *kImgVert = R"(#version 330 core
+layout(location=0) in vec2 aCorner;   // unit quad 0..1
+layout(location=1) in vec4 aRect;     // x,y,w,h in pixels
+uniform vec2 uScreen;
+out vec2 vUV;
+void main() {
+    vec2 px = aRect.xy + aCorner * aRect.zw;
+    vec2 ndc = vec2(px.x / uScreen.x * 2.0 - 1.0, 1.0 - px.y / uScreen.y * 2.0);
+    gl_Position = vec4(ndc, 0.0, 1.0);
+    vUV = aCorner;
+}
+)";
+constexpr const char *kImgFrag = R"(#version 330 core
+in vec2 vUV;
+uniform sampler2D uTex;
+out vec4 FragColor;
+void main() {
+    FragColor = texture(uTex, vUV);
+}
+)";
+} // namespace
+
+void Renderer::ensure_image_pipeline() {
+    if (image_prog_.valid()) return;
+    auto prog = Program::build(kImgVert, kImgFrag);
+    if (!prog) return; // image support unavailable; glyphs still render
+    image_prog_ = std::move(*prog);
+    img_u_screen_ = image_prog_.uniform("uScreen");
+    img_u_tex_ = image_prog_.uniform("uTex");
+
+    glGenVertexArrays(1, &image_vao_);
+    glBindVertexArray(image_vao_);
+    static constexpr float kQuad[] = {0, 0, 1, 0, 0, 1, 1, 1};
+    glGenBuffers(1, &image_vbo_);
+    glBindBuffer(GL_ARRAY_BUFFER, image_vbo_);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(kQuad), kQuad, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
+    // aRect (loc1) is set per-draw via a uniform-ish path: use a small dynamic
+    // buffer. Simpler: pass the rect as a vertex attribute with divisor so one
+    // instanced draw covers the quad. But we draw images one at a time, so a
+    // per-image glBufferSubData into a rect buffer + non-instanced attr works.
+    glGenBuffers(1, &image_vbo_rect_);
+    glBindBuffer(GL_ARRAY_BUFFER, image_vbo_rect_);
+    glBufferData(GL_ARRAY_BUFFER, 4 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 4 * sizeof(float), nullptr);
+    glVertexAttribDivisor(1, 1); // one rect per instance (we draw 1 instance)
+    glBindVertexArray(0);
+}
+
+void Renderer::draw_images(const term::Screen &screen, PixelSize px) {
+    const term::Graphics &g = screen.graphics();
+    if (g.placements().empty()) return;
+    ensure_image_pipeline();
+    if (!image_prog_.valid()) return;
+
+    // (Re)upload textures when the graphics state changed.
+    if (g.revision() != images_revision_) {
+        images_revision_ = g.revision();
+        for (const auto &pl : g.placements()) {
+            if (image_tex_.count(pl.image_id)) continue;
+            const term::Image *img = g.image(pl.image_id);
+            if (!img || img->rgba.empty()) continue;
+            GLuint tex = 0;
+            glGenTextures(1, &tex);
+            glBindTexture(GL_TEXTURE_2D, tex);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, img->width, img->height, 0, GL_RGBA,
+                         GL_UNSIGNED_BYTE, img->rgba.data());
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            image_tex_[pl.image_id] = tex;
+        }
+    }
+
+    const int cw = atlas_.cell_width();
+    const int ch = atlas_.cell_height();
+    const int rows = screen.size().rows;
+    const std::int64_t view_top = screen.viewport_to_abs(0);
+
+    glBindVertexArray(image_vao_);
+    image_prog_.use();
+    glUniform2f(img_u_screen_, static_cast<float>(px.w), static_cast<float>(px.h));
+    glActiveTexture(GL_TEXTURE0);
+    glUniform1i(img_u_tex_, 0);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    for (const auto &pl : g.placements()) {
+        auto it = image_tex_.find(pl.image_id);
+        if (it == image_tex_.end()) continue;
+        // Map the placement's absolute-row anchor into the current viewport.
+        const std::int64_t vrow = pl.abs_row - view_top;
+        if (vrow + pl.rows <= 0 || vrow >= rows) continue; // fully scrolled away
+        const float x = static_cast<float>(pl.col * cw);
+        const float y = static_cast<float>(vrow * ch);
+        const float w = static_cast<float>(pl.cols * cw);
+        const float h = static_cast<float>(pl.rows * ch);
+        const float rect[4] = {x, y, w, h};
+        glBindBuffer(GL_ARRAY_BUFFER, image_vbo_rect_);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(rect), rect);
+        glBindTexture(GL_TEXTURE_2D, it->second);
+        glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, 1);
+    }
+    glBindVertexArray(0);
+}
+
 void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on, bool blink_on) {
     const Rgb bgc = palette_.default_bg();
     glClearColor(fr(bgc.r), fr(bgc.g), fr(bgc.b), 1.0f);
@@ -760,7 +872,9 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on, bo
         }
     }
 
-    if (!any_row_dirty && redraw_from_cache(px)) {
+    const bool has_images = !screen.graphics().placements().empty();
+
+    if (!any_row_dirty && !has_images && redraw_from_cache(px)) {
         // Nothing changed: the GPU buffers already hold this exact frame. We
         // replayed the recorded draws with zero uploads / fences / memcpy.
         return;
@@ -770,6 +884,9 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on, bo
     last_draw_n_ = 0;
     flush(instances_, px);
     flush(glyphs_, px);
+
+    // Inline images (kitty graphics) draw over the glyph layer.
+    if (has_images) draw_images(screen, px);
 }
 
 } // namespace gvte::gfx
