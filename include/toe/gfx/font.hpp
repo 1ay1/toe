@@ -33,6 +33,7 @@ struct GlyphInfo {
     int width{}, height{};        // bitmap size in pixels
     int bearing_x{}, bearing_y{}; // offset from pen origin to bitmap top-left
     int advance{};                // horizontal advance in pixels
+    bool is_color{};              // sample the RGBA colour atlas (emoji) vs R8
 };
 
 // Rendition style for a glyph. Bold/italic are SYNTHESIZED from the primary
@@ -118,6 +119,10 @@ public:
     // The GL atlas texture id (GL_R8), for binding by the renderer.
     [[nodiscard]] std::uint32_t texture() const noexcept { return tex_; }
     [[nodiscard]] int atlas_size() const noexcept { return atlas_dim_; }
+    // The RGBA colour atlas (emoji), bound alongside for is_color glyphs. 0
+    // until the first colour glyph is packed.
+    [[nodiscard]] std::uint32_t color_texture() const noexcept { return color_tex_; }
+    [[nodiscard]] int color_atlas_size() const noexcept { return color_dim_; }
 
 private:
     FontAtlas() = default;
@@ -137,6 +142,15 @@ private:
     std::uint32_t tex_{0};
     int atlas_dim_{0};
     int pen_x_{0}, pen_y_{0}, shelf_h_{0}; // shelf allocator cursor
+
+    // Separate RGBA atlas for colour (emoji) glyphs, with its own shelf cursor.
+    // Lazily created on the first colour glyph so alpha-only sessions pay
+    // nothing.
+    std::uint32_t color_tex_{0};
+    int color_dim_{0};
+    int cpen_x_{0}, cpen_y_{0}, cshelf_h_{0};
+    const GlyphInfo *pack_color(const GlyphBitmap &g, std::uint64_t key);
+    void ensure_color_atlas();
 
     int cell_w_{0}, cell_h_{0}, ascent_{0};
 

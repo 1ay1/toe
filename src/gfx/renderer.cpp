@@ -64,7 +64,8 @@ in vec2 vLocal;
 in vec2 vHalf;
 in float vRadius;
 
-uniform sampler2D uAtlas;
+uniform sampler2D uAtlas;      // R8 coverage atlas (alpha glyphs)
+uniform sampler2D uColorAtlas; // RGBA atlas (colour emoji glyphs)
 
 out vec4 FragColor;
 
@@ -75,7 +76,12 @@ float sd_round_box(vec2 p, vec2 half_ext, float r) {
 }
 
 void main() {
-    if (vIsGlyph > 0.5) {
+    // vIsGlyph: 0 = rect, 1 = alpha glyph (tinted coverage), 2 = colour glyph.
+    if (vIsGlyph > 1.5) {
+        // Colour emoji: sample the RGBA atlas as-is (no tint). The bitmap is
+        // straight-alpha RGBA; the standard src-alpha blend composites it.
+        FragColor = texture(uColorAtlas, vUV);
+    } else if (vIsGlyph > 0.5) {
         float a = texture(uAtlas, vUV).r;
         // Gamma-correct the coverage. stb hands us LINEAR coverage, but the
         // framebuffer is sRGB and the blend runs in gamma space — blending
@@ -211,6 +217,7 @@ Result<Renderer> Renderer::create(FontAtlas &&atlas) {
     Renderer r{std::move(atlas), std::move(*prog)};
     r.u_screen_ = r.prog_.uniform("uScreen");
     r.u_atlas_ = r.prog_.uniform("uAtlas");
+    r.u_color_atlas_ = r.prog_.uniform("uColorAtlas");
     r.ensure_buffers();
     return r;
 }
@@ -231,7 +238,7 @@ Renderer::~Renderer() {
 
 Renderer::Renderer(Renderer &&o) noexcept
     : atlas_{std::move(o.atlas_)}, palette_{o.palette_}, prog_{std::move(o.prog_)},
-      u_screen_{o.u_screen_}, u_atlas_{o.u_atlas_},
+      u_screen_{o.u_screen_}, u_atlas_{o.u_atlas_}, u_color_atlas_{o.u_color_atlas_},
       vao_{std::exchange(o.vao_, 0)}, quad_vbo_{std::exchange(o.quad_vbo_, 0)},
       inst_vbo_{std::exchange(o.inst_vbo_, 0)}, inst_bytes_capacity_{o.inst_bytes_capacity_},
       persistent_{o.persistent_}, inst_map_{std::exchange(o.inst_map_, nullptr)},
@@ -370,6 +377,17 @@ void Renderer::bind_common(PixelSize px) {
         glUniform1i(u_atlas_, 0);
         bound_tex_ = tex;
     }
+    // Colour (emoji) atlas on unit 1. It's created lazily on the first colour
+    // glyph, so re-bind whenever the id changes (0 -> real texture). The shader
+    // only samples it for is_color glyph instances.
+    const std::uint32_t ctex = atlas_.color_texture();
+    if (ctex != bound_color_tex_) {
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, ctex);
+        glUniform1i(u_color_atlas_, 1);
+        glActiveTexture(GL_TEXTURE0);
+        bound_color_tex_ = ctex;
+    }
 }
 
 // Clean-frame fast path: nothing about the grid changed since the last draw,
@@ -440,6 +458,10 @@ void Renderer::flush(std::span<const Instance> insts, PixelSize px) {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, atlas_.texture());
         glUniform1i(u_atlas_, 0);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, atlas_.color_texture());
+        glUniform1i(u_color_atlas_, 1);
+        glActiveTexture(GL_TEXTURE0);
         glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, static_cast<GLsizei>(count));
         glBindVertexArray(0);
         return;
@@ -458,6 +480,12 @@ void Renderer::flush(std::span<const Instance> insts, PixelSize px) {
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, atlas_.texture());
     glUniform1i(u_atlas_, 0);
+    // Colour (emoji) atlas on unit 1 — bound even if empty (0), the shader only
+    // samples it for is_color glyph instances.
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, atlas_.color_texture());
+    glUniform1i(u_color_atlas_, 1);
+    glActiveTexture(GL_TEXTURE0);
 
     glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, static_cast<GLsizei>(count));
     glBindVertexArray(0);
@@ -662,7 +690,8 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
                                      static_cast<float>(gi->height),
                                      gi->u0, gi->v0, gi->u1, gi->v1,
                                      col.r, col.g, col.b, 255,
-                                     /*is_glyph=*/1, 0, 0, 0});
+                                     /*is_glyph=*/static_cast<std::uint8_t>(gi->is_color ? 2 : 1),
+                                     0, 0, 0});
     }
     rc.key = key;
     rc.valid = true;
@@ -1241,7 +1270,9 @@ void Renderer::draw_preedit(const term::Screen &screen, PixelSize px) {
             const float gy = static_cast<float>(row * ch + ascent - gi->bearing_y);
             glyphs.push_back(Instance{gx, gy, static_cast<float>(gi->width),
                                       static_cast<float>(gi->height), gi->u0, gi->v0, gi->u1,
-                                      gi->v1, fg.r, fg.g, fg.b, 255, /*is_glyph=*/1, 0, 0, 0});
+                                      gi->v1, fg.r, fg.g, fg.b, 255,
+                                      /*is_glyph=*/static_cast<std::uint8_t>(gi->is_color ? 2 : 1),
+                                      0, 0, 0});
         }
         col += w;
     }

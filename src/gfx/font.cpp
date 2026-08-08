@@ -158,6 +158,8 @@ FontAtlas::FontAtlas(FontAtlas &&o) noexcept
     : faces_{std::move(o.faces_)}, shaper_{std::exchange(o.shaper_, nullptr)},
       pixel_size_{o.pixel_size_}, ligatures_{o.ligatures_}, tex_{std::exchange(o.tex_, 0)},
       atlas_dim_{o.atlas_dim_}, pen_x_{o.pen_x_}, pen_y_{o.pen_y_}, shelf_h_{o.shelf_h_},
+      color_tex_{std::exchange(o.color_tex_, 0)}, color_dim_{o.color_dim_}, cpen_x_{o.cpen_x_},
+      cpen_y_{o.cpen_y_}, cshelf_h_{o.cshelf_h_},
       cell_w_{o.cell_w_}, cell_h_{o.cell_h_}, ascent_{o.ascent_}, cache_{std::move(o.cache_)} {
     fast_ = o.fast_;
 }
@@ -171,6 +173,11 @@ FontAtlas &FontAtlas::operator=(FontAtlas &&o) noexcept {
         ligatures_ = o.ligatures_;
         tex_ = std::exchange(o.tex_, 0);
         atlas_dim_ = o.atlas_dim_;
+        color_tex_ = std::exchange(o.color_tex_, 0);
+        color_dim_ = o.color_dim_;
+        cpen_x_ = o.cpen_x_;
+        cpen_y_ = o.cpen_y_;
+        cshelf_h_ = o.cshelf_h_;
         pen_x_ = o.pen_x_;
         pen_y_ = o.pen_y_;
         shelf_h_ = o.shelf_h_;
@@ -187,6 +194,7 @@ FontAtlas::~FontAtlas() { destroy(); }
 
 void FontAtlas::destroy() noexcept {
     if (tex_) { glDeleteTextures(1, &tex_); tex_ = 0; }
+    if (color_tex_) { glDeleteTextures(1, &color_tex_); color_tex_ = 0; }
     delete static_cast<ot::Shaper *>(shaper_);
     shaper_ = nullptr;
     // Faces (blobs + rasterizer handles) free themselves via FaceStack.
@@ -204,6 +212,7 @@ const GlyphInfo *FontAtlas::rasterize(char32_t cp, FontStyle style) {
     // with it (pack_bitmap clips into the monospace cell).
     const FaceStack::Resolved r = faces_.resolve(cp);
     const GlyphBitmap g = r.face->rasterize(r.index);
+    if (g.is_color) return pack_color(g, key); // emoji -> RGBA atlas
     return pack_bitmap(g.pixels.empty() ? nullptr : g.pixels.data(), g.width, g.height,
                        g.bearing_x, g.bearing_y, g.advance, bold, italic, key, cache_, tex_,
                        atlas_dim_, pen_x_, pen_y_, shelf_h_, cell_h_);
@@ -235,6 +244,61 @@ void FontAtlas::shape_run(std::span<const char32_t> cps, std::span<std::uint32_t
     for (std::size_t i = 0; i < n; ++i) glyphs[i] = sh->glyph_for(cps[i]);
     sh->shape(glyphs);
     for (std::size_t i = 0; i < n && i < out.size(); ++i) out[i] = glyphs[i];
+}
+
+void FontAtlas::ensure_color_atlas() {
+    if (color_tex_) return;
+    color_dim_ = 1024;
+    glGenTextures(1, &color_tex_);
+    glBindTexture(GL_TEXTURE_2D, color_tex_);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, color_dim_, color_dim_, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, nullptr);
+    // LINEAR for colour emoji (they're scaled to the cell; nearest looks blocky).
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    cpen_x_ = 1;
+    cpen_y_ = 1;
+    cshelf_h_ = 0;
+}
+
+const GlyphInfo *FontAtlas::pack_color(const GlyphBitmap &g, std::uint64_t key) {
+    ensure_color_atlas();
+    GlyphInfo info{};
+    info.is_color = true;
+    info.width = g.width;
+    info.height = g.height;
+    // Centre the emoji in the monospace cell (emoji are ~square, cells are tall
+    // and narrow); place it on the baseline like a normal glyph otherwise.
+    info.advance = cell_w_;
+    info.bearing_x = (cell_w_ - g.width) / 2;
+    info.bearing_y = ascent_ + (g.height - ascent_) / 2; // roughly vertically centred
+
+    if (g.width > 0 && g.height > 0 && !g.pixels.empty()) {
+        // Shelf-allocate in the RGBA atlas.
+        if (cpen_x_ + g.width + 1 > color_dim_) { // new shelf
+            cpen_x_ = 1;
+            cpen_y_ += cshelf_h_ + 1;
+            cshelf_h_ = 0;
+        }
+        if (cpen_y_ + g.height + 1 <= color_dim_) {
+            glBindTexture(GL_TEXTURE_2D, color_tex_);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, cpen_x_, cpen_y_, g.width, g.height, GL_RGBA,
+                            GL_UNSIGNED_BYTE, g.pixels.data());
+            const float inv = 1.0f / static_cast<float>(color_dim_);
+            info.u0 = static_cast<float>(cpen_x_) * inv;
+            info.v0 = static_cast<float>(cpen_y_) * inv;
+            info.u1 = static_cast<float>(cpen_x_ + g.width) * inv;
+            info.v1 = static_cast<float>(cpen_y_ + g.height) * inv;
+            cpen_x_ += g.width + 1;
+            if (g.height > cshelf_h_) cshelf_h_ = g.height;
+        }
+    }
+    auto [it, _] = cache_.emplace(key, info);
+    return &it->second;
 }
 
 } // namespace toe::gfx

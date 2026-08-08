@@ -107,6 +107,7 @@ private:
     Program prog_;
     int u_screen_{-1}; // cached glGetUniformLocation results (per-frame lookups
     int u_atlas_{-1};  // into the driver were a measurable cost)
+    int u_color_atlas_{-1}; // RGBA emoji atlas sampler (texture unit 1)
 
     std::uint32_t vao_{0};
     std::uint32_t quad_vbo_{0};
@@ -169,6 +170,7 @@ private:
     // across static frames) skip redundant GL calls.
     float u_px_w_{-1.0f}, u_px_h_{-1.0f};
     std::uint32_t bound_tex_{0};
+    std::uint32_t bound_color_tex_{0};
     void bind_common(PixelSize px);
 
     // Packed-instance builders (colors are raw bytes; the shader normalizes).
