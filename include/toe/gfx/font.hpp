@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <array>
+#include <memory>
 #include <string>
 #include <cmath>
 #include <span>
@@ -22,6 +23,7 @@
 #include <unordered_map>
 
 #include "toe/core/types.hpp"
+#include "toe/gfx/face.hpp"
 
 namespace toe::gfx {
 
@@ -124,16 +126,11 @@ private:
     // Rasterize+pack a glyph selected by GLYPH INDEX (for ligatures/shaping).
     const GlyphInfo *rasterize_index(std::uint32_t gindex, FontStyle style);
 
-    // Owned font blobs (mmapped/read into memory; stb points INTO these).
-    std::vector<std::uint8_t> primary_data_{};
-    std::vector<std::uint8_t> fallback_data_{};
-    // stbtt_fontinfo for primary + fallback, and the ligature shaper. Held as
-    // opaque storage so stb_truetype / opentype don't leak into this header.
-    void *primary_font_{nullptr};   // stbtt_fontinfo*
-    void *fallback_font_{nullptr};  // stbtt_fontinfo* (null if no fallback)
-    void *shaper_{nullptr};         // ot::Shaper*
-    float scale_{0.0f};             // stb scale for pixel_size
-    float fallback_scale_{0.0f};
+    // Owned font blobs live inside the FaceStack now. The stack is the ordered
+    // fallback chain (primary first, then CJK/emoji/symbol faces); glyph lookup
+    // and rasterization go through it. The primary face fixes the cell metrics.
+    FaceStack faces_{};
+    void *shaper_{nullptr};         // ot::Shaper* over the primary face's GSUB
     int pixel_size_{0};
     bool ligatures_{true};
 

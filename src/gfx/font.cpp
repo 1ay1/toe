@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.0-or-later
 //
-// Font atlas backed by stb_truetype (rasterization) + a tiny GSUB shaper
+// Font atlas backed by the Face/FaceStack rasterizer core (face.hpp, over
+// stb_truetype) + a tiny GSUB shaper
 // (ligatures). No FreeType, no HarfBuzz, no Fontconfig — the font file is read
 // directly and glyphs are cached into a single R8 GL atlas on first use.
 
@@ -13,8 +14,6 @@
 #include <utility>
 
 #include <epoxy/gl.h>
-
-#include "stb/stb_truetype.h"
 
 namespace toe::gfx {
 
@@ -96,54 +95,37 @@ Result<FontAtlas> FontAtlas::create(std::string font_path, int pixel_size,
     auto data = read_file(font_path);
     if (data.empty()) return fail("font: cannot read '" + font_path + "'");
 
-    auto *pf = new stbtt_fontinfo{};
-    if (!stbtt_InitFont(pf, data.data(), stbtt_GetFontOffsetForIndex(data.data(), 0))) {
-        delete pf;
-        return fail("font: '" + font_path + "' is not a valid TTF/OTF");
-    }
+    // The primary face fixes the cell + metrics. It's the head of the fallback
+    // chain; further faces (CJK/emoji/symbols) are consulted for missing glyphs.
+    auto primary = Face::load(std::move(data), pixel_size);
+    if (!primary) return fail("font: '" + font_path + "' is not a valid TTF/OTF");
 
     FontAtlas a;
-    a.primary_data_ = std::move(data);
-    a.primary_font_ = pf;
     a.pixel_size_ = pixel_size;
     a.ligatures_ = ligatures;
-    a.scale_ = stbtt_ScaleForPixelHeight(pf, static_cast<float>(pixel_size));
 
-    // Cell metrics. ascent/descent/lineGap are in font units; scale them.
-    int asc = 0, desc = 0, gap = 0;
-    stbtt_GetFontVMetrics(pf, &asc, &desc, &gap);
-    a.ascent_ = static_cast<int>(std::lround(asc * a.scale_));
-    a.cell_h_ = static_cast<int>(std::lround((asc - desc + gap) * a.scale_));
-
-    // Monospace advance: measure 'M' (fallback to space).
-    int adv = 0, lsb = 0;
-    stbtt_GetCodepointHMetrics(pf, 'M', &adv, &lsb);
-    if (adv <= 0) stbtt_GetCodepointHMetrics(pf, ' ', &adv, &lsb);
-    a.cell_w_ = static_cast<int>(std::lround(adv * a.scale_));
+    const FaceMetrics &m = primary->metrics();
+    a.ascent_ = m.ascent;
+    a.cell_h_ = m.ascent + m.descent + m.line_gap;
+    a.cell_w_ = m.advance;
     if (a.cell_w_ <= 0) a.cell_w_ = pixel_size / 2 + 1;
     if (a.cell_h_ <= 0) a.cell_h_ = pixel_size + 2;
 
-    // Optional fallback font.
+    a.faces_.push(std::move(primary));
+
+    // Optional fallback face(s), appended in order. load() sizes each to the
+    // same pixel height so their glyphs share the primary's baseline.
     if (!fallback_path.empty()) {
-        a.fallback_data_ = read_file(fallback_path);
-        if (!a.fallback_data_.empty()) {
-            auto *ff = new stbtt_fontinfo{};
-            if (stbtt_InitFont(ff, a.fallback_data_.data(),
-                               stbtt_GetFontOffsetForIndex(a.fallback_data_.data(), 0))) {
-                a.fallback_font_ = ff;
-                a.fallback_scale_ =
-                    stbtt_ScaleForPixelHeight(ff, static_cast<float>(pixel_size));
-            } else {
-                delete ff;
-                a.fallback_data_.clear();
-            }
+        if (auto fb = read_file(fallback_path); !fb.empty()) {
+            a.faces_.push(Face::load(std::move(fb), pixel_size));
         }
     }
 
-    // Ligature shaper (GSUB calt/liga). Optional; identity if unavailable.
+    // Ligature shaper (GSUB calt/liga) over the primary face's bytes. Optional;
+    // identity if unavailable.
     if (ligatures) {
         auto *sh = new ot::Shaper{};
-        if (sh->parse(std::span<const std::uint8_t>{a.primary_data_.data(), a.primary_data_.size()}))
+        if (sh->parse(a.faces_.primary().bytes()))
             a.shaper_ = sh;
         else
             delete sh;
@@ -167,27 +149,18 @@ Result<FontAtlas> FontAtlas::create(std::string font_path, int pixel_size,
 }
 
 FontAtlas::FontAtlas(FontAtlas &&o) noexcept
-    : primary_data_{std::move(o.primary_data_)}, fallback_data_{std::move(o.fallback_data_)},
-      primary_font_{std::exchange(o.primary_font_, nullptr)},
-      fallback_font_{std::exchange(o.fallback_font_, nullptr)},
-      shaper_{std::exchange(o.shaper_, nullptr)}, scale_{o.scale_},
-      fallback_scale_{o.fallback_scale_}, pixel_size_{o.pixel_size_}, ligatures_{o.ligatures_},
-      tex_{std::exchange(o.tex_, 0)}, atlas_dim_{o.atlas_dim_}, pen_x_{o.pen_x_}, pen_y_{o.pen_y_},
-      shelf_h_{o.shelf_h_}, cell_w_{o.cell_w_}, cell_h_{o.cell_h_}, ascent_{o.ascent_},
-      cache_{std::move(o.cache_)} {
+    : faces_{std::move(o.faces_)}, shaper_{std::exchange(o.shaper_, nullptr)},
+      pixel_size_{o.pixel_size_}, ligatures_{o.ligatures_}, tex_{std::exchange(o.tex_, 0)},
+      atlas_dim_{o.atlas_dim_}, pen_x_{o.pen_x_}, pen_y_{o.pen_y_}, shelf_h_{o.shelf_h_},
+      cell_w_{o.cell_w_}, cell_h_{o.cell_h_}, ascent_{o.ascent_}, cache_{std::move(o.cache_)} {
     fast_ = o.fast_;
 }
 
 FontAtlas &FontAtlas::operator=(FontAtlas &&o) noexcept {
     if (this != &o) {
         destroy();
-        primary_data_ = std::move(o.primary_data_);
-        fallback_data_ = std::move(o.fallback_data_);
-        primary_font_ = std::exchange(o.primary_font_, nullptr);
-        fallback_font_ = std::exchange(o.fallback_font_, nullptr);
+        faces_ = std::move(o.faces_);
         shaper_ = std::exchange(o.shaper_, nullptr);
-        scale_ = o.scale_;
-        fallback_scale_ = o.fallback_scale_;
         pixel_size_ = o.pixel_size_;
         ligatures_ = o.ligatures_;
         tex_ = std::exchange(o.tex_, 0);
@@ -208,10 +181,9 @@ FontAtlas::~FontAtlas() { destroy(); }
 
 void FontAtlas::destroy() noexcept {
     if (tex_) { glDeleteTextures(1, &tex_); tex_ = 0; }
-    delete static_cast<stbtt_fontinfo *>(primary_font_);
-    delete static_cast<stbtt_fontinfo *>(fallback_font_);
     delete static_cast<ot::Shaper *>(shaper_);
-    primary_font_ = fallback_font_ = shaper_ = nullptr;
+    shaper_ = nullptr;
+    // Faces (blobs + rasterizer handles) free themselves via FaceStack.
 }
 
 bool FontAtlas::has_shaper() const noexcept { return shaper_ != nullptr; }
@@ -221,44 +193,26 @@ const GlyphInfo *FontAtlas::rasterize(char32_t cp, FontStyle style) {
     const bool italic = (static_cast<std::uint8_t>(style) & 2) != 0;
     const std::uint64_t key = (static_cast<std::uint64_t>(style) << 32) | cp;
 
-    auto *pf = static_cast<stbtt_fontinfo *>(primary_font_);
-    stbtt_fontinfo *font = pf;
-    float scale = scale_;
-    int gi = stbtt_FindGlyphIndex(pf, static_cast<int>(cp));
-    if (gi == 0 && fallback_font_) {
-        auto *ff = static_cast<stbtt_fontinfo *>(fallback_font_);
-        const int fgi = stbtt_FindGlyphIndex(ff, static_cast<int>(cp));
-        if (fgi != 0) { font = ff; scale = fallback_scale_; gi = fgi; }
-    }
-
-    int adv = 0, lsb = 0;
-    stbtt_GetGlyphHMetrics(font, gi, &adv, &lsb);
-    int w = 0, h = 0, ox = 0, oy = 0;
-    unsigned char *bmp = stbtt_GetGlyphBitmap(font, scale, scale, gi, &w, &h, &ox, &oy);
-    const GlyphInfo *out = pack_bitmap(bmp, w, h, ox, oy,
-                                       static_cast<int>(std::lround(adv * scale)), bold, italic, key,
-                                       cache_, tex_, atlas_dim_, pen_x_, pen_y_, shelf_h_, cell_h_);
-    stbtt_FreeBitmap(bmp, nullptr);
-    return out;
+    // The fallback chain picks the first face that owns the codepoint; the
+    // glyph is rasterized with THAT face's own scale, and its advance travels
+    // with it (pack_bitmap clips into the monospace cell).
+    const FaceStack::Resolved r = faces_.resolve(cp);
+    const GlyphBitmap g = r.face->rasterize(r.index);
+    return pack_bitmap(g.pixels.empty() ? nullptr : g.pixels.data(), g.width, g.height,
+                       g.bearing_x, g.bearing_y, g.advance, bold, italic, key, cache_, tex_,
+                       atlas_dim_, pen_x_, pen_y_, shelf_h_, cell_h_);
 }
 
 const GlyphInfo *FontAtlas::rasterize_index(std::uint32_t gindex, FontStyle style) {
-    // Shaped/ligature glyphs come from the PRIMARY font by glyph index.
+    // Shaped/ligature glyphs come from the PRIMARY face by glyph index.
     const bool bold = (static_cast<std::uint8_t>(style) & 1) != 0;
     const bool italic = (static_cast<std::uint8_t>(style) & 2) != 0;
     const std::uint64_t key = (static_cast<std::uint64_t>(style) << 32) | 0x80000000ull | gindex;
 
-    auto *pf = static_cast<stbtt_fontinfo *>(primary_font_);
-    int adv = 0, lsb = 0;
-    stbtt_GetGlyphHMetrics(pf, static_cast<int>(gindex), &adv, &lsb);
-    int w = 0, h = 0, ox = 0, oy = 0;
-    unsigned char *bmp =
-        stbtt_GetGlyphBitmap(pf, scale_, scale_, static_cast<int>(gindex), &w, &h, &ox, &oy);
-    const GlyphInfo *out =
-        pack_bitmap(bmp, w, h, ox, oy, static_cast<int>(std::lround(adv * scale_)), bold, italic,
-                    key, cache_, tex_, atlas_dim_, pen_x_, pen_y_, shelf_h_, cell_h_);
-    stbtt_FreeBitmap(bmp, nullptr);
-    return out;
+    const GlyphBitmap g = faces_.primary().rasterize(gindex);
+    return pack_bitmap(g.pixels.empty() ? nullptr : g.pixels.data(), g.width, g.height,
+                       g.bearing_x, g.bearing_y, g.advance, bold, italic, key, cache_, tex_,
+                       atlas_dim_, pen_x_, pen_y_, shelf_h_, cell_h_);
 }
 
 void FontAtlas::shape_run(std::span<const char32_t> cps, std::span<std::uint32_t> out) const {

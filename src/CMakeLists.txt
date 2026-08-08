@@ -25,6 +25,7 @@ add_library(toe
   pty/pty.cpp
   pty/child.cpp
   gfx/font.cpp
+  gfx/face.cpp
   gfx/stb_impl.cpp
   gfx/shader.cpp
   gfx/palette.cpp
