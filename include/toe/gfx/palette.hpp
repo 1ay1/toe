@@ -8,6 +8,7 @@
 #define TOE_GFX_PALETTE_HPP
 
 #include <array>
+#include <optional>
 #include <variant>
 
 #include "toe/core/types.hpp"
@@ -24,6 +25,25 @@ public:
 
     [[nodiscard]] Rgb default_fg() const noexcept { return fg_; }
     [[nodiscard]] Rgb default_bg() const noexcept { return bg_; }
+    [[nodiscard]] Rgb cursor_color() const noexcept { return cursor_ ? *cursor_ : fg_; }
+
+    // Dynamic colour control (OSC 4/104, 10/11, 12/112). Setters return true
+    // when the value actually changed, so the renderer can damage on change.
+    bool set_index(std::uint8_t i, Rgb c) noexcept {
+        if (table_[i] == c) return false;
+        table_[i] = c;
+        return true;
+    }
+    bool set_default_fg(Rgb c) noexcept { return assign(fg_, c); }
+    bool set_default_bg(Rgb c) noexcept { return assign(bg_, c); }
+    bool set_cursor_color(std::optional<Rgb> c) noexcept {
+        if (cursor_ == c) return false;
+        cursor_ = c;
+        return true;
+    }
+    // Restore the built-in defaults (OSC 104/110/111/112 with no params).
+    void reset() { *this = Palette{}; }
+    bool reset_index(std::uint8_t i) noexcept { return set_index(i, Palette{}.by_index(i)); }
 
     // Resolve a terminal Color to concrete RGB. `is_fg` selects which default
     // to substitute for DefaultColor. Inline + branch-on-index (not std::visit)
@@ -41,9 +61,15 @@ public:
     }
 
 private:
+    static bool assign(Rgb &dst, Rgb v) noexcept {
+        if (dst == v) return false;
+        dst = v;
+        return true;
+    }
     std::array<Rgb, 256> table_{};
     Rgb fg_{rgb(220, 220, 220)};
     Rgb bg_{rgb(23, 23, 28)};
+    std::optional<Rgb> cursor_{}; // OSC 12; nullopt => follow fg
 };
 
 } // namespace toe::gfx

@@ -68,6 +68,50 @@ public:
         constexpr auto operator<=>(const CursorStyle &) const = default;
     };
     [[nodiscard]] CursorStyle cursor_style() const noexcept { return cursor_style_; }
+
+    // --- Kitty keyboard protocol -------------------------------------------
+    // Progressive-enhancement flags, as a bitset (kitty spec):
+    //   1 disambiguate escape codes, 2 report event types (press/repeat/release),
+    //   4 report alternate keys, 8 report all keys as escape codes,
+    //   16 report associated text. The active flags are the top of a stack the
+    //   app pushes/pops so nested programs restore cleanly.
+    enum KittyFlags : std::uint8_t {
+        KittyDisambiguate = 1,
+        KittyReportEvents = 2,
+        KittyReportAlternate = 4,
+        KittyReportAllKeys = 8,
+        KittyReportText = 16,
+    };
+    [[nodiscard]] std::uint8_t kitty_keyboard_flags() const noexcept {
+        return kitty_stack_.back();
+    }
+
+    // --- dynamic colours (OSC 4/104, 10/11, 12/112) ------------------------
+    // Recorded as data in the model; the renderer syncs its palette from these
+    // each frame. `palette_epoch()` bumps on any change so the renderer knows
+    // to re-pull cheaply. index<256 = a palette slot; the specials use tags.
+    struct ColorEdit {
+        enum class Target : std::uint8_t { index, fg, bg, cursor, all } target{};
+        std::uint8_t index{0};        // valid when target==index
+        bool reset{false};            // true => restore default (rgb ignored)
+        Rgb rgb{};
+    };
+    [[nodiscard]] std::uint64_t palette_epoch() const noexcept { return palette_epoch_; }
+    [[nodiscard]] const std::vector<ColorEdit> &color_edits() const noexcept {
+        return color_edits_;
+    }
+    // Record a dynamic-colour change (called from OSC handling).
+    void edit_color(const ColorEdit &e) {
+        color_edits_.push_back(e);
+        ++palette_epoch_;
+        touch();
+    }
+    // OSC 104 with no params: reset the entire palette to defaults.
+    void reset_all_palette() {
+        color_edits_.push_back({ColorEdit::Target::all, 0, true, {}});
+        ++palette_epoch_;
+        touch();
+    }
     // Whether the alternate screen is active (no scrollback while on it).
     [[nodiscard]] bool on_alt_screen() const noexcept { return on_alt_; }
     // Mouse tracking mode requested by the app (CSI ?1000/1002/1003 + ?1006).
@@ -167,6 +211,8 @@ private:
     void decrqss(std::string_view req);           // DECRQSS: report a setting
     [[nodiscard]] std::string current_sgr() const; // active pen as SGR params
     void report_mode(int mode, bool priv);         // DECRQM: report mode state
+    // Kitty keyboard protocol CSI u variants: push/pop/set/query flags.
+    void kitty_keyboard(const vt::CsiDispatch &d);
 
     void line_feed();
     void carriage_return();
@@ -262,6 +308,11 @@ private:
     // Terminal modes (DEC private).
     bool cursor_shown_{true};
     CursorStyle cursor_style_{};
+    // Kitty keyboard flag stack; back() is active. Never empty (base = 0).
+    std::vector<std::uint8_t> kitty_stack_{0};
+    // Dynamic-colour edits (OSC 4/104/10/11/12/112), applied by the renderer.
+    std::vector<ColorEdit> color_edits_{};
+    std::uint64_t palette_epoch_{0};
     bool on_alt_{false};
     bool bracketed_paste_{false};
     bool app_cursor_keys_{false};

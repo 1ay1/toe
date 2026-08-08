@@ -684,6 +684,49 @@ void Screen::report_mode(int mode, bool priv) {
     reply(r);
 }
 
+// Kitty keyboard protocol flag management. The private marker selects the op:
+//   CSI ? u        query   -> reply CSI ? <flags> u
+//   CSI > flags u  push    (a new stack level with `flags`)
+//   CSI < n u      pop     n levels (default 1)
+//   CSI = flags ; mode u   set current level's flags (mode 1=set,2=or,3=and-not)
+void Screen::kitty_keyboard(const vt::CsiDispatch &d) {
+    const auto p = d.params;
+    switch (d.marker) {
+    case '?': { // query the active flags
+        std::string r = "\x1b[?";
+        r += std::to_string(static_cast<int>(kitty_stack_.back()));
+        r += 'u';
+        reply(r);
+        break;
+    }
+    case '>': { // push a new level
+        const auto flags = static_cast<std::uint8_t>(param_raw(p, 0, 0) & 0x1F);
+        // Bound the stack so a hostile stream can't grow it without limit.
+        if (kitty_stack_.size() < 256) kitty_stack_.push_back(flags);
+        else kitty_stack_.back() = flags;
+        break;
+    }
+    case '<': { // pop n levels (but never the base level)
+        int n = param_or(p, 0, 1);
+        while (n-- > 0 && kitty_stack_.size() > 1) kitty_stack_.pop_back();
+        break;
+    }
+    case '=': { // set the active level's flags per mode
+        const auto flags = static_cast<std::uint8_t>(param_raw(p, 0, 0) & 0x1F);
+        const int mode = param_or(p, 1, 1);
+        std::uint8_t &cur = kitty_stack_.back();
+        switch (mode) {
+        case 1: cur = flags; break;                    // set
+        case 2: cur = static_cast<std::uint8_t>(cur | flags); break;   // or
+        case 3: cur = static_cast<std::uint8_t>(cur & ~flags); break;  // and-not
+        default: cur = flags; break;
+        }
+        break;
+    }
+    default: break;
+    }
+}
+
 void Screen::enter_alt_screen() {
     if (on_alt_) return;
     saved_primary_ = cells_;             // stash the primary buffer
@@ -799,15 +842,14 @@ void Screen::csi(const vt::CsiDispatch &d) {
         if (!d.private_marker) save_cursor(); // ANSI.SYS save cursor
         break;
     case 'u':
-        if (d.private_marker && d.marker == '?') {
-            // CSI ? u — Kitty keyboard protocol: query current flags. We don't
-            // implement progressive enhancement, so report flags = 0.
-            reply("\x1b[?0u");
+        if (d.private_marker && (d.marker == '?' || d.marker == '>' || d.marker == '<' ||
+                                 d.marker == '=')) {
+            // Kitty keyboard protocol: CSI ? u (query), > u (push), < u (pop),
+            // = u (set). The private marker distinguishes these from CSI u.
+            kitty_keyboard(d);
         } else if (!d.private_marker) {
             restore_cursor(); // ANSI.SYS / DECRC restore cursor
         }
-        // CSI = u (push), CSI < u (pop), CSI > u (set): Kitty flag changes we
-        // don't implement — ignore rather than mistaking them for cursor ops.
         break;
     case 'h': // SM / DECSET — set mode(s)
         if (d.private_marker) {
@@ -1079,6 +1121,8 @@ void Screen::esc(const vt::EscDispatch &d) {
             charset_use_g1_ = false;
             sync_output_ = false; // never leave rendering frozen after a reset
             focus_events_ = false;
+            kitty_stack_.assign(1, 0); // reset kitty keyboard flags to base
+            cursor_style_ = {};        // reset cursor shape
             graphics_.clear();
             stamp_all();
             touch();

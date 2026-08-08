@@ -17,6 +17,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <span>
 
 #include "toe/input.hpp"
@@ -25,12 +26,14 @@ namespace toe {
 
 // Terminal state that affects encoding (set by the app via escape sequences).
 struct KeyContext {
-    bool app_cursor_keys = false; // DECCKM: cursor/nav keys use SS3 not CSI
+    bool app_cursor_keys = false;  // DECCKM: cursor/nav keys use SS3 not CSI
+    std::uint8_t kitty_flags = 0;  // Kitty keyboard progressive-enhancement flags
 };
 
-// A stack buffer large enough for any single key encoding (longest is a
-// modified function key like ESC [ 24 ; 1 4 ~ = 9 bytes; 16 is generous).
-using KeyBuf = std::array<char, 16>;
+// A stack buffer large enough for any single key encoding. Legacy longest is a
+// modified function key (ESC [ 24 ; 14 ~ = 9 bytes); the Kitty CSI-u form with
+// an alternate codepoint + modifiers + event type is longer, so size for that.
+using KeyBuf = std::array<char, 48>;
 
 // Encode `ev` into `buf`, returning the written bytes. The span is a view into
 // `buf`, valid for as long as `buf` lives. Empty span == nothing to send.

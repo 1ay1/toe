@@ -171,7 +171,8 @@ Cmds Session::update(const Msg &msg) {
                 // Typing snaps the view back to the live prompt (every terminal
                 // does this) so you never type blindly into scrollback.
                 impl_->model.screen.scroll_to_bottom();
-                KeyContext kctx{impl_->model.screen.app_cursor_keys()};
+                KeyContext kctx{impl_->model.screen.app_cursor_keys(),
+                                impl_->model.screen.kitty_keyboard_flags()};
                 KeyBuf kb;
                 std::span<const char> bytes = encode_key(m.event, kctx, kb);
                 if (!bytes.empty()) {

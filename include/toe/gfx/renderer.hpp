@@ -99,6 +99,8 @@ private:
 
     FontAtlas atlas_;
     Palette palette_{};
+    std::uint64_t palette_epoch_seen_{0}; // last model palette_epoch() applied
+    std::size_t palette_applied_{0};      // count of color_edits() consumed
     Program prog_;
     int u_screen_{-1}; // cached glGetUniformLocation results (per-frame lookups
     int u_atlas_{-1};  // into the driver were a measurable cost)

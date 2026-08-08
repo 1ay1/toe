@@ -8,6 +8,7 @@
 #include <string_view>
 
 #include "toe/term/screen.hpp"
+#include "toe/term/update.hpp"
 #include "toe/vt/parser.hpp"
 
 using namespace toe;
@@ -810,6 +811,70 @@ int main() {
                "DECRQM ?2004 reports set for bracketed paste");
         expect(feed_replies(s, "\x1b[?9999$p") == "\x1b[?9999;0$y",
                "DECRQM unknown mode -> unrecognized (0)");
+    }
+
+    // --- Kitty keyboard protocol: flag stack -------------------------------
+    {
+        term::Screen s{Extent{10, 3}};
+        expect(feed_replies(s, "\x1b[?u") == "\x1b[?0u", "kitty query: base flags = 0");
+        feed(s, "\x1b[>5u"); // push flags 5 (disambiguate|alternate)
+        expect(s.kitty_keyboard_flags() == 5, "kitty push sets active flags");
+        expect(feed_replies(s, "\x1b[?u") == "\x1b[?5u", "kitty query reflects pushed flags");
+        feed(s, "\x1b[=2;2u"); // OR in flag 2 (report events)
+        expect(s.kitty_keyboard_flags() == 7, "kitty set mode 2 (or) merges flags");
+        feed(s, "\x1b[=4;3u"); // AND-NOT flag 4
+        expect(s.kitty_keyboard_flags() == 3, "kitty set mode 3 (and-not) clears flags");
+        feed(s, "\x1b[<1u"); // pop 1 level
+        expect(s.kitty_keyboard_flags() == 0, "kitty pop restores previous level");
+        feed(s, "\x1b[<9u"); // over-pop never underflows base
+        expect(s.kitty_keyboard_flags() == 0, "kitty over-pop keeps base level");
+    }
+
+    // --- OSC 4 / 104: palette set + reset ----------------------------------
+    // OSC is routed by feed_output (which owns the palette), not Screen::apply,
+    // so these drive a Model and assert on model.screen's recorded edits.
+    {
+        term::Model m{Config{}, Extent{6, 2}};
+        const std::uint64_t e0 = m.screen.palette_epoch();
+        (void)term::feed_output(m, "\x1b]4;1;rgb:ff/00/00\x1b\\"); // set index 1 = red
+        expect(m.screen.palette_epoch() > e0, "OSC 4 set bumps the palette epoch");
+        bool edit_ok = false;
+        for (const auto &e : m.screen.color_edits())
+            if (e.target == term::Screen::ColorEdit::Target::index && e.index == 1 &&
+                !e.reset && e.rgb == Rgb{255, 0, 0})
+                edit_ok = true;
+        expect(edit_ok, "OSC 4 records an index colour edit (red)");
+
+        Cmds q = term::feed_output(m, "\x1b]4;1;?\x1b\\");
+        bool query_ok = false;
+        for (const auto &c : q)
+            if (const auto *w = std::get_if<WriteChild>(&c))
+                if (w->bytes.find("rgb:") != std::string::npos) query_ok = true;
+        expect(query_ok, "OSC 4 query replies with an rgb: spec");
+
+        (void)term::feed_output(m, "\x1b]104\x1b\\"); // reset all
+        bool reset_all = false;
+        for (const auto &e : m.screen.color_edits())
+            if (e.target == term::Screen::ColorEdit::Target::all) reset_all = true;
+        expect(reset_all, "OSC 104 (no args) records a full palette reset");
+    }
+
+    // --- OSC 11 set + OSC 12 cursor colour ---------------------------------
+    {
+        term::Model m{Config{}, Extent{6, 2}};
+        (void)term::feed_output(m, "\x1b]11;#101828\x1b\\"); // default bg via #rrggbb
+        bool bg_ok = false;
+        for (const auto &e : m.screen.color_edits())
+            if (e.target == term::Screen::ColorEdit::Target::bg && e.rgb == Rgb{0x10, 0x18, 0x28})
+                bg_ok = true;
+        expect(bg_ok, "OSC 11 sets default background (#rrggbb form)");
+
+        (void)term::feed_output(m, "\x1b]12;rgb:00/ff/00\x1b\\"); // cursor colour green
+        bool cur_ok = false;
+        for (const auto &e : m.screen.color_edits())
+            if (e.target == term::Screen::ColorEdit::Target::cursor && e.rgb == Rgb{0, 255, 0})
+                cur_ok = true;
+        expect(cur_ok, "OSC 12 sets the cursor colour");
     }
 
     if (failures == 0) {

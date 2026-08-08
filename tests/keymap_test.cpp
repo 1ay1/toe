@@ -61,6 +61,13 @@ void check(const std::string &got, std::string_view want, const char *name) {
     }
 }
 
+std::string enc_kitty(const KeyEvent &ev, std::uint8_t flags) {
+    KeyContext ctx{false, flags};
+    KeyBuf buf;
+    auto s = encode_key(ev, ctx, buf);
+    return std::string(s.data(), s.size());
+}
+
 } // namespace
 
 int main() {
@@ -123,6 +130,23 @@ int main() {
     check(enc(special(SpecialKey::Tab, true)), "\x1b[Z", "Shift-Tab = CBT");
     check(enc(special(SpecialKey::Escape)), "\x1b", "Escape");
     check(enc(special(SpecialKey::Enter, false, true)), "\x1b\r", "Alt-Enter = ESC CR");
+
+    // --- Kitty keyboard protocol (Disambiguate flag = 1) -------------------
+    constexpr std::uint8_t kDisamb = 1;
+    // Legacy vs kitty: Escape is bare ESC legacy, but CSI 27 u under kitty.
+    check(enc_kitty(special(SpecialKey::Escape), kDisamb), "\x1b[27u", "kitty Escape = CSI 27 u");
+    check(enc_kitty(special(SpecialKey::Tab), kDisamb), "\x1b[9u", "kitty Tab = CSI 9 u");
+    check(enc_kitty(special(SpecialKey::Enter), kDisamb), "\x1b[13u", "kitty Enter = CSI 13 u");
+    check(enc_kitty(special(SpecialKey::Backspace), kDisamb), "\x1b[127u",
+          "kitty Backspace = CSI 127 u");
+    // Modified arrows carry the modifier param: Ctrl+Up = CSI 1;5 A.
+    check(enc_kitty(special(SpecialKey::Up, false, false, true), kDisamb), "\x1b[1;5A",
+          "kitty Ctrl+Up = CSI 1;5 A");
+    // Ctrl+letter disambiguates to CSI <cp> ; <mods> u (Ctrl-A = 97;5u).
+    check(enc_kitty(text("\x01", false, false, true), kDisamb), "\x1b[97;5u",
+          "kitty Ctrl-A = CSI 97;5 u");
+    // With no flags active, encoding stays legacy.
+    check(enc(special(SpecialKey::Escape)), "\x1b", "legacy Escape stays bare ESC");
 
     if (failures == 0) {
         std::printf("all keymap tests passed\n");

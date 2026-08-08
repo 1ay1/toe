@@ -950,6 +950,26 @@ void Renderer::draw_placeholders(const term::Screen &screen, PixelSize px) {
 }
 
 void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on, bool blink_on) {
+    // Apply any dynamic-colour edits (OSC 4/104/10/11/12/110-112) the model has
+    // recorded since the last frame, then invalidate the row cache if the
+    // palette actually moved (every resolved colour may have changed).
+    if (screen.palette_epoch() != palette_epoch_seen_) {
+        for (std::size_t i = palette_applied_; i < screen.color_edits().size(); ++i) {
+            const auto &e = screen.color_edits()[i];
+            using T = term::Screen::ColorEdit::Target;
+            switch (e.target) {
+            case T::index:  e.reset ? palette_.reset_index(e.index) : palette_.set_index(e.index, e.rgb); break;
+            case T::fg:     e.reset ? palette_.set_default_fg(Palette{}.default_fg()) : palette_.set_default_fg(e.rgb); break;
+            case T::bg:     e.reset ? palette_.set_default_bg(Palette{}.default_bg()) : palette_.set_default_bg(e.rgb); break;
+            case T::cursor: palette_.set_cursor_color(e.reset ? std::optional<Rgb>{} : std::optional<Rgb>{e.rgb}); break;
+            case T::all:    palette_.reset(); break;
+            }
+        }
+        palette_applied_ = screen.color_edits().size();
+        palette_epoch_seen_ = screen.palette_epoch();
+        for (auto &rc : rows_) rc.valid = false; // recolour everything
+    }
+
     const Rgb bgc = palette_.default_bg();
     glClearColor(fr(bgc.r), fr(bgc.g), fr(bgc.b), 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -1067,7 +1087,7 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on, bo
         }
         // Cursor rect sits above backgrounds, beneath glyphs.
         if (cursor_visible) {
-            const Rgb cc = palette_.default_fg();
+            const Rgb cc = palette_.cursor_color();
             const auto style = screen.cursor_style();
             const float x = static_cast<float>(cur_col * cw);
             const float y = static_cast<float>(cur_row * ch);
