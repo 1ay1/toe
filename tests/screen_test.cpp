@@ -675,7 +675,8 @@ int main() {
             for (unsigned char c : in) { val = (val << 8) | c; bits += 8;
                 while (bits >= 6) { bits -= 6; out += a[(val >> bits) & 0x3F]; } }
             if (bits) out += a[(val << (6 - bits)) & 0x3F];
-            while (out.size() % 4) out += '='; return out;
+            while (out.size() % 4) out += '=';
+            return out;
         };
         auto px = [](int r, int g, int bl) { std::string p;
             for (int i = 0; i < 4; ++i) { p += char(r); p += char(g); p += char(bl); p += char(255); }
@@ -715,6 +716,44 @@ int main() {
         expect(feed_replies(s, "\x1b[14t") == "\x1b[4;384;640t",
                "CSI 14 t -> text area px (24*16 x 80*8)");
         expect(feed_replies(s, "\x1b[18t") == "\x1b[8;24;80t", "CSI 18 t -> size in cells");
+    }
+
+    // Kitty Unicode placeholder (U+10EEEE): the image is transmitted with U=1
+    // (no placement), then the placeholder char is printed with the image id in
+    // the fg colour. The model just stores the cell + colour; the renderer
+    // tiles the image across the placeholder block.
+    {
+        term::Screen s{Extent{20, 3}};
+        s.set_cell_size(8, 16);
+        // Transmit 2x2 image id=1, U=1 (no display).
+        auto b64 = [](const std::string &in) {
+            static const char *a =
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            std::string out; unsigned val = 0; int bits = 0;
+            for (unsigned char c : in) {
+                val = (val << 8) | c;
+                bits += 8;
+                while (bits >= 6) { bits -= 6; out += a[(val >> bits) & 0x3F]; }
+            }
+            if (bits) out += a[(val << (6 - bits)) & 0x3F];
+            while (out.size() % 4) out += '=';
+            return out;
+        };
+        std::string px;
+        for (int i = 0; i < 4; ++i) { px += char(0); px += char(255); px += char(255); px += char(255); }
+        std::string t = "\x1b_Gi=1,a=t,U=1,f=32,s=2,v=2;" + b64(px);
+        t += '\x1b'; t += '\\';
+        feed(s, t);
+        expect(s.graphics().has_images() && s.graphics().placements().empty(),
+               "U=1 transmit stores the image with no placement");
+        // Set fg = truecolor 0;0;1 (image id 1), print the placeholder char.
+        feed(s, "\x1b[38;2;0;0;1m\xF4\x8E\xBB\xAE");
+        auto row = s.row(Row{0});
+        expect(row[0].cp == 0x10EEEE, "placeholder char (U+10EEEE) stored in the cell");
+        bool id_ok = false;
+        if (auto *tc = std::get_if<term::TrueColor>(&row[0].pen.fg))
+            id_ok = tc->rgb == Rgb{0, 0, 1};
+        expect(id_ok, "image id encoded in the placeholder cell's fg colour");
     }
 
     if (failures == 0) {

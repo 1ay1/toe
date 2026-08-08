@@ -75,6 +75,8 @@ public:
         return it == images_.end() ? nullptr : &it->second;
     }
     [[nodiscard]] bool empty() const noexcept { return placements_.empty(); }
+    // Any transmitted image is present (may be referenced by placeholders).
+    [[nodiscard]] bool has_images() const noexcept { return !images_.empty(); }
 
     // A monotonically increasing token bumped whenever images/placements change,
     // so the renderer can lazily (re)upload textures.

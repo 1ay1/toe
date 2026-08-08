@@ -849,6 +849,95 @@ void Renderer::draw_images(const term::Screen &screen, PixelSize px) {
     glBindVertexArray(0);
 }
 
+void Renderer::draw_placeholders(const term::Screen &screen, PixelSize px) {
+    const term::Graphics &g = screen.graphics();
+    const Extent grid = screen.size();
+    const int cw = atlas_.cell_width(), ch = atlas_.cell_height();
+    constexpr char32_t kPlaceholder = 0x10EEEE;
+
+    // Extract the kitty image id encoded in a cell's fg colour: truecolor packs
+    // it as r<<16|g<<8|b, indexed colour uses the index directly.
+    auto id_of = [](const term::Cell &c) -> std::uint32_t {
+        if (auto *t = std::get_if<term::TrueColor>(&c.pen.fg))
+            return (static_cast<std::uint32_t>(t->rgb.r) << 16) |
+                   (static_cast<std::uint32_t>(t->rgb.g) << 8) | t->rgb.b;
+        if (auto *ix = std::get_if<term::IndexedColor>(&c.pen.fg)) return ix->index;
+        return 0;
+    };
+
+    // First pass: bounding box (min row/col + span) per image id across all
+    // placeholder cells, so each cell knows which tile of the image it shows.
+    struct Box { int r0 = 1 << 30, c0 = 1 << 30, r1 = -1, c1 = -1; };
+    std::unordered_map<std::uint32_t, Box> boxes;
+    bool any = false;
+    for (int r = 0; r < grid.rows; ++r) {
+        const auto cells = screen.row(Row{r});
+        for (int c = 0; c < grid.cols; ++c) {
+            if (cells[static_cast<std::size_t>(c)].cp != kPlaceholder) continue;
+            const std::uint32_t id = id_of(cells[static_cast<std::size_t>(c)]);
+            if (id == 0 || !g.image(id)) continue;
+            Box &b = boxes[id];
+            b.r0 = std::min(b.r0, r); b.c0 = std::min(b.c0, c);
+            b.r1 = std::max(b.r1, r); b.c1 = std::max(b.c1, c);
+            any = true;
+        }
+    }
+    if (!any) return;
+    ensure_image_pipeline();
+    if (!image_prog_.valid()) return;
+
+    // Upload any not-yet-uploaded placeholder image textures.
+    for (const auto &[id, b] : boxes) {
+        if (image_tex_.count(id)) continue;
+        const term::Image *img = g.image(id);
+        if (!img || img->rgba.empty()) continue;
+        GLuint tex = 0; glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, img->width, img->height, 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, img->rgba.data());
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        image_tex_[id] = tex;
+    }
+
+    glBindVertexArray(image_vao_);
+    image_prog_.use();
+    glUniform2f(img_u_screen_, static_cast<float>(px.w), static_cast<float>(px.h));
+    glActiveTexture(GL_TEXTURE0);
+    glUniform1i(img_u_tex_, 0);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    // Second pass: draw each placeholder cell as its tile of the image.
+    for (int r = 0; r < grid.rows; ++r) {
+        const auto cells = screen.row(Row{r});
+        for (int c = 0; c < grid.cols; ++c) {
+            if (cells[static_cast<std::size_t>(c)].cp != kPlaceholder) continue;
+            const std::uint32_t id = id_of(cells[static_cast<std::size_t>(c)]);
+            auto it = image_tex_.find(id);
+            if (it == image_tex_.end()) continue;
+            const Box &b = boxes[id];
+            const int bc = b.c1 - b.c0 + 1, br = b.r1 - b.r0 + 1;
+            if (bc <= 0 || br <= 0) continue;
+            const float u0 = static_cast<float>(c - b.c0) / static_cast<float>(bc);
+            const float u1 = static_cast<float>(c - b.c0 + 1) / static_cast<float>(bc);
+            const float v0 = static_cast<float>(r - b.r0) / static_cast<float>(br);
+            const float v1 = static_cast<float>(r - b.r0 + 1) / static_cast<float>(br);
+            const float data[8] = {static_cast<float>(c * cw), static_cast<float>(r * ch),
+                                   static_cast<float>(cw),     static_cast<float>(ch),
+                                   u0, v0, u1, v1};
+            glBindBuffer(GL_ARRAY_BUFFER, image_vbo_rect_);
+            glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
+            glBindTexture(GL_TEXTURE_2D, it->second);
+            glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, 1);
+        }
+    }
+    glBindVertexArray(0);
+}
+
 void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on, bool blink_on) {
     const Rgb bgc = palette_.default_bg();
     glClearColor(fr(bgc.r), fr(bgc.g), fr(bgc.b), 1.0f);
@@ -971,8 +1060,11 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on, bo
     }
 
     const bool has_images = !screen.graphics().placements().empty();
+    // Placeholder cells reference transmitted images that may have no placement,
+    // so draw them whenever the graphics store holds any image.
+    const bool has_any_image = has_images || screen.graphics().has_images();
 
-    if (!any_row_dirty && !has_images && redraw_from_cache(px)) {
+    if (!any_row_dirty && !has_any_image && redraw_from_cache(px)) {
         // Nothing changed: the GPU buffers already hold this exact frame. We
         // replayed the recorded draws with zero uploads / fences / memcpy.
         return;
@@ -985,6 +1077,7 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on, bo
 
     // Inline images (kitty graphics) draw over the glyph layer.
     if (has_images) draw_images(screen, px);
+    if (has_any_image) draw_placeholders(screen, px);
 }
 
 } // namespace gvte::gfx
