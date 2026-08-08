@@ -12,7 +12,7 @@
 #include <epoxy/gl.h>
 #include "gvte/gfx/font.hpp"
 #include "gvte/gfx/renderer.hpp"
-#include "gvte/platform/surface.hpp"
+#include "gvte/platform/backend.hpp"
 #include "gvte/term/screen.hpp"
 #include "gvte/vt/parser.hpp"
 using namespace gvte;
@@ -32,7 +32,7 @@ int main() {
     constexpr int W=640,H=384;
     auto surface = platform::open_surface("cachetest", PixelSize{64,64});
     if(!surface){ std::fprintf(stderr,"skip: no surface\n"); return 77; }
-    (*surface)->swap();
+    (*surface).swap();
     GLuint tex=0,fbo=0; glGenTextures(1,&tex); glBindTexture(GL_TEXTURE_2D,tex);
     glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,W,H,0,GL_RGBA,GL_UNSIGNED_BYTE,nullptr);
     glGenFramebuffers(1,&fbo); glBindFramebuffer(GL_FRAMEBUFFER,fbo);

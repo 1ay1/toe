@@ -23,7 +23,9 @@
 
 #include "gvte/core/tea.hpp"
 #include "gvte/core/types.hpp"
+#include "gvte/gfx/render_target.hpp"
 #include "gvte/input.hpp"
+#include "gvte/pty/pty_source.hpp"
 
 namespace gvte {
 
@@ -33,7 +35,15 @@ struct Config {
     int font_pixel_size = 18;
     Rgb default_fg = rgb(220, 220, 220);
     Rgb default_bg = rgb(23, 23, 28);
-    std::vector<std::string> command{}; // empty -> $SHELL, then /bin/sh
+
+    // Where the child terminal comes from. Defaults to spawning $SHELL via
+    // forkpty (SpawnCommand{}), but a host may inject an already-open PTY fd
+    // (AdoptFd) so gvte never forks — see gvte/pty/pty_source.hpp.
+    PtySource source = SpawnCommand{};
+
+    // Legacy convenience: if non-empty AND `source` still holds a default
+    // SpawnCommand, these become the spawned argv. Prefer setting `source`.
+    std::vector<std::string> command{};
 };
 
 // --- lifecycle states ------------------------------------------------------
@@ -57,9 +67,13 @@ public:
     Session &operator=(Session &&) noexcept;
     ~Session();
 
-    // Draw the current grid. `cursor_on` lets the host drive cursor blink from
-    // a wall-clock phase; pass true for a steady cursor.
-    void render(PixelSize px, bool cursor_on = true, bool blink_on = true);
+    // Draw the current grid into `rc`'s target framebuffer. `rc` is the
+    // capability token proving a GL context is current on this thread (see
+    // gvte/gfx/render_target.hpp): render is now impossible to call without it,
+    // and the host chooses the destination FBO. `cursor_on` lets the host drive
+    // cursor blink from a wall-clock phase; pass true for a steady cursor.
+    void render(gfx::RenderContext &rc, PixelSize px, bool cursor_on = true,
+                bool blink_on = true);
     void resize(PixelSize px);
     void send_key(const KeyEvent &ev);
     void send_text(std::string_view utf8);

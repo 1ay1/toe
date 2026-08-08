@@ -7,6 +7,8 @@
 #include "gvte/terminal.hpp"
 #include "gvte/input/keymap.hpp"
 
+#include <epoxy/gl.h>
+
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -133,7 +135,9 @@ Session::Session(Session &&) noexcept = default;
 Session &Session::operator=(Session &&) noexcept = default;
 Session::~Session() = default;
 
-void Session::render(PixelSize px, bool cursor_on, bool blink_on) {
+void Session::render(gfx::RenderContext &rc, PixelSize px, bool cursor_on, bool blink_on) {
+    // Honor the host-chosen destination framebuffer from the capability token.
+    glBindFramebuffer(GL_FRAMEBUFFER, rc.target().id);
     impl_->renderer.draw(impl_->model.screen, px, cursor_on, blink_on);
 }
 
@@ -343,19 +347,23 @@ Result<Terminal> Terminal::create(const Config &cfg, PixelSize px) {
 
     const Extent grid = renderer->cells_for(px);
 
-    // Build argv from the config (or default to $SHELL / /bin/sh).
-    std::vector<const char *> argv;
-    if (cfg.command.empty()) {
-        const char *shell = std::getenv("SHELL");
-        argv.push_back(shell ? shell : "/bin/sh");
-    } else {
-        for (const auto &s : cfg.command) {
-            argv.push_back(s.c_str());
-        }
-    }
-    argv.push_back(nullptr);
-
-    auto pty = Pty::spawn(std::span<const char *const>{argv.data(), argv.size() - 1}, grid);
+    // Obtain the child PTY from the configured source. The host owns this
+    // policy: spawn a shell (honoring TERM + pre_exec) or adopt an existing fd.
+    auto pty = std::visit(
+        [&](const auto &src) -> Result<Pty> {
+            using T = std::decay_t<decltype(src)>;
+            if constexpr (std::is_same_v<T, AdoptFd>) {
+                return Pty::adopt(src);
+            } else { // SpawnCommand
+                SpawnCommand cmd = src;
+                // Legacy convenience: cfg.command fills a still-default argv.
+                if (cmd.argv.empty() && !cfg.command.empty()) {
+                    cmd.argv = cfg.command;
+                }
+                return Pty::spawn(cmd, grid);
+            }
+        },
+        cfg.source);
     if (!pty) {
         return std::unexpected(pty.error());
     }

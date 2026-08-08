@@ -30,26 +30,26 @@ namespace gvte::platform {
 
 namespace {
 
-class X11Surface final : public Surface {
+class X11Surface final {
 public:
     static Result<std::unique_ptr<X11Surface>> open(std::string_view title, PixelSize initial);
 
-    ~X11Surface() override;
+    ~X11Surface();
 
-    void swap() override;
-    [[nodiscard]] PixelSize pixel_size() const override { return size_; }
-    [[nodiscard]] int event_fd() const override { return xcb_get_file_descriptor(xcb_); }
-    void flush() override { xcb_flush(xcb_); }
-    void set_title(std::string_view title) override {
+    void swap();
+    [[nodiscard]] PixelSize pixel_size() const { return size_; }
+    [[nodiscard]] int event_fd() const { return xcb_get_file_descriptor(xcb_); }
+    void flush() { xcb_flush(xcb_); }
+    void set_title(std::string_view title) {
         if (display_ && window_) {
             XStoreName(display_, static_cast<Window>(window_), std::string{title}.c_str());
             XFlush(display_);
         }
     }
-    void set_clipboard(std::string_view utf8) override;
-    [[nodiscard]] std::string get_clipboard() override;
-    void poll_events(const std::function<void(const Event &)> &sink) override;
-    [[nodiscard]] bool should_close() const override { return closed_; }
+    void set_clipboard(std::string_view utf8);
+    [[nodiscard]] std::string get_clipboard();
+    void poll_events(const std::function<void(const Event &)> &sink);
+    [[nodiscard]] bool should_close() const { return closed_; }
 
 private:
     X11Surface() = default;
@@ -539,12 +539,12 @@ X11Surface::~X11Surface() {
 } // namespace
 
 // Exposed to the backend selector in surface.cpp.
-Result<std::unique_ptr<Surface>> open_x11_surface(std::string_view title, PixelSize initial) {
+Result<AnySurface> open_x11_surface(std::string_view title, PixelSize initial) {
     auto s = X11Surface::open(title, initial);
     if (!s) {
         return std::unexpected(s.error());
     }
-    return std::unique_ptr<Surface>(std::move(*s));
+    return AnySurface{std::move(*s)};
 }
 
 } // namespace gvte::platform

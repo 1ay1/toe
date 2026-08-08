@@ -15,7 +15,7 @@
 
 #include "gvte/gfx/font.hpp"
 #include "gvte/gfx/renderer.hpp"
-#include "gvte/platform/surface.hpp"
+#include "gvte/platform/backend.hpp"
 #include "gvte/term/screen.hpp"
 #include "gvte/vt/parser.hpp"
 
@@ -29,7 +29,7 @@ int main() {
         std::fprintf(stderr, "surface: %s\n", surface.error().message.c_str());
         return 77; // skip when no display / compositor
     }
-    (*surface)->swap(); // realize surface
+    (*surface).swap(); // realize surface
 
     constexpr int W = 400, H = 120;
 

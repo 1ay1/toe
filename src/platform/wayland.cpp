@@ -34,26 +34,26 @@ namespace gvte::platform {
 
 namespace {
 
-class WaylandSurface final : public Surface {
+class WaylandSurface final {
 public:
     static Result<std::unique_ptr<WaylandSurface>> open(std::string_view title, PixelSize initial);
 
-    ~WaylandSurface() override;
+    ~WaylandSurface();
 
-    void swap() override;
-    [[nodiscard]] PixelSize pixel_size() const override { return size_; }
-    [[nodiscard]] int event_fd() const override { return wl_display_get_fd(display_); }
-    [[nodiscard]] int repeat_fd() const override { return repeat_fd_; }
-    void flush() override { wl_display_flush(display_); }
-    void set_title(std::string_view title) override {
+    void swap();
+    [[nodiscard]] PixelSize pixel_size() const { return size_; }
+    [[nodiscard]] int event_fd() const { return wl_display_get_fd(display_); }
+    [[nodiscard]] int repeat_fd() const { return repeat_fd_; }
+    void flush() { wl_display_flush(display_); }
+    void set_title(std::string_view title) {
         if (toplevel_) {
             xdg_toplevel_set_title(toplevel_, std::string{title}.c_str());
         }
     }
-    void set_clipboard(std::string_view utf8) override;
-    [[nodiscard]] std::string get_clipboard() override;
-    void poll_events(const std::function<void(const Event &)> &sink) override;
-    [[nodiscard]] bool should_close() const override { return closed_; }
+    void set_clipboard(std::string_view utf8);
+    [[nodiscard]] std::string get_clipboard();
+    void poll_events(const std::function<void(const Event &)> &sink);
+    [[nodiscard]] bool should_close() const { return closed_; }
 
     // --- native listener callbacks (public so the C listener tables at
     // namespace scope can take their addresses) ---
@@ -759,12 +759,12 @@ void WaylandSurface::ptr_axis(void *data, wl_pointer *, uint32_t, uint32_t axis,
 } // namespace
 
 // Exposed to the backend selector in surface.cpp.
-Result<std::unique_ptr<Surface>> open_wayland_surface(std::string_view title, PixelSize initial) {
+Result<AnySurface> open_wayland_surface(std::string_view title, PixelSize initial) {
     auto ws = WaylandSurface::open(title, initial);
     if (!ws) {
         return std::unexpected(ws.error());
     }
-    return std::unique_ptr<Surface>(std::move(*ws));
+    return AnySurface{std::move(*ws)};
 }
 
 } // namespace gvte::platform

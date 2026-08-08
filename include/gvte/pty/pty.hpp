@@ -13,6 +13,7 @@
 #include <sys/types.h>
 
 #include "gvte/core/types.hpp"
+#include "gvte/pty/pty_source.hpp"
 
 namespace gvte {
 
@@ -20,6 +21,13 @@ class Pty {
 public:
     // Spawn `argv[0]` (a shell) on a fresh PTY sized to `size` cells.
     static Result<Pty> spawn(std::span<const char *const> argv, Extent size);
+
+    // Spawn from a SpawnCommand: honors its TERM value and pre_exec hook.
+    static Result<Pty> spawn(const SpawnCommand &cmd, Extent size);
+
+    // Adopt a PTY master fd the host already owns (SSH, container, replay).
+    // gvte never forks. See AdoptFd for ownership semantics.
+    static Result<Pty> adopt(const AdoptFd &src);
 
     Pty(const Pty &) = delete;
     Pty &operator=(const Pty &) = delete;
@@ -61,6 +69,8 @@ private:
     int master_{-1};
     ::pid_t child_{-1};
     int cell_w_{0}, cell_h_{0}; // for ws_xpixel/ws_ypixel
+    bool owns_fd_{true};       // false when adopting a host-owned fd
+    bool owns_child_{true};    // false when the host manages the child lifetime
 };
 
 } // namespace gvte

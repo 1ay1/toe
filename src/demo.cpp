@@ -8,7 +8,8 @@
 
 #include <epoxy/gl.h>
 
-#include "gvte/platform/surface.hpp"
+#include "gvte/gfx/render_target.hpp"
+#include "gvte/platform/backend.hpp"
 #include "gvte/terminal.hpp"
 
 int main() {
@@ -17,7 +18,7 @@ int main() {
         std::fprintf(stderr, "surface: %s\n", surface.error().message.c_str());
         return 1;
     }
-    gvte::platform::Surface &surf = **surface;
+    gvte::platform::AnySurface &surf = *surface;
 
     gvte::PixelSize px = surf.pixel_size();
 
@@ -59,7 +60,10 @@ int main() {
         });
 
         glViewport(0, 0, px.w, px.h);
-        session.render(px);
+        // The GL context is current after open_surface; adopt it as the render
+        // capability. Default target = FBO 0 (the window's back buffer).
+        auto rc = gvte::gfx::RenderContext::adopt_current();
+        session.render(rc, px);
         surf.swap();
     }
 

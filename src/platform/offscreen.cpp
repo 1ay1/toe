@@ -15,9 +15,9 @@ namespace gvte::platform {
 
 namespace {
 
-class OffscreenSurface final : public Surface {
+class OffscreenSurface final {
 public:
-    static Result<std::unique_ptr<Surface>> open(PixelSize size) {
+    static Result<std::unique_ptr<OffscreenSurface>> open(PixelSize size) {
         auto s = std::unique_ptr<OffscreenSurface>(new OffscreenSurface());
         s->size_ = size;
 
@@ -75,10 +75,10 @@ public:
         if (!eglMakeCurrent(dpy, s->surf_, s->surf_, s->ctx_)) {
             return fail("offscreen: eglMakeCurrent failed");
         }
-        return std::unique_ptr<Surface>(std::move(s));
+        return s;
     }
 
-    ~OffscreenSurface() override {
+    ~OffscreenSurface() {
         if (dpy_ != EGL_NO_DISPLAY) {
             eglMakeCurrent(dpy_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
             if (surf_ != EGL_NO_SURFACE) eglDestroySurface(dpy_, surf_);
@@ -87,17 +87,17 @@ public:
         }
     }
 
-    void swap() override {
+    void swap() {
         if (surf_ != EGL_NO_SURFACE) eglSwapBuffers(dpy_, surf_);
         else glFlush();
     }
-    [[nodiscard]] PixelSize pixel_size() const override { return size_; }
-    void set_title(std::string_view) override {}
-    void set_clipboard(std::string_view) override {}
-    [[nodiscard]] std::string get_clipboard() override { return {}; }
-    void poll_events(const std::function<void(const Event &)> &) override {}
-    [[nodiscard]] int event_fd() const override { return -1; }
-    [[nodiscard]] bool should_close() const override { return false; }
+    [[nodiscard]] PixelSize pixel_size() const { return size_; }
+    void set_title(std::string_view) {}
+    void set_clipboard(std::string_view) {}
+    [[nodiscard]] std::string get_clipboard() { return {}; }
+    void poll_events(const std::function<void(const Event &)> &) {}
+    [[nodiscard]] int event_fd() const { return -1; }
+    [[nodiscard]] bool should_close() const { return false; }
 
 private:
     OffscreenSurface() = default;
@@ -109,8 +109,12 @@ private:
 
 } // namespace
 
-Result<std::unique_ptr<Surface>> open_offscreen_surface(PixelSize size) {
-    return OffscreenSurface::open(size);
+Result<AnySurface> open_offscreen_surface(PixelSize size) {
+    auto s = OffscreenSurface::open(size);
+    if (!s) {
+        return std::unexpected(s.error());
+    }
+    return AnySurface{std::move(*s)};
 }
 
 } // namespace gvte::platform

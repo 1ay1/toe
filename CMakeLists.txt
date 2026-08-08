@@ -1,124 +1,71 @@
 # SPDX-License-Identifier: LGPL-2.0-or-later
 cmake_minimum_required(VERSION 3.20)
-project(gvte VERSION 0.1 LANGUAGES CXX C)
+project(gvte VERSION 0.1.0 LANGUAGES CXX C)
+
+# ---------------------------------------------------------------------------
+# gvte — a GPU terminal engine, as a *layered* library.
+#
+#   gvte::core       the whole terminal (pty · vt · screen · update · graphics ·
+#                    renderer · keymap) + the abstract `Surface` INTERFACE.
+#                    Knows nothing about Wayland/X11/EGL. This is the library.
+#
+#   gvte::platform   OPTIONAL, batteries-included Surface backends for Linux
+#                    (Wayland/X11/offscreen) + open_surface(). A host that
+#                    brings its own window (Qt/GLFW/SDL/Win32/macOS) simply
+#                    does NOT link this and implements gvte::Surface itself.
+#
+# The dependency arrow only ever points core <- platform <- host. core never
+# refers to platform; platform is just one implementation of core's interface.
+#
+# Toggles (all give the host full control):
+#   GVTE_BUILD_PLATFORM   build the Linux Surface backends        (default ON)
+#   GVTE_BUILD_DEMO       build gvte-demo (needs platform)        (default ON)
+#   GVTE_BUILD_TESTS      build the test suite                    (default ON when top-level)
+#   GVTE_INSTALL          emit install + find_package(gvte) rules (default ON when top-level)
+# ---------------------------------------------------------------------------
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-if(NOT CMAKE_BUILD_TYPE)
+# Are we the top-level project, or add_subdirectory()'d by a host (hand)?
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  set(_gvte_top ON)
+else()
+  set(_gvte_top OFF)
+endif()
+
+option(GVTE_BUILD_PLATFORM "Build the Linux Wayland/X11 Surface backends" ON)
+option(GVTE_BUILD_DEMO     "Build the gvte-demo host (implies GVTE_BUILD_PLATFORM)" ${_gvte_top})
+option(GVTE_BUILD_TESTS    "Build the gvte test suite" ${_gvte_top})
+option(GVTE_INSTALL        "Emit install & export (find_package) rules" ${_gvte_top})
+
+if(GVTE_BUILD_DEMO AND NOT GVTE_BUILD_PLATFORM)
+  message(FATAL_ERROR "GVTE_BUILD_DEMO requires GVTE_BUILD_PLATFORM=ON")
+endif()
+
+if(NOT CMAKE_BUILD_TYPE AND _gvte_top)
   set(CMAKE_BUILD_TYPE Debug CACHE STRING "" FORCE)
 endif()
 
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(EPOXY REQUIRED IMPORTED_TARGET epoxy)
-pkg_check_modules(FREETYPE REQUIRED IMPORTED_TARGET freetype2)
-pkg_check_modules(HARFBUZZ REQUIRED IMPORTED_TARGET harfbuzz)
-pkg_check_modules(FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
-pkg_check_modules(EGL REQUIRED IMPORTED_TARGET egl)
-pkg_check_modules(WAYLAND REQUIRED IMPORTED_TARGET wayland-client wayland-egl wayland-cursor)
-pkg_check_modules(XKB REQUIRED IMPORTED_TARGET xkbcommon)
-pkg_check_modules(X11 REQUIRED IMPORTED_TARGET x11 x11-xcb xcb xkbcommon-x11)
-pkg_check_modules(PNG REQUIRED IMPORTED_TARGET libpng)
+include(GNUInstallDirs)
 
-# --- generate xdg-shell protocol from wayland-protocols -------------------
-find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
-pkg_get_variable(WLPROTO_DIR wayland-protocols pkgdatadir)
-set(XDG_XML "${WLPROTO_DIR}/stable/xdg-shell/xdg-shell.xml")
-set(GEN "${CMAKE_BINARY_DIR}/gen")
-file(MAKE_DIRECTORY "${GEN}")
+# Warning flags applied to gvte's own TUs (not propagated to consumers).
+set(GVTE_WARNINGS -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion)
 
-add_custom_command(
-  OUTPUT "${GEN}/xdg-shell-client-protocol.h"
-  COMMAND ${WAYLAND_SCANNER} client-header "${XDG_XML}" "${GEN}/xdg-shell-client-protocol.h"
-  DEPENDS "${XDG_XML}" VERBATIM)
-add_custom_command(
-  OUTPUT "${GEN}/xdg-shell-protocol.c"
-  COMMAND ${WAYLAND_SCANNER} private-code "${XDG_XML}" "${GEN}/xdg-shell-protocol.c"
-  DEPENDS "${XDG_XML}" VERBATIM)
+add_subdirectory(src)
 
-# ---------------------------------------------------------------------------
-# libgvte — the GPU terminal library. This is what a host (termite) links.
-# ---------------------------------------------------------------------------
-add_library(gvte
-  src/terminal.cpp
-  src/pty/pty.cpp
-  src/platform/surface.cpp
-  src/platform/wayland.cpp
-  src/platform/x11.cpp
-  src/platform/offscreen.cpp
-  "${GEN}/xdg-shell-protocol.c"
-  "${GEN}/xdg-shell-client-protocol.h"
-  src/gfx/font.cpp
-  src/gfx/shader.cpp
-  src/gfx/palette.cpp
-  src/gfx/renderer.cpp
-  src/input/keymap.cpp
-  src/term/screen.cpp
-  src/term/update.cpp
-  src/term/graphics.cpp)
+if(GVTE_BUILD_DEMO)
+  add_executable(gvte-demo src/demo.cpp)
+  target_link_libraries(gvte-demo PRIVATE gvte::core gvte::platform)
+endif()
 
-target_include_directories(gvte PUBLIC include PRIVATE "${GEN}")
+if(GVTE_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
 
-target_compile_options(gvte PRIVATE
-  -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion)
-
-target_link_libraries(gvte PUBLIC
-  PkgConfig::EPOXY
-  PkgConfig::FREETYPE
-  PkgConfig::HARFBUZZ
-  PkgConfig::FONTCONFIG
-  PkgConfig::EGL
-  PkgConfig::WAYLAND
-  PkgConfig::XKB
-  PkgConfig::X11
-  PkgConfig::PNG
-  util)  # forkpty
-
-add_library(gvte::gvte ALIAS gvte)
-
-# ---------------------------------------------------------------------------
-# gvte-demo — a minimal host that drives the library (window + event loop).
-# ---------------------------------------------------------------------------
-add_executable(gvte-demo src/demo.cpp)
-target_link_libraries(gvte-demo PRIVATE gvte)
-
-# ---------------------------------------------------------------------------
-# tests
-# ---------------------------------------------------------------------------
-enable_testing()
-
-add_executable(parser_test tests/parser_test.cpp)
-target_include_directories(parser_test PRIVATE include)
-target_compile_options(parser_test PRIVATE -Wall -Wextra -Wpedantic)
-add_test(NAME parser COMMAND parser_test)
-
-add_executable(screen_test tests/screen_test.cpp
-  src/term/screen.cpp
-  src/term/graphics.cpp)
-target_include_directories(screen_test PRIVATE include)
-target_link_libraries(screen_test PRIVATE PkgConfig::PNG)
-target_compile_options(screen_test PRIVATE -Wall -Wextra -Wpedantic)
-add_test(NAME screen COMMAND screen_test)
-
-add_executable(render_test tests/render_test.cpp)
-target_link_libraries(render_test PRIVATE gvte)
-add_test(NAME render COMMAND render_test)
-
-add_executable(cache_test tests/cache_test.cpp)
-target_link_libraries(cache_test PRIVATE gvte)
-add_test(NAME cache COMMAND cache_test)
-
-# The GL tests run against an offscreen EGL context so they don't need a live
-# Wayland/X11 compositor (works in CI and headless shells).
-set_tests_properties(render cache PROPERTIES ENVIRONMENT "GVTE_HEADLESS=1")
-
-add_executable(tea_test tests/tea_test.cpp)
-target_link_libraries(tea_test PRIVATE gvte)
-add_test(NAME tea COMMAND tea_test)
-
-add_executable(keymap_test tests/keymap_test.cpp src/input/keymap.cpp)
-target_include_directories(keymap_test PRIVATE include)
-target_compile_options(keymap_test PRIVATE -Wall -Wextra -Wpedantic)
-add_test(NAME keymap COMMAND keymap_test)
+if(GVTE_INSTALL)
+  include(cmake/install.cmake)
+endif()

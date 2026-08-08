@@ -6,6 +6,7 @@
 #include <csignal>
 #include <cstring>
 #include <utility>
+#include <vector>
 
 #include <fcntl.h>
 #include <pty.h>       // forkpty (glibc / util-linux)
@@ -40,9 +41,24 @@ Result<void> set_nonblocking(int fd) {
 } // namespace
 
 Result<Pty> Pty::spawn(std::span<const char *const> argv, Extent size) {
-    if (argv.empty() || argv.front() == nullptr) {
-        return fail("Pty::spawn: empty argv");
+    SpawnCommand cmd;
+    for (const char *const *p = argv.data(); p != argv.data() + argv.size() && *p; ++p) {
+        cmd.argv.emplace_back(*p);
     }
+    return spawn(cmd, size);
+}
+
+Result<Pty> Pty::spawn(const SpawnCommand &cmd, Extent size) {
+    // Resolve argv: explicit -> $SHELL -> /bin/sh.
+    std::vector<std::string> args = cmd.argv;
+    if (args.empty()) {
+        const char *shell = ::getenv("SHELL");
+        args.emplace_back(shell && *shell ? shell : "/bin/sh");
+    }
+    std::vector<char *> cargv;
+    cargv.reserve(args.size() + 1);
+    for (auto &a : args) cargv.push_back(a.data());
+    cargv.push_back(nullptr);
 
     winsize ws = to_winsize(size);
     int master = -1;
@@ -53,11 +69,11 @@ Result<Pty> Pty::spawn(std::span<const char *const> argv, Extent size) {
     }
 
     if (pid == 0) {
-        // --- child ---
-        ::setenv("TERM", "xterm-256color", 1);
-        // argv must be null-terminated; the caller guarantees this.
-        ::execvp(argv[0], const_cast<char *const *>(argv.data()));
-        // Only reached if exec failed.
+        // --- child --- TERM is a host-chosen value, not hard-coded.
+        ::setenv("TERM", cmd.term.empty() ? "xterm-256color" : cmd.term.c_str(), 1);
+        // Host hook: setenv/chdir/setsid/drop-privs, before exec.
+        if (cmd.pre_exec) cmd.pre_exec();
+        ::execvp(cargv[0], cargv.data());
         std::perror("execvp");
         ::_exit(127);
     }
@@ -75,7 +91,24 @@ Result<Pty> Pty::spawn(std::span<const char *const> argv, Extent size) {
     return pty;
 }
 
-Pty::Pty(Pty &&other) noexcept : master_{other.master_}, child_{other.child_} {
+Result<Pty> Pty::adopt(const AdoptFd &src) {
+    if (src.master_fd < 0) {
+        return fail("Pty::adopt: master_fd must be >= 0");
+    }
+    if (auto nb = set_nonblocking(src.master_fd); !nb) {
+        return std::unexpected(nb.error());
+    }
+    Pty pty;
+    pty.master_ = src.master_fd;
+    pty.child_ = src.child;
+    pty.owns_fd_ = src.owns_fd;
+    pty.owns_child_ = (src.child >= 0); // only reap children we were told about
+    return pty;
+}
+
+Pty::Pty(Pty &&other) noexcept
+    : master_{other.master_}, child_{other.child_}, cell_w_{other.cell_w_},
+      cell_h_{other.cell_h_}, owns_fd_{other.owns_fd_}, owns_child_{other.owns_child_} {
     other.master_ = -1;
     other.child_ = -1;
 }
@@ -85,6 +118,10 @@ Pty &Pty::operator=(Pty &&other) noexcept {
         close_master();
         master_ = std::exchange(other.master_, -1);
         child_ = std::exchange(other.child_, -1);
+        cell_w_ = other.cell_w_;
+        cell_h_ = other.cell_h_;
+        owns_fd_ = other.owns_fd_;
+        owns_child_ = other.owns_child_;
     }
     return *this;
 }
@@ -92,10 +129,10 @@ Pty &Pty::operator=(Pty &&other) noexcept {
 Pty::~Pty() { close_master(); }
 
 void Pty::close_master() noexcept {
-    if (master_ >= 0) {
+    if (master_ >= 0 && owns_fd_) {
         ::close(master_);
-        master_ = -1;
     }
+    master_ = -1;
 }
 
 Result<std::size_t> Pty::read(std::span<char> buf) {
@@ -146,6 +183,9 @@ Result<void> Pty::resize(Extent size) {
 bool Pty::child_exited() const noexcept {
     if (child_ < 0) {
         return true;
+    }
+    if (!owns_child_) {
+        return false; // host owns the child; we don't reap or judge it
     }
     int status = 0;
     const ::pid_t r = ::waitpid(child_, &status, WNOHANG);

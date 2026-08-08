@@ -1,0 +1,57 @@
+@PACKAGE_INIT@
+# SPDX-License-Identifier: LGPL-2.0-or-later
+#
+# gvteConfig.cmake — find_package(gvte) entry point.
+#
+# Components:
+#   Core      the terminal engine + Surface contract          (gvte::core)
+#   Platform  optional Linux Wayland/X11 backends             (gvte::platform)
+#
+# A consumer that brings its own window asks for Core only and never pulls in
+# the windowing dependencies.
+
+include(CMakeFindDependencyMacro)
+
+# gvte's private link deps are recorded on the exported targets as
+# PkgConfig::* imported targets. A consumer's project must recreate those
+# imported targets (via pkg-config) before the target file is included,
+# otherwise the import fails. These are all PRIVATE — no header of them leaks.
+find_dependency(PkgConfig)
+pkg_check_modules(FREETYPE   REQUIRED IMPORTED_TARGET freetype2)
+pkg_check_modules(HARFBUZZ   REQUIRED IMPORTED_TARGET harfbuzz)
+pkg_check_modules(FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
+pkg_check_modules(PNG        REQUIRED IMPORTED_TARGET libpng)
+pkg_check_modules(EPOXY      REQUIRED IMPORTED_TARGET epoxy)
+
+if("Platform" IN_LIST gvte_FIND_COMPONENTS)
+  pkg_check_modules(EGL     REQUIRED IMPORTED_TARGET egl)
+  pkg_check_modules(WAYLAND REQUIRED IMPORTED_TARGET wayland-client wayland-egl wayland-cursor)
+  pkg_check_modules(XKB     REQUIRED IMPORTED_TARGET xkbcommon)
+  pkg_check_modules(X11     REQUIRED IMPORTED_TARGET x11 x11-xcb xcb xkbcommon-x11)
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/gvteTargets.cmake")
+
+# Report component availability purely from which targets got imported.
+set(_gvte_known_components Core Platform)
+foreach(_comp IN LISTS gvte_FIND_COMPONENTS)
+  if(NOT _comp IN_LIST _gvte_known_components)
+    set(gvte_FOUND FALSE)
+    set(gvte_NOT_FOUND_MESSAGE "gvte: unknown component '${_comp}'")
+    return()
+  endif()
+endforeach()
+
+if(TARGET gvte::core)
+  set(gvte_Core_FOUND TRUE)
+else()
+  set(gvte_Core_FOUND FALSE)
+endif()
+
+if(TARGET gvte::platform)
+  set(gvte_Platform_FOUND TRUE)
+else()
+  set(gvte_Platform_FOUND FALSE)
+endif()
+
+check_required_components(gvte)
