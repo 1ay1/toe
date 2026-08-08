@@ -133,6 +133,21 @@ private:
     std::uint64_t images_revision_{0};
     void ensure_image_pipeline();
     void draw_images(const term::Screen &screen, PixelSize px);
+
+    // --- ligature shaping (HarfBuzz) ---------------------------------------
+    // Per-cell shaped-glyph override for a row. When a ligature (e.g. => != ->)
+    // spans several cells, HarfBuzz yields one glyph for the cluster; we record
+    // its glyph index on the FIRST cell and mark the covered trailing cells as
+    // "skip" so they don't draw their own glyph.
+    struct ShapedCell {
+        std::uint32_t gindex{0}; // FT glyph index to draw (0 = use codepoint path)
+        bool skip{false};        // covered by a preceding ligature; draw nothing
+    };
+    std::vector<ShapedCell> shape_scratch_{};
+    bool ligatures_{true};
+    // Fill shape_scratch_ for one row by shaping its ASCII runs; no-op (all
+    // zero) when ligatures are off or the row has none.
+    void shape_row(std::span<const term::Cell> cells, int cols);
     // Cache the last uniform/texture state so repeated flushes in a frame (and
     // across static frames) skip redundant GL calls.
     float u_px_w_{-1.0f}, u_px_h_{-1.0f};

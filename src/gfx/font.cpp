@@ -13,6 +13,9 @@
 #include <fontconfig/fontconfig.h>
 #include <epoxy/gl.h>
 
+#include <hb.h>
+#include <hb-ft.h>
+
 namespace gvte::gfx {
 
 namespace {
@@ -141,6 +144,7 @@ Result<FontAtlas> FontAtlas::create(std::string family, int pixel_size) {
 
 FontAtlas::FontAtlas(FontAtlas &&o) noexcept
     : ft_{std::exchange(o.ft_, nullptr)}, face_{std::exchange(o.face_, nullptr)},
+      hb_font_{std::exchange(o.hb_font_, nullptr)},
       fallback_faces_{std::move(o.fallback_faces_)}, pixel_size_{o.pixel_size_},
       tex_{std::exchange(o.tex_, 0)}, atlas_dim_{o.atlas_dim_}, pen_x_{o.pen_x_}, pen_y_{o.pen_y_},
       shelf_h_{o.shelf_h_}, cell_w_{o.cell_w_}, cell_h_{o.cell_h_}, ascent_{o.ascent_},
@@ -154,6 +158,7 @@ FontAtlas &FontAtlas::operator=(FontAtlas &&o) noexcept {
         destroy();
         ft_ = std::exchange(o.ft_, nullptr);
         face_ = std::exchange(o.face_, nullptr);
+        hb_font_ = std::exchange(o.hb_font_, nullptr);
         fallback_faces_ = std::move(o.fallback_faces_);
         o.fallback_faces_.clear();
         pixel_size_ = o.pixel_size_;
@@ -184,6 +189,10 @@ void FontAtlas::destroy() noexcept {
         if (fb && fb != face_) FT_Done_Face(static_cast<FT_Face>(fb));
     }
     fallback_faces_.clear();
+    if (hb_font_) {
+        hb_font_destroy(static_cast<hb_font_t *>(hb_font_));
+        hb_font_ = nullptr;
+    }
     if (face_) {
         FT_Done_Face(static_cast<FT_Face>(face_));
         face_ = nullptr;
@@ -219,81 +228,80 @@ void *FontAtlas::face_for(char32_t cp) {
     return fb;
 }
 
-const GlyphInfo *FontAtlas::rasterize(char32_t cp, FontStyle style) {
-    auto face = static_cast<FT_Face>(face_for(cp));
-    const bool bold = (static_cast<std::uint8_t>(style) & 1) != 0;
-    const bool italic = (static_cast<std::uint8_t>(style) & 2) != 0;
-    const std::uint64_t key = (static_cast<std::uint64_t>(style) << 32) | cp;
-
-    // Load the outline (not a bitmap yet) so we can embolden / shear it, then
-    // render. Falls back gracefully if the face has no outlines.
-    if (FT_Load_Char(face, cp, FT_LOAD_DEFAULT) != 0) {
-        return nullptr;
-    }
-    FT_GlyphSlot g = face->glyph;
-
+// Apply synthetic bold/italic to an outline glyph slot, render it, and pack the
+// bitmap into the atlas, returning the cached GlyphInfo (keyed by `key`).
+static const GlyphInfo *pack_slot_impl(FT_GlyphSlot g, bool bold, bool italic, FT_Pos bold_strength,
+                                       std::uint64_t key,
+                                       std::unordered_map<std::uint64_t, GlyphInfo> &cache,
+                                       std::uint32_t tex, int atlas_dim, int &pen_x, int &pen_y,
+                                       int &shelf_h) {
     if (g->format == FT_GLYPH_FORMAT_OUTLINE) {
         if (italic) {
-            // Shear right by ~0.2 (≈12°) for a synthetic oblique.
             FT_Matrix shear{0x10000, static_cast<FT_Fixed>(0.2 * 0x10000), 0, 0x10000};
             FT_Outline_Transform(&g->outline, &shear);
         }
-        if (bold) {
-            // Embolden proportional to the font size so it scales. ~ x_ppem/14
-            // pixels of outward growth gives a natural medium-bold weight
-            // without ballooning the glyph out of its cell. Value is in 26.6
-            // fixed point (×64).
-            const FT_Pos strength = (face->size->metrics.x_ppem * 64) / 14;
-            FT_Outline_Embolden(&g->outline, strength);
-        }
+        if (bold) FT_Outline_Embolden(&g->outline, bold_strength);
     }
-    if (FT_Render_Glyph(g, FT_RENDER_MODE_NORMAL) != 0) {
-        return nullptr;
-    }
+    if (FT_Render_Glyph(g, FT_RENDER_MODE_NORMAL) != 0) return nullptr;
 
     const int w = static_cast<int>(g->bitmap.width);
     const int h = static_cast<int>(g->bitmap.rows);
-
     GlyphInfo info;
     info.width = w;
     info.height = h;
     info.bearing_x = g->bitmap_left;
     info.bearing_y = g->bitmap_top;
     info.advance = static_cast<int>(g->advance.x >> 6);
-
     if (w == 0 || h == 0) {
-        // Whitespace / zero-area glyph: no bitmap to pack, UVs stay zero.
-        auto [it, _] = cache_.emplace(key, info);
+        auto [it, _] = cache.emplace(key, info);
         return &it->second;
     }
-
-    // Shelf allocation: advance along the current shelf, wrap to a new one.
-    if (pen_x_ + w + 1 > atlas_dim_) {
-        pen_x_ = 1;
-        pen_y_ += shelf_h_ + 1;
-        shelf_h_ = 0;
-    }
-    if (pen_y_ + h + 1 > atlas_dim_) {
-        // Atlas full. Return the notdef-ish blank; a real impl would grow it.
-        return nullptr;
-    }
-
-    glBindTexture(GL_TEXTURE_2D, tex_);
+    if (pen_x + w + 1 > atlas_dim) { pen_x = 1; pen_y += shelf_h + 1; shelf_h = 0; }
+    if (pen_y + h + 1 > atlas_dim) return nullptr; // atlas full
+    glBindTexture(GL_TEXTURE_2D, tex);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, pen_x_, pen_y_, w, h, GL_RED, GL_UNSIGNED_BYTE,
+    glTexSubImage2D(GL_TEXTURE_2D, 0, pen_x, pen_y, w, h, GL_RED, GL_UNSIGNED_BYTE,
                     g->bitmap.buffer);
-
-    const float inv = 1.0f / static_cast<float>(atlas_dim_);
-    info.u0 = static_cast<float>(pen_x_) * inv;
-    info.v0 = static_cast<float>(pen_y_) * inv;
-    info.u1 = static_cast<float>(pen_x_ + w) * inv;
-    info.v1 = static_cast<float>(pen_y_ + h) * inv;
-
-    pen_x_ += w + 1;
-    shelf_h_ = std::max(shelf_h_, h);
-
-    auto [it, _] = cache_.emplace(key, info);
+    const float inv = 1.0f / static_cast<float>(atlas_dim);
+    info.u0 = static_cast<float>(pen_x) * inv;
+    info.v0 = static_cast<float>(pen_y) * inv;
+    info.u1 = static_cast<float>(pen_x + w) * inv;
+    info.v1 = static_cast<float>(pen_y + h) * inv;
+    pen_x += w + 1;
+    shelf_h = std::max(shelf_h, h);
+    auto [it, _] = cache.emplace(key, info);
     return &it->second;
+}
+
+const GlyphInfo *FontAtlas::rasterize(char32_t cp, FontStyle style) {
+    auto face = static_cast<FT_Face>(face_for(cp));
+    const bool bold = (static_cast<std::uint8_t>(style) & 1) != 0;
+    const bool italic = (static_cast<std::uint8_t>(style) & 2) != 0;
+    const std::uint64_t key = (static_cast<std::uint64_t>(style) << 32) | cp;
+    if (FT_Load_Char(face, cp, FT_LOAD_DEFAULT) != 0) return nullptr;
+    const FT_Pos strength = (face->size->metrics.x_ppem * 64) / 14;
+    return pack_slot_impl(face->glyph, bold, italic, strength, key, cache_, tex_, atlas_dim_,
+                          pen_x_, pen_y_, shelf_h_);
+}
+
+const GlyphInfo *FontAtlas::rasterize_index(std::uint32_t gindex, FontStyle style) {
+    // Ligature/shaped glyphs come from the PRIMARY face by glyph index.
+    auto face = static_cast<FT_Face>(face_);
+    const bool bold = (static_cast<std::uint8_t>(style) & 1) != 0;
+    const bool italic = (static_cast<std::uint8_t>(style) & 2) != 0;
+    const std::uint64_t key =
+        (static_cast<std::uint64_t>(style) << 32) | 0x80000000ull | gindex;
+    if (FT_Load_Glyph(face, gindex, FT_LOAD_DEFAULT) != 0) return nullptr;
+    const FT_Pos strength = (face->size->metrics.x_ppem * 64) / 14;
+    return pack_slot_impl(face->glyph, bold, italic, strength, key, cache_, tex_, atlas_dim_,
+                          pen_x_, pen_y_, shelf_h_);
+}
+
+void *FontAtlas::hb_font() {
+    if (!hb_font_ && face_) {
+        hb_font_ = hb_ft_font_create(static_cast<FT_Face>(face_), nullptr);
+    }
+    return hb_font_;
 }
 
 } // namespace gvte::gfx

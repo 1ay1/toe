@@ -11,6 +11,8 @@
 
 #include <epoxy/gl.h>
 
+#include <hb.h>
+
 namespace gvte::gfx {
 
 namespace {
@@ -488,6 +490,9 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
     rc.glyphs.clear();
     rc.has_blink = false;
 
+    // Shape the row's ASCII runs so programming ligatures merge into one glyph.
+    shape_row(cells, cache_cols_);
+
     for (int c = 0; c < cache_cols_; ++c) {
         const auto &cell = cells[static_cast<std::size_t>(c)];
         const bool selected = any_selection && screen.is_selected(abs_row, c);
@@ -623,7 +628,13 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
         const auto style = static_cast<gfx::FontStyle>(
             (term::has(cell.pen.attr, term::Attr::Bold) ? 1u : 0u) |
             (term::has(cell.pen.attr, term::Attr::Italic) ? 2u : 0u));
-        const GlyphInfo *gi = atlas_.glyph(cp, style);
+
+        // Ligatures: a cell covered by a preceding ligature draws nothing; the
+        // first cell of a ligature draws the merged glyph (by glyph index).
+        const ShapedCell &sh = shape_scratch_[static_cast<std::size_t>(c)];
+        if (sh.skip) continue;
+        const GlyphInfo *gi = sh.gindex != 0 ? atlas_.glyph_by_index(sh.gindex, style)
+                                             : atlas_.glyph(cp, style);
         if (!gi || gi->width == 0 || gi->height == 0) continue;
         const Rgb col = fgcol;
         const float gx = static_cast<float>(c * cw + gi->bearing_x);
@@ -637,6 +648,65 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
     rc.key = key;
     rc.valid = true;
     return true;
+}
+
+// Shape one row's ASCII runs with HarfBuzz so programming ligatures (=> != ->
+// >= <= == === |> and friends) render correctly. Programming fonts implement
+// these as CONTEXTUAL ALTERNATES (calt): each character is substituted with a
+// connected glyph *variant*, so the glyph count matches the cell count but the
+// glyph indices differ from the plain codepoint. We shape each same-style ASCII
+// run and record the resulting glyph index per cell; the codepoint path is used
+// where shaping yields nothing special. Only runs when a row is (re)built.
+void Renderer::shape_row(std::span<const term::Cell> cells, int cols) {
+    shape_scratch_.assign(static_cast<std::size_t>(cols), ShapedCell{});
+    if (!ligatures_) return;
+    auto *hbf = static_cast<hb_font_t *>(atlas_.hb_font());
+    if (!hbf) return;
+
+    static hb_buffer_t *buf = hb_buffer_create(); // reused across calls (single-threaded)
+
+    int c = 0;
+    while (c < cols) {
+        // A run is contiguous same-style printable ASCII (ligatures are ASCII).
+        const term::Cell &c0 = cells[static_cast<std::size_t>(c)];
+        const bool printable = c0.cp >= 0x21 && c0.cp < 0x7f && c0.width == 1;
+        if (!printable) { ++c; continue; }
+        const term::Attr style0 = c0.pen.attr & (term::Attr::Bold | term::Attr::Italic);
+        int e = c;
+        while (e < cols) {
+            const term::Cell &ce = cells[static_cast<std::size_t>(e)];
+            const bool ep = ce.cp >= 0x21 && ce.cp < 0x7f && ce.width == 1;
+            if (!ep || (ce.pen.attr & (term::Attr::Bold | term::Attr::Italic)) != style0) break;
+            ++e;
+        }
+        const int len = e - c;
+        if (len >= 2) {
+            hb_buffer_clear_contents(buf);
+            for (int i = 0; i < len; ++i)
+                hb_buffer_add(buf,
+                              static_cast<hb_codepoint_t>(cells[static_cast<std::size_t>(c + i)].cp),
+                              static_cast<unsigned>(i));
+            hb_buffer_set_content_type(buf, HB_BUFFER_CONTENT_TYPE_UNICODE);
+            hb_buffer_set_direction(buf, HB_DIRECTION_LTR);
+            hb_buffer_set_script(buf, HB_SCRIPT_LATIN);
+            hb_buffer_guess_segment_properties(buf);
+            hb_shape(hbf, buf, nullptr, 0);
+
+            unsigned n = 0;
+            const hb_glyph_info_t *gi = hb_buffer_get_glyph_infos(buf, &n);
+            for (unsigned k = 0; k < n; ++k) {
+                const int cell = c + static_cast<int>(gi[k].cluster);
+                const int next = (k + 1 < n) ? c + static_cast<int>(gi[k + 1].cluster) : e;
+                if (cell < 0 || cell >= cols) continue;
+                shape_scratch_[static_cast<std::size_t>(cell)].gindex = gi[k].codepoint;
+                // If this glyph's cluster spans >1 cell (a true liga glyph),
+                // hide the covered trailing cells.
+                for (int scell = cell + 1; scell < next && scell < cols; ++scell)
+                    shape_scratch_[static_cast<std::size_t>(scell)].skip = true;
+            }
+        }
+        c = e;
+    }
 }
 
 // --- inline image (kitty graphics) pipeline --------------------------------

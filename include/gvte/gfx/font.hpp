@@ -88,6 +88,20 @@ public:
         return rasterize(cp, style);
     }
 
+    // Look up a glyph by FreeType GLYPH INDEX (not codepoint) in a given style.
+    // Used for ligatures / shaped glyphs, which have no single codepoint. Keyed
+    // separately from codepoint glyphs (high bit set).
+    const GlyphInfo *glyph_by_index(std::uint32_t gindex, FontStyle style = FontStyle::Regular) {
+        const auto st = static_cast<std::uint64_t>(style);
+        const std::uint64_t key = (st << 32) | 0x80000000ull | gindex;
+        if (auto it = cache_.find(key); it != cache_.end()) return &it->second;
+        return rasterize_index(gindex, style);
+    }
+
+    // The HarfBuzz font for the primary face (created lazily), for shaping runs.
+    // Returns an hb_font_t* (as void* to keep harfbuzz out of the header).
+    [[nodiscard]] void *hb_font();
+
     // The GL atlas texture id (GL_R8), for binding by the renderer.
     [[nodiscard]] std::uint32_t texture() const noexcept { return tex_; }
     [[nodiscard]] int atlas_size() const noexcept { return atlas_dim_; }
@@ -96,10 +110,13 @@ private:
     FontAtlas() = default;
     void destroy() noexcept;
     const GlyphInfo *rasterize(char32_t cp, FontStyle style);
+    // Rasterize+pack a glyph selected by FreeType glyph index (for ligatures).
+    const GlyphInfo *rasterize_index(std::uint32_t gindex, FontStyle style);
 
     // opaque FreeType handles (kept as void* to avoid leaking ft2 into the hdr)
     void *ft_{nullptr};   // FT_Library
     void *face_{nullptr}; // FT_Face (primary)
+    void *hb_font_{nullptr}; // hb_font_t for the primary face (lazy)
 
     // Font fallback: codepoints the primary face lacks (CJK, emoji, symbols)
     // are rasterized from a font Fontconfig says covers them. Keyed by the
