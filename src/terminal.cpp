@@ -365,12 +365,15 @@ std::string resolve_font_path(std::string family) {
     if (home) roots.emplace_back(std::string{home} + "/.local/share/fonts");
     if (home) roots.emplace_back(std::string{home} + "/.fonts");
 
+    // Preferred programming/mono fonts, best first. We record the best-ranked
+    // match found and only return after scanning, so priority order wins over
+    // filesystem order. Bold/italic files are never chosen as the base face.
     static const char *prefer[] = {
-        "jetbrainsmono-regular", "firacode-regular", "cascadiacode", "cascadiamono",
-        "iosevka-regular", "hack-regular", "dejavusansmono", "notosansmono-regular",
-        "liberationmono-regular", "adwaitamono-regular", "ubuntumono-r",
+        "jetbrainsmono", "firacode", "cascadiacode", "cascadiamono", "iosevka",
+        "hack", "dejavusansmono", "notosansmono", "liberationmono", "adwaitamono", "ubuntumono",
     };
-    std::string first_mono, first_any, named_best;
+    int best_rank = 9999;
+    std::string best_prefer, first_mono, first_any, named_best;
     for (const auto &root : roots) {
         std::error_code ec;
         if (!std::filesystem::exists(root, ec)) continue;
@@ -384,23 +387,38 @@ std::string resolve_font_path(std::string family) {
             std::string name;
             for (char c : p.filename().string())
                 name += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            // Reject any bold/italic/light/oblique/condensed variant as a base.
             const bool plain = name.find("bold") == std::string::npos &&
                                name.find("italic") == std::string::npos &&
+                               name.find("oblique") == std::string::npos &&
                                name.find("light") == std::string::npos &&
-                               name.find("thin") == std::string::npos;
+                               name.find("thin") == std::string::npos &&
+                               name.find("medium") == std::string::npos &&
+                               name.find("condensed") == std::string::npos &&
+                               name.find("extra") == std::string::npos &&
+                               name.find("semi") == std::string::npos;
+            if (!plain) continue; // only regular weights are eligible
             if (generic) {
-                for (const char *pref : prefer)
-                    if (name.find(pref) != std::string::npos) return p.string();
-                if (first_any.empty() && plain) first_any = p.string();
-                if (first_mono.empty() && plain && name.find("mono") != std::string::npos)
+                for (int rank = 0; rank < static_cast<int>(std::size(prefer)); ++rank) {
+                    if (name.find(prefer[rank]) != std::string::npos && rank < best_rank) {
+                        best_rank = rank;
+                        best_prefer = p.string();
+                    }
+                }
+                if (first_any.empty()) first_any = p.string();
+                if (first_mono.empty() && name.find("mono") != std::string::npos)
                     first_mono = p.string();
             } else if (name.find(needle) != std::string::npos) {
-                if (name.find("regular") != std::string::npos || plain) return p.string();
-                if (named_best.empty()) named_best = p.string();
+                if (named_best.empty() || name.find("regular") != std::string::npos)
+                    named_best = p.string();
             }
         }
     }
-    if (generic) return !first_mono.empty() ? first_mono : first_any;
+    if (generic) {
+        if (!best_prefer.empty()) return best_prefer; // highest-ranked known font
+        if (!first_mono.empty()) return first_mono;
+        return first_any;
+    }
     return named_best;
 }
 } // namespace

@@ -39,7 +39,12 @@ struct Config {
     // Optional fallback font (CJK/emoji/symbols) for codepoints the primary
     // font lacks. A file path; empty disables fallback.
     std::string font_fallback{};
-    bool ligatures = true;                 // enable GSUB calt/liga shaping
+    // GSUB calt/liga shaping. Off by default: the built-in shaper handles the
+    // simple ligature subtable forms, but complex programming fonts (JetBrains
+    // Mono, Fira Code) use multi-pass contextual chains it can't fully evaluate,
+    // so leave ligatures opt-in until that's addressed. Most terminals default
+    // ligatures off anyway.
+    bool ligatures = false;
     int font_pixel_size = 18;
     Rgb default_fg = rgb(220, 220, 220);
     Rgb default_bg = rgb(23, 23, 28);
