@@ -57,7 +57,8 @@ private:
     Result<void> init_egl();
     Result<void> create_egl_surface();
     Result<void> init_xkb();
-    void handle_key(xcb_keycode_t code, const std::function<void(const Event &)> &sink);
+    void handle_key(xcb_keycode_t code, KeyEvent::Kind kind,
+                    const std::function<void(const Event &)> &sink);
 
     Display *display_ = nullptr;
     xcb_connection_t *xcb_ = nullptr;
@@ -152,8 +153,8 @@ Result<void> X11Surface::init(std::string_view title, PixelSize initial) {
     swa.colormap = colormap;
     swa.background_pixel = 0;
     swa.border_pixel = 0;
-    swa.event_mask = KeyPressMask | StructureNotifyMask | ExposureMask | ButtonPressMask |
-                     ButtonReleaseMask | PointerMotionMask | FocusChangeMask;
+    swa.event_mask = KeyPressMask | KeyReleaseMask | StructureNotifyMask | ExposureMask |
+                     ButtonPressMask | ButtonReleaseMask | PointerMotionMask | FocusChangeMask;
 
     Window win = XCreateWindow(display_, root, 0, 0, static_cast<unsigned>(size_.w),
                                static_cast<unsigned>(size_.h), 0, depth, InputOutput, visual,
@@ -292,7 +293,8 @@ Result<void> X11Surface::init_xkb() {
     return {};
 }
 
-void X11Surface::handle_key(xcb_keycode_t code, const std::function<void(const Event &)> &sink) {
+void X11Surface::handle_key(xcb_keycode_t code, KeyEvent::Kind kind,
+                            const std::function<void(const Event &)> &sink) {
     const xkb_keysym_t sym = xkb_state_key_get_one_sym(xkb_state_, code);
 
     Modifiers mods;
@@ -307,6 +309,7 @@ void X11Surface::handle_key(xcb_keycode_t code, const std::function<void(const E
         KeyEvent ev;
         ev.key = sk;
         ev.mods = mods;
+        ev.kind = kind;
         sink(Event{KeyPressed{ev}});
     };
     switch (sym) {
@@ -333,6 +336,7 @@ void X11Surface::handle_key(xcb_keycode_t code, const std::function<void(const E
             KeyEvent ev;
             ev.key = TextInput{std::string(1, static_cast<char>('a' + (lower - XKB_KEY_a)))};
             ev.mods = mods;
+            ev.kind = kind;
             sink(Event{KeyPressed{ev}});
             return;
         }
@@ -341,7 +345,17 @@ void X11Surface::handle_key(xcb_keycode_t code, const std::function<void(const E
     char utf8[8] = {0};
     const int n = xkb_state_key_get_utf8(xkb_state_, code, utf8, sizeof(utf8));
     if (n > 0 && !(mods.ctrl || mods.alt)) {
-        sink(Event{TextEntered{std::string_view{utf8, static_cast<size_t>(n)}}});
+        if (kind == KeyEvent::Kind::press) {
+            sink(Event{TextEntered{std::string_view{utf8, static_cast<size_t>(n)}}});
+        } else {
+            // Release/repeat of a text key: route as a KeyEvent so the kind
+            // survives (TextEntered has none); the terminal gates it on kitty.
+            KeyEvent ev;
+            ev.key = TextInput{std::string{utf8, static_cast<size_t>(n)}};
+            ev.mods = mods;
+            ev.kind = kind;
+            sink(Event{KeyPressed{ev}});
+        }
     }
 }
 
@@ -408,7 +422,12 @@ void X11Surface::poll_events(const std::function<void(const Event &)> &sink) {
         switch (ev->response_type & ~0x80) {
         case XCB_KEY_PRESS: {
             auto *k = reinterpret_cast<xcb_key_press_event_t *>(ev);
-            handle_key(k->detail, sink);
+            handle_key(k->detail, KeyEvent::Kind::press, sink);
+            break;
+        }
+        case XCB_KEY_RELEASE: {
+            auto *k = reinterpret_cast<xcb_key_release_event_t *>(ev);
+            handle_key(k->detail, KeyEvent::Kind::release, sink);
             break;
         }
         case XCB_CONFIGURE_NOTIFY: {

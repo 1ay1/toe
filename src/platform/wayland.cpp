@@ -91,7 +91,7 @@ public:
     }
 
     // Key repeat helpers (instance methods).
-    void emit_key(uint32_t key);
+    void emit_key(uint32_t key, KeyEvent::Kind kind = KeyEvent::Kind::press);
     void arm_repeat(uint32_t key);
     void disarm_repeat();
 
@@ -332,7 +332,7 @@ void WaylandSurface::kb_modifiers(void *data, wl_keyboard *, uint32_t, uint32_t 
 // Translate one evdev keycode (already the raw wl key, +8 done here) into an
 // Event and hand it to the sink. Shared by the initial press and by the repeat
 // timer, so held keys repeat with identical semantics.
-void WaylandSurface::emit_key(uint32_t key) {
+void WaylandSurface::emit_key(uint32_t key, KeyEvent::Kind kind) {
     if (!xkb_state_ || !sink_) return;
     const xkb_keycode_t kc = key + 8;
     const xkb_keysym_t sym = xkb_state_key_get_one_sym(xkb_state_, kc);
@@ -349,6 +349,7 @@ void WaylandSurface::emit_key(uint32_t key) {
         KeyEvent ev;
         ev.key = sk;
         ev.mods = mods;
+        ev.kind = kind;
         (*sink_)(Event{KeyPressed{ev}});
     };
     switch (sym) {
@@ -393,6 +394,20 @@ void WaylandSurface::emit_key(uint32_t key) {
             KeyEvent ev;
             ev.key = TextInput{std::string(1, static_cast<char>(cp))};
             ev.mods = mods;
+            ev.kind = kind;
+            (*sink_)(Event{KeyPressed{ev}});
+        }
+        return;
+    }
+    // A release event on a plain text key carries no legacy bytes, but the
+    // terminal needs the KeyPressed{kind=release} form to encode it under the
+    // Kitty protocol; a TextEntered has no kind, so route releases as KeyEvents.
+    if (kind == KeyEvent::Kind::release) {
+        if (n > 0) {
+            KeyEvent ev;
+            ev.key = TextInput{std::string{utf8, static_cast<size_t>(n)}};
+            ev.mods = mods;
+            ev.kind = kind;
             (*sink_)(Event{KeyPressed{ev}});
         }
         return;
@@ -430,11 +445,15 @@ void WaylandSurface::kb_key(void *data, wl_keyboard *, uint32_t serial, uint32_t
     if (state == WL_KEYBOARD_KEY_STATE_RELEASED) {
         // Stop repeating iff the released key is the one repeating.
         if (self->repeat_key_ == key) self->disarm_repeat();
+        // Emit a release event too. The terminal drops it unless the app opted
+        // into the Kitty keyboard "report event types" flag (the encoder gates
+        // this), so legacy apps never see spurious release input.
+        self->emit_key(key, KeyEvent::Kind::release);
         return;
     }
     // Pressed: emit once, then (re)arm the repeat timer for this key. A new
     // press supersedes any previous repeat (last-key-wins, like every terminal).
-    self->emit_key(key);
+    self->emit_key(key, KeyEvent::Kind::press);
     // Only repeat keys that actually produce output; modifiers/dead keys don't.
     const xkb_keysym_t sym = xkb_state_key_get_one_sym(self->xkb_state_, key + 8);
     const bool repeatable = self->xkb_keymap_ &&
@@ -610,7 +629,7 @@ void WaylandSurface::poll_events(const std::function<void(const Event &)> &sink)
         uint64_t expirations = 0;
         if (::read(repeat_fd_, &expirations, sizeof expirations) == sizeof expirations) {
             for (uint64_t i = 0; i < expirations && repeat_key_ != 0; ++i) {
-                emit_key(repeat_key_);
+                emit_key(repeat_key_, KeyEvent::Kind::repeat);
             }
         }
     }

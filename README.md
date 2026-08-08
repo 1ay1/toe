@@ -181,12 +181,13 @@ rewrap when the width changes, scrollback included), scroll regions, alt screen,
 selection (char/word/line/block), mouse in and out, clipboard (Wayland + X11),
 OSC titles/hyperlinks/52, dynamic colours (OSC 4/104 palette, 10/11 default
 fg/bg, 12/112 cursor), cursor shapes (DECSCUSR: block/underline/bar, steady or
-blinking), the Kitty keyboard protocol (progressive-enhancement flag stack +
-disambiguating CSI-u encoding, event types, report-all-keys), curly/coloured
-underlines, synchronized output, soft reset (DECSTR), rectangular area ops
-(DECFRA/DECERA/DECCARA/DECRARA), REP, full device-query replies
-(DA/DSR/XTVERSION/XTGETTCAP/DECRQSS/DECRQM), inline images (sixel + kitty
-graphics) with animation.
+blinking), the Kitty keyboard protocol end-to-end (progressive-enhancement flag
+stack + disambiguating CSI-u encoding, event types incl. key-release from the
+Wayland/X11 backends, report-all-keys), programming ligatures (HarfBuzz calt
+shaping), curly/coloured underlines, synchronized output, soft reset (DECSTR),
+rectangular area ops (DECFRA/DECERA/DECCARA/DECRARA), REP, full device-query
+replies (DA/DSR/XTVERSION/XTGETTCAP/DECRQSS/DECRQM), inline images (sixel +
+kitty graphics) with animation.
 
 ## License
 
