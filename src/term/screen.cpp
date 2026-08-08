@@ -22,6 +22,7 @@ int param_raw(std::span<const int> p, std::size_t i, int def) {
 Screen::Screen(Extent size) : size_{size}, cells_(size.area()) {
     scroll_top_ = 0;
     scroll_bottom_ = size_.rows - 1;
+    live_wrapped_.assign(static_cast<std::size_t>(std::max(size_.rows, 0)), false);
     reset_row_map();
     row_epoch_.assign(static_cast<std::size_t>(std::max(size_.rows, 0)), 0);
     tab_stops_.assign(static_cast<std::size_t>(std::max(size_.cols, 1)), false);
@@ -101,19 +102,33 @@ void Screen::resize(Extent size) {
     if (size == size_ || size.cols <= 0 || size.rows <= 0) {
         if (size == size_) return;
     }
-    std::vector<Cell> next(size.area());
-    const std::int32_t copy_rows = std::min(size.rows, size_.rows);
-    const std::int32_t copy_cols = std::min(size.cols, size_.cols);
-    for (std::int32_t r = 0; r < copy_rows; ++r) {
-        for (std::int32_t c = 0; c < copy_cols; ++c) {
-            next[static_cast<std::size_t>(r) * static_cast<std::size_t>(size.cols) +
-                 static_cast<std::size_t>(c)] = at(Row{r}, Col{c});
+
+    // On the alt screen (vim/tmux/htop own the whole grid) reflow is wrong: the
+    // app redraws on SIGWINCH. Reflow only the primary screen, and only when the
+    // width actually changes (a height-only change needs no rewrap).
+    const Extent old_size = size_;
+    const bool do_reflow = !on_alt_ && size.cols != size_.cols && size_.cols > 0 &&
+                           size_.rows > 0;
+
+    if (do_reflow) {
+        reflow(old_size, size);
+    } else {
+        std::vector<Cell> next(size.area());
+        const std::int32_t copy_rows = std::min(size.rows, size_.rows);
+        const std::int32_t copy_cols = std::min(size.cols, size_.cols);
+        for (std::int32_t r = 0; r < copy_rows; ++r) {
+            for (std::int32_t c = 0; c < copy_cols; ++c) {
+                next[static_cast<std::size_t>(r) * static_cast<std::size_t>(size.cols) +
+                     static_cast<std::size_t>(c)] = at(Row{r}, Col{c});
+            }
         }
+        cells_ = std::move(next);
+        size_ = size;
+        // `next` was written in logical row order, so the map is now the identity.
+        reset_row_map();
+        live_wrapped_.assign(static_cast<std::size_t>(std::max(size_.rows, 0)), false);
     }
-    cells_ = std::move(next);
-    size_ = size;
-    // `next` was written in logical row order, so the map is now the identity.
-    reset_row_map();
+
     // A resize resets the scroll region to the full screen (xterm behavior).
     scroll_top_ = 0;
     scroll_bottom_ = size_.rows - 1;
@@ -126,6 +141,140 @@ void Screen::resize(Extent size) {
     row_epoch_.assign(static_cast<std::size_t>(std::max(size_.rows, 0)), 0);
     stamp_all();
     touch();
+}
+
+// Rewrap all content when the column count changes. Flattens history + the live
+// grid into logical lines (joining soft-wrapped runs), then re-lays them out at
+// the new width, keeping the last `rows` lines live and the rest in scrollback.
+// The cursor's logical position is tracked across the transform.
+void Screen::reflow(Extent old_size, Extent new_size) {
+    struct LogLine {
+        std::vector<Cell> cells;
+        bool from_live = false; // originated in the live grid (vs history)
+    };
+
+    // Trim a physical row to its last non-blank cell (a soft-wrapped row keeps
+    // its full width; a hard line keeps only up to its content).
+    const auto trimmed = [&](std::span<const Cell> row, bool wrapped) {
+        std::vector<Cell> v(row.begin(), row.end());
+        if (!wrapped) {
+            while (!v.empty() && v.back().blank()) v.pop_back();
+        }
+        return v;
+    };
+
+    // 1. Gather logical lines from history, joining soft-wrapped runs.
+    std::vector<LogLine> logical;
+    {
+        std::vector<Cell> cur;
+        bool have = false;
+        for (std::size_t i = 0; i < history_.size(); ++i) {
+            const bool wrapped = i < hist_wrapped_.size() && hist_wrapped_[i];
+            auto piece = trimmed(history_[i], wrapped);
+            cur.insert(cur.end(), piece.begin(), piece.end());
+            have = true;
+            if (!wrapped) { logical.push_back({std::move(cur), false}); cur.clear(); have = false; }
+        }
+        if (have) logical.push_back({std::move(cur), false});
+    }
+
+    // 2. Append the live grid's logical rows, tracking the cursor's flat offset.
+    const std::int32_t cur_row = cursor_.row.get();
+    std::int64_t cursor_flat = -1; // index into the live logical line + column
+    std::size_t cursor_line = 0;
+    std::int32_t cursor_col_in_line = 0;
+    {
+        std::vector<Cell> cur;
+        std::int32_t line_start_row = 0;
+        for (std::int32_t r = 0; r < old_size.rows; ++r) {
+            const bool wrapped = wrapped_at(r);
+            std::vector<Cell> piece;
+            for (std::int32_t c = 0; c < old_size.cols; ++c) piece.push_back(at(Row{r}, Col{c}));
+            if (!wrapped) while (!piece.empty() && piece.back().blank()) piece.pop_back();
+            if (r == cur_row) {
+                cursor_line = logical.size();
+                cursor_col_in_line = static_cast<std::int32_t>(cur.size()) + cursor_.col.get();
+            }
+            cur.insert(cur.end(), piece.begin(), piece.end());
+            if (!wrapped) {
+                logical.push_back({std::move(cur), true});
+                cur.clear();
+                line_start_row = r + 1;
+            }
+        }
+        (void)line_start_row;
+        (void)cursor_flat;
+        if (!cur.empty()) logical.push_back({std::move(cur), true});
+    }
+
+    // 3. Re-wrap each logical line at the new width into physical rows.
+    const std::int32_t ncols = new_size.cols;
+    std::vector<std::vector<Cell>> rows;
+    std::vector<bool> rows_wrapped;
+    std::int32_t new_cursor_row = 0, new_cursor_col = 0;
+    bool cursor_placed = false;
+    for (std::size_t li = 0; li < logical.size(); ++li) {
+        const auto &ln = logical[li];
+        std::size_t off = 0;
+        const std::size_t n = ln.cells.size();
+        // do/while emits at least one row, so an empty logical line yields one
+        // blank physical row (no separate empty-line branch, which double-counts).
+        do {
+            const std::size_t take = std::min<std::size_t>(static_cast<std::size_t>(ncols), n - off);
+            std::vector<Cell> row(static_cast<std::size_t>(ncols));
+            for (std::size_t c = 0; c < take; ++c) row[c] = ln.cells[off + c];
+            const bool more = (off + take) < n;
+            // Place the cursor when we reach its logical line + column.
+            if (ln.from_live && li == cursor_line && !cursor_placed) {
+                const std::int32_t col = cursor_col_in_line;
+                if (col >= static_cast<std::int32_t>(off) &&
+                    (col < static_cast<std::int32_t>(off + static_cast<std::size_t>(ncols)) || !more)) {
+                    new_cursor_row = static_cast<std::int32_t>(rows.size());
+                    new_cursor_col = std::clamp(col - static_cast<std::int32_t>(off), 0, ncols - 1);
+                    cursor_placed = true;
+                }
+            }
+            rows.push_back(std::move(row));
+            rows_wrapped.push_back(more);
+            off += take;
+        } while (off < n);
+    }
+    if (!cursor_placed && !rows.empty()) {
+        new_cursor_row = static_cast<std::int32_t>(rows.size()) - 1;
+        new_cursor_col = 0;
+    }
+
+    // 4. Split into scrollback (all but the last `rows` lines) + live grid.
+    const std::int32_t nrows = new_size.rows;
+    const std::int32_t total = static_cast<std::int32_t>(rows.size());
+    const std::int32_t live_count = std::min(total, nrows);
+    const std::int32_t live_first = total - live_count;
+
+    history_.clear();
+    hist_wrapped_.clear();
+    for (std::int32_t i = 0; i < live_first; ++i) {
+        history_.push_back(std::move(rows[static_cast<std::size_t>(i)]));
+        hist_wrapped_.push_back(rows_wrapped[static_cast<std::size_t>(i)]);
+    }
+    while (history_.size() > max_history_) { history_.pop_front(); hist_wrapped_.pop_front(); }
+
+    cells_.assign(static_cast<std::size_t>(new_size.area()), Cell{});
+    live_wrapped_.assign(static_cast<std::size_t>(std::max(nrows, 0)), false);
+    for (std::int32_t r = 0; r < live_count; ++r) {
+        const auto &src = rows[static_cast<std::size_t>(live_first + r)];
+        for (std::int32_t c = 0; c < ncols; ++c)
+            cells_[static_cast<std::size_t>(r) * static_cast<std::size_t>(ncols) +
+                   static_cast<std::size_t>(c)] = src[static_cast<std::size_t>(c)];
+        live_wrapped_[static_cast<std::size_t>(r)] = rows_wrapped[static_cast<std::size_t>(live_first + r)];
+    }
+
+    size_ = new_size;
+    reset_row_map();
+    scroll_offset_ = 0;
+    // Cursor: map into the live region (clamp if it scrolled into history).
+    cursor_.row = Row{std::clamp(new_cursor_row - live_first, 0, std::max(nrows - 1, 0))};
+    cursor_.col = Col{std::clamp(new_cursor_col, 0, std::max(ncols - 1, 0))};
+    wrap_pending_ = false;
 }
 
 void Screen::clamp_cursor() noexcept {
@@ -250,6 +399,9 @@ void Screen::put(char32_t cp) {
     if (cursor_.col.get() + advance >= size_.cols) {
         if (autowrap_) {
             wrap_pending_ = true;
+            // This logical row's content continues onto the next (soft wrap):
+            // record it so a later resize can rejoin and rewrap the line.
+            set_wrapped(cursor_.row.get(), true);
         }
     } else {
         cursor_.col += advance;
@@ -430,17 +582,18 @@ void Screen::scroll_up(std::int32_t n) {
             const std::size_t base = index(Row{i}, Col{0});
             const auto begin = cells_.begin() + static_cast<std::ptrdiff_t>(base);
             const auto end = begin + static_cast<std::ptrdiff_t>(cols);
+            // The evicted row's soft-wrap flag follows it into scrollback.
+            const bool w = wrapped_at(i);
             if (history_.size() >= max_history_) {
-                // At capacity: recycle the oldest row's allocation into the new
-                // entry instead of free-then-alloc — the scrollback becomes a
-                // true ring buffer with zero per-line heap traffic.
                 std::vector<Cell> recycled = std::move(history_.front());
                 history_.pop_front();
+                if (!hist_wrapped_.empty()) hist_wrapped_.pop_front();
                 recycled.assign(begin, end);
                 history_.push_back(std::move(recycled));
             } else {
                 history_.emplace_back(begin, end);
             }
+            hist_wrapped_.push_back(w);
         }
     }
 
@@ -451,7 +604,15 @@ void Screen::scroll_up(std::int32_t n) {
     auto last = row_of_.begin() + scroll_bottom_ + 1;
     std::rotate(first, first + n, last);
 
-    // Blank the physical rows now occupying the bottom n logical rows (BCE).
+    // Shift the live soft-wrap flags up by n within the region; blank the last n.
+    if (scroll_top_ == 0 && scroll_bottom_ == size_.rows - 1 &&
+        static_cast<std::int32_t>(live_wrapped_.size()) == size_.rows) {
+        for (std::int32_t r = 0; r + n < size_.rows; ++r)
+            live_wrapped_[static_cast<std::size_t>(r)] =
+                live_wrapped_[static_cast<std::size_t>(r + n)];
+        for (std::int32_t r = std::max(0, size_.rows - n); r < size_.rows; ++r)
+            live_wrapped_[static_cast<std::size_t>(r)] = false;
+    }
     for (std::int32_t r = scroll_bottom_ - n + 1; r <= scroll_bottom_; ++r) {
         const std::size_t base = index(Row{r}, Col{0});
         std::fill(cells_.begin() + static_cast<std::ptrdiff_t>(base),
@@ -727,6 +888,27 @@ void Screen::kitty_keyboard(const vt::CsiDispatch &d) {
     }
 }
 
+// DECSTR (CSI ! p): soft reset. Restores the ANSI/DEC state a well-behaved app
+// expects at startup WITHOUT clearing the screen (that's RIS's job): SGR pen,
+// cursor modes, scroll region, cursor shape, saved cursor, and kitty flags.
+void Screen::soft_reset() {
+    pen_ = Pen{};
+    saved_pen_ = Pen{};
+    cursor_shown_ = true;
+    cursor_style_ = {};
+    autowrap_ = true;
+    app_cursor_keys_ = false;
+    app_keypad_ = false;
+    charset_g0_ = charset_g1_ = Charset::Ascii;
+    charset_use_g1_ = false;
+    scroll_top_ = 0;
+    scroll_bottom_ = size_.rows - 1;
+    saved_cursor_ = Pos{};
+    kitty_stack_.assign(1, 0);
+    wrap_pending_ = false;
+    touch();
+}
+
 void Screen::enter_alt_screen() {
     if (on_alt_) return;
     saved_primary_ = cells_;             // stash the primary buffer
@@ -778,6 +960,7 @@ void Screen::erase_in_line(int mode) {
         break;
     case 2: // whole line
         for (std::int32_t c = 0; c < size_.cols; ++c) at(r, Col{c}) = blank_cell();
+        set_wrapped(r.get(), false); // an erased line no longer soft-wraps
         break;
     default: break;
     }
@@ -800,6 +983,7 @@ void Screen::erase_in_display(int mode) {
     case 3:
         std::fill(cells_.begin(), cells_.end(), blank_cell());
         reset_row_map();
+        std::fill(live_wrapped_.begin(), live_wrapped_.end(), false);
         graphics_.clear(); // clearing the screen removes inline images too
         stamp_all();
         break;
@@ -948,9 +1132,11 @@ void Screen::csi(const vt::CsiDispatch &d) {
         // DECRQM: CSI ? Ps $ p (private) or CSI Ps $ p (ANSI) -> report mode.
         if (d.intermediates.size() == 1 && d.intermediates[0] == '$') {
             report_mode(param_raw(p, 0, 0), d.private_marker);
+        } else if (d.intermediates.size() == 1 && d.intermediates[0] == '!') {
+            // DECSTR (CSI ! p): soft reset. Unlike RIS it keeps screen content;
+            // it restores modes, attributes, the scroll region and the cursor.
+            soft_reset();
         }
-        // (CSI ! p is DECSTR soft reset, handled via RIS-like paths elsewhere;
-        //  bare CSI p variants we don't implement are ignored.)
         break;
     default: break; // unhandled — silently ignore for now
     }

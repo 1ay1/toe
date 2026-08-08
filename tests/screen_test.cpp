@@ -877,6 +877,48 @@ int main() {
         expect(cur_ok, "OSC 12 sets the cursor colour");
     }
 
+    // --- reflow on resize --------------------------------------------------
+    {
+        // A line longer than the width soft-wraps; narrowing then widening must
+        // preserve the logical text (join + rewrap), not truncate it.
+        term::Screen s{Extent{10, 4}};
+        feed(s, "ABCDEFGHIJKLMNO"); // 15 chars in a 10-wide grid -> wraps once
+        expect(glyph_at(s, 0, 0) == U'A' && glyph_at(s, 1, 0) == U'K',
+               "pre-reflow: 15 chars wrap at col 10");
+        s.resize(Extent{5, 6}); // narrow to 5 cols
+        // The logical line "ABCDE FGHIJ KLMNO" now occupies 3 rows of 5.
+        expect(glyph_at(s, 0, 0) == U'A' && glyph_at(s, 1, 0) == U'F' &&
+                   glyph_at(s, 2, 0) == U'K',
+               "reflow narrow: line rewraps to 5-col rows");
+        s.resize(Extent{15, 4}); // widen to 15 cols
+        expect(glyph_at(s, 0, 0) == U'A' && glyph_at(s, 0, 14) == U'O',
+               "reflow widen: line rejoins onto one 15-col row");
+    }
+    {
+        // A hard line break (real newline) must NOT be joined during reflow.
+        term::Screen s{Extent{10, 4}};
+        feed(s, "abc\r\ndef");
+        s.resize(Extent{20, 4});
+        expect(glyph_at(s, 0, 0) == U'a' && glyph_at(s, 1, 0) == U'd',
+               "reflow keeps hard line breaks separate");
+    }
+
+    // --- DECSTR soft reset -------------------------------------------------
+    {
+        term::Screen s{Extent{10, 4}};
+        feed(s, "\x1b[4 q");   // steady underline cursor
+        feed(s, "\x1b[?7l");   // autowrap off
+        feed(s, "\x1b[2;3r");  // scroll region
+        feed(s, "hi");         // content that should SURVIVE a soft reset
+        feed(s, "\x1b[!p");    // DECSTR
+        expect(s.cursor_style().shape == term::Screen::CursorShape::block,
+               "DECSTR restores block cursor");
+        expect(glyph_at(s, 0, 0) == U'h', "DECSTR keeps screen content");
+        // Autowrap restored: 12 chars now wrap instead of overprinting col 9.
+        feed(s, "\r\nABCDEFGHIJKL");
+        expect(glyph_at(s, 2, 0) == U'K', "DECSTR restored autowrap (line wraps)");
+    }
+
     if (failures == 0) {
         std::printf("all screen tests passed\n");
         return 0;

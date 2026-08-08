@@ -213,6 +213,7 @@ private:
     void report_mode(int mode, bool priv);         // DECRQM: report mode state
     // Kitty keyboard protocol CSI u variants: push/pop/set/query flags.
     void kitty_keyboard(const vt::CsiDispatch &d);
+    void soft_reset(); // DECSTR: reset modes/attrs/region, keep screen content
 
     void line_feed();
     void carriage_return();
@@ -402,8 +403,27 @@ private:
 
     // Scrollback: completed lines that scrolled off the top, newest at back.
     std::deque<std::vector<Cell>> history_{};
+    // Parallel to history_: true if that line wrapped into the next (soft wrap,
+    // no newline) rather than ending at a real line break. Drives reflow.
+    std::deque<bool> hist_wrapped_{};
+    // Parallel to the LIVE grid's logical rows: soft-wrap flag per row.
+    std::vector<bool> live_wrapped_{};
     std::int32_t scroll_offset_{0};                 // rows scrolled into history
     std::size_t max_history_{10000};                // ring-buffer cap
+
+    // Rewrap all content (history + live) from old_cols to the new width when a
+    // resize changes the column count. Preserves logical lines + the cursor.
+    void reflow(Extent old_size, Extent new_size);
+
+    // Soft-wrap flag helpers for the live grid (indexed by logical row).
+    void set_wrapped(std::int32_t row, bool w) noexcept {
+        if (row >= 0 && row < static_cast<std::int32_t>(live_wrapped_.size()))
+            live_wrapped_[static_cast<std::size_t>(row)] = w;
+    }
+    [[nodiscard]] bool wrapped_at(std::int32_t row) const noexcept {
+        return row >= 0 && row < static_cast<std::int32_t>(live_wrapped_.size()) &&
+               live_wrapped_[static_cast<std::size_t>(row)];
+    }
 };
 
 } // namespace toe::term
