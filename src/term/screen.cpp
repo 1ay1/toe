@@ -390,6 +390,7 @@ void Screen::put(char32_t cp) {
     }
 
     at(cursor_.row, cursor_.col) = Cell{cp, pen_, static_cast<std::uint8_t>(w), cur_link_};
+    last_char_ = cp; // remember for REP (CSI Ps b)
     if (w == 2) {
         // The second half is a spacer the renderer skips.
         at(cursor_.row, cursor_.col + 1) = Cell{U' ', pen_, 0, cur_link_};
@@ -909,6 +910,69 @@ void Screen::soft_reset() {
     touch();
 }
 
+// DEC rectangular area ops. Coordinates are 1-based inclusive; a 0 or absent
+// value means the corresponding screen edge.
+void Screen::fill_rect(int top, int left, int bottom, int right, char32_t cp) {
+    const int t = std::clamp((top ? top : 1) - 1, 0, size_.rows - 1);
+    const int l = std::clamp((left ? left : 1) - 1, 0, size_.cols - 1);
+    const int b = std::clamp((bottom ? bottom : size_.rows) - 1, 0, size_.rows - 1);
+    const int r = std::clamp((right ? right : size_.cols) - 1, 0, size_.cols - 1);
+    if (t > b || l > r) return;
+    const std::uint8_t w = static_cast<std::uint8_t>(char_width(cp) == 0 ? 1 : char_width(cp));
+    for (int row = t; row <= b; ++row)
+        for (int col = l; col <= r; ++col)
+            at(Row{row}, Col{col}) = Cell{cp, pen_, w, 0};
+    touch();
+}
+
+// DECCARA / DECRARA: apply (or, for reverse=true, toggle) a set of SGR
+// character attributes over a rectangle, leaving the glyphs untouched. Only the
+// on/off boolean attributes are meaningful here (colour SGRs are ignored, per
+// the DEC spec's "selected character attributes").
+void Screen::change_rect_attrs(int top, int left, int bottom, int right,
+                               std::span<const int> attrs, bool reverse) {
+    const int t = std::clamp((top ? top : 1) - 1, 0, size_.rows - 1);
+    const int l = std::clamp((left ? left : 1) - 1, 0, size_.cols - 1);
+    const int b = std::clamp((bottom ? bottom : size_.rows) - 1, 0, size_.rows - 1);
+    const int r = std::clamp((right ? right : size_.cols) - 1, 0, size_.cols - 1);
+    if (t > b || l > r) return;
+
+    // Map an SGR code to its Attr bit (0 = not an attribute we toggle).
+    const auto bit = [](int code) -> Attr {
+        switch (code) {
+        case 1: return Attr::Bold;
+        case 4: return Attr::Underline;
+        case 5: return Attr::Blink;
+        case 7: return Attr::Reverse;
+        case 8: return Attr::Hidden;
+        case 9: return Attr::Strike;
+        default: return Attr::None;
+        }
+    };
+    Attr mask = Attr::None;
+    if (attrs.empty()) {
+        // No params: DECCARA clears all; DECRARA toggles all listed attrs.
+        mask = Attr::Bold | Attr::Underline | Attr::Blink | Attr::Reverse |
+               Attr::Hidden | Attr::Strike;
+    } else {
+        for (int code : attrs) {
+            if (code == 0) { mask = Attr::Bold | Attr::Underline | Attr::Blink |
+                                    Attr::Reverse | Attr::Hidden | Attr::Strike; }
+            else mask |= bit(code);
+        }
+    }
+
+    for (int row = t; row <= b; ++row) {
+        for (int col = l; col <= r; ++col) {
+            Cell &cell = at(Row{row}, Col{col});
+            if (reverse) cell.pen.attr ^= mask;   // DECRARA toggles
+            else if (attrs.empty()) cell.pen.attr &= ~mask; // DECCARA no-param clears
+            else cell.pen.attr |= mask;           // DECCARA sets
+        }
+    }
+    touch();
+}
+
 void Screen::enter_alt_screen() {
     if (on_alt_) return;
     saved_primary_ = cells_;             // stash the primary buffer
@@ -1018,9 +1082,36 @@ void Screen::csi(const vt::CsiDispatch &d) {
     case 'I': cursor_tab(param_or(p, 0, 1)); break;        // CHT
     case 'Z': cursor_back_tab(param_or(p, 0, 1)); break;   // CBT
     case 'g': clear_tab_stop(param_raw(p, 0, 0)); break;   // TBC
+    case 'b': { // REP — repeat the last printed char Ps times
+        if (last_char_ != 0) {
+            int n = param_or(p, 0, 1);
+            n = std::clamp(n, 0, size_.rows * size_.cols);
+            for (int i = 0; i < n; ++i) put(last_char_);
+        }
+        break;
+    }
+    case 'x': // DECFRA — fill rectangle with a character: CSI Pch;t;l;b;r $ x
+        if (d.intermediates.size() == 1 && d.intermediates[0] == '$') {
+            fill_rect(param_raw(p, 1, 1), param_raw(p, 2, 1), param_raw(p, 3, 0),
+                      param_raw(p, 4, 0), static_cast<char32_t>(param_raw(p, 0, 32)));
+        }
+        break;
+    case 'z': // DECERA — erase rectangle to blanks: CSI t;l;b;r $ z
+        if (d.intermediates.size() == 1 && d.intermediates[0] == '$') {
+            fill_rect(param_raw(p, 0, 1), param_raw(p, 1, 1), param_raw(p, 2, 0),
+                      param_raw(p, 3, 0), U' ');
+        }
+        break;
     case 'd': move_cursor_abs(Row{param_or(p, 0, 1) - 1}, cursor_.col); break; // VPA
-    case 'r': // DECSTBM (set scroll region) — ignore private '?' variants
-        if (!d.private_marker) set_scroll_region(param_raw(p, 0, 0), param_raw(p, 1, 0));
+    case 'r': // DECSTBM (set scroll region) or DECCARA (change attrs in rect)
+        if (d.intermediates.size() == 1 && d.intermediates[0] == '$') {
+            // DECCARA: CSI t;l;b;r ; Ps... $ r  -> apply SGR attrs to a rect.
+            change_rect_attrs(param_raw(p, 0, 1), param_raw(p, 1, 1), param_raw(p, 2, 0),
+                              param_raw(p, 3, 0), p.subspan(std::min<std::size_t>(4, p.size())),
+                              /*reset=*/false);
+        } else if (!d.private_marker) {
+            set_scroll_region(param_raw(p, 0, 0), param_raw(p, 1, 0));
+        }
         break;
     case 's':
         if (!d.private_marker) save_cursor(); // ANSI.SYS save cursor
@@ -1099,7 +1190,14 @@ void Screen::csi(const vt::CsiDispatch &d) {
         }
         break;
     case 'm': apply_sgr(p, d.sub); break;                   // SGR
-    case 't': { // XTWINOPS — window operations / size reports
+    case 't': { // XTWINOPS window ops, or DECRARA (reverse attrs in rect)
+        if (d.intermediates.size() == 1 && d.intermediates[0] == '$') {
+            // DECRARA: CSI t;l;b;r ; Ps... $ t -> toggle SGR attrs in a rect.
+            change_rect_attrs(param_raw(p, 0, 1), param_raw(p, 1, 1), param_raw(p, 2, 0),
+                              param_raw(p, 3, 0), p.subspan(std::min<std::size_t>(4, p.size())),
+                              /*reset=*/true);
+            break;
+        }
         if (d.private_marker) break;
         const int op = param_raw(p, 0, 0);
         if (op == 14) { // report text-area size in pixels: CSI 4 ; h ; w t

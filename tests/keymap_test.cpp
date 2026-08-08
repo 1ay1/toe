@@ -148,6 +148,24 @@ int main() {
     // With no flags active, encoding stays legacy.
     check(enc(special(SpecialKey::Escape)), "\x1b", "legacy Escape stays bare ESC");
 
+    // Report-event-types (flag 2): a release event carries :3; a press with only
+    // flag 2 still needs the modifier slot so the event subparam has an anchor.
+    {
+        KeyEvent e = special(SpecialKey::Up);
+        e.kind = KeyEvent::Kind::release;
+        KeyContext ctx{false, 0x03}; // disambiguate + report-events
+        KeyBuf b; auto s = encode_key(e, ctx, b);
+        check(std::string(s.data(), s.size()), "\x1b[1;1:3A", "kitty release event = CSI 1;1:3 A");
+    }
+    // A release event WITHOUT report-events produces nothing (legacy press-only).
+    {
+        KeyEvent e = special(SpecialKey::Up);
+        e.kind = KeyEvent::Kind::release;
+        check(enc_kitty(e, 0x01), "", "kitty release suppressed without report-events");
+    }
+    // Report-all-keys (flag 8): even a plain letter routes through CSI-u.
+    check(enc_kitty(text("a"), 0x08), "\x1b[97u", "kitty report-all: 'a' = CSI 97 u");
+
     if (failures == 0) {
         std::printf("all keymap tests passed\n");
         return 0;

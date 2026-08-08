@@ -130,56 +130,60 @@ int kitty_mod(Modifiers m) noexcept {
     return bits + 1;
 }
 
-// Emit CSI <num> [; <mod>] <final>. Omits the mod section when unmodified
-// (mod == 1) and the key is 'u'-final text (matches kitty's minimal form).
-std::span<const char> kitty_emit(int num, int mod, char final, KeyBuf &buf) noexcept {
+// Emit CSI <num> [; <mod>[:<event>]] <final>. The modifier section is omitted
+// only when there are no modifiers AND no event type to report (kitty's minimal
+// form). `event` is 0 (omit), or the kitty event-type (1 press, 2 repeat,
+// 3 release) when report-event-types is active and the kind isn't a plain press.
+std::span<const char> kitty_emit(int num, int mod, char final, KeyBuf &buf,
+                                 int event = 0) noexcept {
     Writer w{buf};
     w.put('\x1b');
     w.put('[');
-    // The leading number is omitted only for codepoint 1 ('u' with no number is
-    // invalid), so always emit it.
     w.num(num);
-    if (mod != 1) {
+    if (mod != 1 || event > 0) {
         w.put(';');
         w.num(mod);
+        if (event > 0) {
+            w.put(':');
+            w.num(event);
+        }
     }
     w.put(final);
     return w.done();
 }
 
 // Encode a special key in kitty form. Returns false if this key has no kitty
-// mapping (caller falls back to legacy).
-bool kitty_special(SpecialKey sk, int mod, KeyBuf &buf, std::span<const char> &out) noexcept {
-    // Functional keys that keep a legacy CSI letter final under kitty.
+// mapping (caller falls back to legacy). `event` is the kitty event-type or 0.
+bool kitty_special(SpecialKey sk, int mod, int event, KeyBuf &buf,
+                   std::span<const char> &out) noexcept {
     switch (sk) {
-    case SpecialKey::Up:    out = kitty_emit(1, mod, 'A', buf); return true;
-    case SpecialKey::Down:  out = kitty_emit(1, mod, 'B', buf); return true;
-    case SpecialKey::Right: out = kitty_emit(1, mod, 'C', buf); return true;
-    case SpecialKey::Left:  out = kitty_emit(1, mod, 'D', buf); return true;
-    case SpecialKey::Home:  out = kitty_emit(1, mod, 'H', buf); return true;
-    case SpecialKey::End:   out = kitty_emit(1, mod, 'F', buf); return true;
-    case SpecialKey::F1:    out = kitty_emit(1, mod, 'P', buf); return true;
-    case SpecialKey::F2:    out = kitty_emit(1, mod, 'Q', buf); return true;
-    case SpecialKey::F3:    out = kitty_emit(13, mod, '~', buf); return true; // kitty: F3 = 13~
-    case SpecialKey::F4:    out = kitty_emit(1, mod, 'S', buf); return true;
-    case SpecialKey::Insert:   out = kitty_emit(2, mod, '~', buf); return true;
-    case SpecialKey::Delete:   out = kitty_emit(3, mod, '~', buf); return true;
-    case SpecialKey::PageUp:   out = kitty_emit(5, mod, '~', buf); return true;
-    case SpecialKey::PageDown: out = kitty_emit(6, mod, '~', buf); return true;
-    case SpecialKey::F5:  out = kitty_emit(15, mod, '~', buf); return true;
-    case SpecialKey::F6:  out = kitty_emit(17, mod, '~', buf); return true;
-    case SpecialKey::F7:  out = kitty_emit(18, mod, '~', buf); return true;
-    case SpecialKey::F8:  out = kitty_emit(19, mod, '~', buf); return true;
-    case SpecialKey::F9:  out = kitty_emit(20, mod, '~', buf); return true;
-    case SpecialKey::F10: out = kitty_emit(21, mod, '~', buf); return true;
-    case SpecialKey::F11: out = kitty_emit(23, mod, '~', buf); return true;
-    case SpecialKey::F12: out = kitty_emit(24, mod, '~', buf); return true;
-    // Keys the disambiguate flag makes unambiguous via CSI <cp> u:
-    case SpecialKey::Enter:     out = kitty_emit(13, mod, 'u', buf); return true;
-    case SpecialKey::Tab:       out = kitty_emit(9, mod, 'u', buf); return true;
-    case SpecialKey::Backspace: out = kitty_emit(127, mod, 'u', buf); return true;
-    case SpecialKey::Escape:    out = kitty_emit(27, mod, 'u', buf); return true;
-    case SpecialKey::KpEnter:   out = kitty_emit(13, mod, 'u', buf); return true;
+    case SpecialKey::Up:    out = kitty_emit(1, mod, 'A', buf, event); return true;
+    case SpecialKey::Down:  out = kitty_emit(1, mod, 'B', buf, event); return true;
+    case SpecialKey::Right: out = kitty_emit(1, mod, 'C', buf, event); return true;
+    case SpecialKey::Left:  out = kitty_emit(1, mod, 'D', buf, event); return true;
+    case SpecialKey::Home:  out = kitty_emit(1, mod, 'H', buf, event); return true;
+    case SpecialKey::End:   out = kitty_emit(1, mod, 'F', buf, event); return true;
+    case SpecialKey::F1:    out = kitty_emit(1, mod, 'P', buf, event); return true;
+    case SpecialKey::F2:    out = kitty_emit(1, mod, 'Q', buf, event); return true;
+    case SpecialKey::F3:    out = kitty_emit(13, mod, '~', buf, event); return true;
+    case SpecialKey::F4:    out = kitty_emit(1, mod, 'S', buf, event); return true;
+    case SpecialKey::Insert:   out = kitty_emit(2, mod, '~', buf, event); return true;
+    case SpecialKey::Delete:   out = kitty_emit(3, mod, '~', buf, event); return true;
+    case SpecialKey::PageUp:   out = kitty_emit(5, mod, '~', buf, event); return true;
+    case SpecialKey::PageDown: out = kitty_emit(6, mod, '~', buf, event); return true;
+    case SpecialKey::F5:  out = kitty_emit(15, mod, '~', buf, event); return true;
+    case SpecialKey::F6:  out = kitty_emit(17, mod, '~', buf, event); return true;
+    case SpecialKey::F7:  out = kitty_emit(18, mod, '~', buf, event); return true;
+    case SpecialKey::F8:  out = kitty_emit(19, mod, '~', buf, event); return true;
+    case SpecialKey::F9:  out = kitty_emit(20, mod, '~', buf, event); return true;
+    case SpecialKey::F10: out = kitty_emit(21, mod, '~', buf, event); return true;
+    case SpecialKey::F11: out = kitty_emit(23, mod, '~', buf, event); return true;
+    case SpecialKey::F12: out = kitty_emit(24, mod, '~', buf, event); return true;
+    case SpecialKey::Enter:     out = kitty_emit(13, mod, 'u', buf, event); return true;
+    case SpecialKey::Tab:       out = kitty_emit(9, mod, 'u', buf, event); return true;
+    case SpecialKey::Backspace: out = kitty_emit(127, mod, 'u', buf, event); return true;
+    case SpecialKey::Escape:    out = kitty_emit(27, mod, 'u', buf, event); return true;
+    case SpecialKey::KpEnter:   out = kitty_emit(13, mod, 'u', buf, event); return true;
     }
     return false;
 }
@@ -188,26 +192,36 @@ bool kitty_special(SpecialKey sk, int mod, KeyBuf &buf, std::span<const char> &o
 
 std::span<const char> encode_key(const KeyEvent &ev, const KeyContext &ctx, KeyBuf &buf) noexcept {
     const int mod = modifier_param(ev.mods);
-    const bool kitty = (ctx.kitty_flags & 0x01) != 0; // Disambiguate flag active
+    const bool disambiguate = (ctx.kitty_flags & 0x01) != 0; // flag 1
+    const bool report_events = (ctx.kitty_flags & 0x02) != 0; // flag 2
+    const bool report_all = (ctx.kitty_flags & 0x08) != 0;    // flag 8
+    const bool kitty = disambiguate || report_all;
+
+    // Event type: only emitted when report-events is active. A release event
+    // with report-events OFF produces nothing (legacy terminals see press-only).
+    const int event = report_events ? static_cast<int>(ev.kind) : 0;
+    if (ev.kind == KeyEvent::Kind::release && !report_events) return {};
 
     if (const auto *t = std::get_if<TextInput>(&ev.key)) {
-        // Under kitty disambiguation, an ambiguous control input (Ctrl/Alt +
-        // ASCII, or a lone Esc-like) is encoded as CSI <codepoint> ; <mods> u
-        // so the app can tell e.g. Ctrl-I from Tab and Ctrl-[ from Escape.
         if (kitty && t->utf8.size() == 1) {
             const unsigned char c = static_cast<unsigned char>(t->utf8[0]);
             const bool ambiguous = ev.mods.ctrl || ev.mods.alt;
-            if (ambiguous && c < 0x80) {
-                // Recover the base codepoint. A Ctrl-<letter> arrives as the
+            // Disambiguate: only ctrl/alt-modified ASCII goes CSI-u.
+            // Report-all-keys: EVERY single-byte key goes CSI-u.
+            if ((report_all || ambiguous) && c < 0x80) {
+                // Recover the base codepoint. Ctrl-<letter> arrives as the
                 // control byte (Ctrl-A = 0x01); map 0x01..0x1A back to 'a'..'z'.
-                // Otherwise use the byte, lowercasing A-Z so Ctrl-A is 97;5u.
                 int cp = c;
                 if (ev.mods.ctrl && c >= 0x01 && c <= 0x1A) cp = c - 1 + 'a';
                 else if (c >= 'A' && c <= 'Z') cp = c - 'A' + 'a';
-                std::span<const char> out = kitty_emit(cp, kitty_mod(ev.mods), 'u', buf);
-                return out;
+                else if (c == '\r') cp = 13;
+                else if (c == '\t') cp = 9;
+                else if (c == 0x7f) cp = 127;
+                return kitty_emit(cp, kitty_mod(ev.mods), 'u', buf, event);
             }
         }
+        // Plain text under report-events still needs the release suppressed
+        // (handled above); otherwise emit the bytes as-is.
         return text_key(t->utf8, ev.mods, buf);
     }
 
@@ -215,7 +229,7 @@ std::span<const char> encode_key(const KeyEvent &ev, const KeyContext &ctx, KeyB
 
     if (kitty) {
         std::span<const char> out;
-        if (kitty_special(sk, kitty_mod(ev.mods), buf, out)) return out;
+        if (kitty_special(sk, kitty_mod(ev.mods), event, buf, out)) return out;
     }
 
     // Keys that honor DECCKM (application cursor keys) — the "cursor" cluster.

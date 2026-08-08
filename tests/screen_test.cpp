@@ -919,6 +919,27 @@ int main() {
         expect(glyph_at(s, 2, 0) == U'K', "DECSTR restored autowrap (line wraps)");
     }
 
+    // --- REP + DEC rectangular ops -----------------------------------------
+    {
+        term::Screen s{Extent{10, 3}};
+        feed(s, "X\x1b[4b"); // print X, then REP 4 -> XXXXX total
+        expect(glyph_at(s, 0, 0) == U'X' && glyph_at(s, 0, 4) == U'X' &&
+                   glyph_at(s, 0, 5) == U' ',
+               "REP repeats the last char Ps times");
+    }
+    {
+        term::Screen s{Extent{8, 5}};
+        // DECFRA: fill rows 2..4, cols 2..5 with '*' (Pch=42).
+        feed(s, "\x1b[42;2;2;4;5$x");
+        expect(glyph_at(s, 1, 1) == U'*' && glyph_at(s, 3, 4) == U'*' &&
+                   glyph_at(s, 0, 0) == U' ',
+               "DECFRA fills a rectangle with a character");
+        // DECERA: erase rows 2..3, cols 2..3.
+        feed(s, "\x1b[2;2;3;3$z");
+        expect(glyph_at(s, 1, 1) == U' ' && glyph_at(s, 3, 4) == U'*',
+               "DECERA erases a rectangle, leaving the rest");
+    }
+
     if (failures == 0) {
         std::printf("all screen tests passed\n");
         return 0;

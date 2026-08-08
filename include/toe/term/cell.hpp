@@ -62,8 +62,12 @@ enum class Attr : std::uint16_t {
 [[nodiscard]] constexpr Attr operator~(Attr a) noexcept {
     return static_cast<Attr>(~static_cast<std::uint16_t>(a));
 }
+[[nodiscard]] constexpr Attr operator^(Attr a, Attr b) noexcept {
+    return static_cast<Attr>(static_cast<std::uint16_t>(a) ^ static_cast<std::uint16_t>(b));
+}
 constexpr Attr &operator|=(Attr &a, Attr b) noexcept { return a = a | b; }
 constexpr Attr &operator&=(Attr &a, Attr b) noexcept { return a = a & b; }
+constexpr Attr &operator^=(Attr &a, Attr b) noexcept { return a = a ^ b; }
 
 [[nodiscard]] constexpr bool has(Attr set, Attr flag) noexcept {
     return (set & flag) != Attr::None;

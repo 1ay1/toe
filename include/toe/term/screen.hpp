@@ -214,6 +214,10 @@ private:
     // Kitty keyboard protocol CSI u variants: push/pop/set/query flags.
     void kitty_keyboard(const vt::CsiDispatch &d);
     void soft_reset(); // DECSTR: reset modes/attrs/region, keep screen content
+    // DEC rectangular area ops (1-based inclusive coords; 0 => screen edge).
+    void fill_rect(int top, int left, int bottom, int right, char32_t cp);
+    void change_rect_attrs(int top, int left, int bottom, int right,
+                           std::span<const int> attrs, bool reverse);
 
     void line_feed();
     void carriage_return();
@@ -309,6 +313,7 @@ private:
     // Terminal modes (DEC private).
     bool cursor_shown_{true};
     CursorStyle cursor_style_{};
+    char32_t last_char_{0}; // last printed codepoint, for REP (CSI b)
     // Kitty keyboard flag stack; back() is active. Never empty (base = 0).
     std::vector<std::uint8_t> kitty_stack_{0};
     // Dynamic-colour edits (OSC 4/104/10/11/12/112), applied by the renderer.

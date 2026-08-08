@@ -13,6 +13,7 @@
 
 #include <string>
 #include <variant>
+#include <cstdint>
 
 namespace toe {
 
@@ -37,8 +38,14 @@ struct Modifiers {
 };
 
 struct KeyEvent {
+    // The kind of key transition. Only meaningful to hosts/apps that opt into
+    // the Kitty keyboard protocol's "report event types" flag; press is the
+    // universal default every legacy path assumes.
+    enum class Kind : std::uint8_t { press = 1, repeat = 2, release = 3 };
+
     std::variant<TextInput, SpecialKey> key;
     Modifiers mods{};
+    Kind kind{Kind::press};
 };
 
 } // namespace toe
