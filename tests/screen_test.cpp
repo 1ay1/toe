@@ -388,6 +388,18 @@ int main() {
         expect(s.cursor().col.get() == 3, "cursor advanced by 2+1");
     }
 
+    // Copying a selection that spans a wide char must NOT emit the spacer as a
+    // spurious space — the lead cell already carries the full glyph.
+    {
+        term::Screen s{Extent{10, 2}};
+        feed(s, "a\xe4\xb8\xad" "b"); // 'a', 中 (wide), 'b'
+        using AbsPos = term::Screen::AbsPos;
+        s.selection_begin(AbsPos{0, 0}, term::Screen::SelectMode::character);
+        s.selection_extend(AbsPos{0, 3}); // a, 中(lead), spacer, b
+        expect(s.selected_text() == "a\xe4\xb8\xad" "b",
+               "wide-char copy skips the spacer cell (no spurious space)");
+    }
+
     // A combining mark (width 0) does not advance the cursor.
     {
         term::Screen s{Extent{10, 2}};

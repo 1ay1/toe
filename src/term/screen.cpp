@@ -1134,6 +1134,10 @@ std::string Screen::selected_text() const {
         std::string line;
         for (std::int32_t c = start; c <= end && c < size_.cols; ++c) {
             const Cell *cell = cell_at_abs(r, c);
+            // Skip the trailing spacer of a wide (CJK/emoji) glyph — its
+            // codepoint is a placeholder space; the real glyph is in the lead
+            // cell, so emitting the spacer would append a spurious space.
+            if (cell && cell->width == 0 && cell->cp == U' ') continue;
             const char32_t cp = cell ? cell->cp : U' ';
             // Encode the codepoint as UTF-8.
             if (cp < 0x80) {
