@@ -17,9 +17,6 @@ include(CMakeFindDependencyMacro)
 # imported targets (via pkg-config) before the target file is included,
 # otherwise the import fails. These are all PRIVATE — no header of them leaks.
 find_dependency(PkgConfig)
-pkg_check_modules(FREETYPE   REQUIRED IMPORTED_TARGET freetype2)
-pkg_check_modules(HARFBUZZ   REQUIRED IMPORTED_TARGET harfbuzz)
-pkg_check_modules(FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
 pkg_check_modules(PNG        REQUIRED IMPORTED_TARGET libpng)
 pkg_check_modules(EPOXY      REQUIRED IMPORTED_TARGET epoxy)
 

@@ -32,6 +32,14 @@ namespace toe {
 // --- configuration ---------------------------------------------------------
 struct Config {
     std::string font_family = "monospace"; // empty -> system default monospace
+    // Explicit font-file path. When set, used directly (no font discovery).
+    // When empty, a small built-in resolver globs the system font dirs for a
+    // file whose name contains `font_family`. No fontconfig, no threads.
+    std::string font_file{};
+    // Optional fallback font (CJK/emoji/symbols) for codepoints the primary
+    // font lacks. A file path; empty disables fallback.
+    std::string font_fallback{};
+    bool ligatures = true;                 // enable GSUB calt/liga shaping
     int font_pixel_size = 18;
     Rgb default_fg = rgb(220, 220, 220);
     Rgb default_bg = rgb(23, 23, 28);

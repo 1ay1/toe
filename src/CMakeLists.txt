@@ -9,15 +9,12 @@ find_package(PkgConfig REQUIRED)
 # ===========================================================================
 # toe::core — the terminal engine + the abstract Surface contract.
 #
-# Every dependency here is either a content decoder/shaper (freetype, harfbuzz,
-# fontconfig, png) or the GL *loader* (epoxy). NONE is a windowing system.
-# epoxy is PRIVATE: no public header names a GL type, so consumers do not
-# inherit GL headers — they only need a current GL context at render time,
-# proven by gfx::RenderContext.
+# Fonts are handled by vendored stb_truetype (include/stb) + a small in-tree
+# GSUB shaper (opentype.hpp) — no FreeType, HarfBuzz, or Fontconfig, so no
+# font-cache threads and a far smaller dependency surface. Every remaining dep
+# is a content decoder (png) or the GL loader (epoxy). epoxy is PRIVATE: no
+# public header names a GL type.
 # ===========================================================================
-pkg_check_modules(FREETYPE   REQUIRED IMPORTED_TARGET freetype2)
-pkg_check_modules(HARFBUZZ   REQUIRED IMPORTED_TARGET harfbuzz)
-pkg_check_modules(FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
 pkg_check_modules(PNG        REQUIRED IMPORTED_TARGET libpng)
 pkg_check_modules(EPOXY      REQUIRED IMPORTED_TARGET epoxy)
 
@@ -25,6 +22,7 @@ add_library(toe-core
   terminal.cpp
   pty/pty.cpp
   gfx/font.cpp
+  gfx/stb_impl.cpp
   gfx/shader.cpp
   gfx/palette.cpp
   gfx/renderer.cpp
@@ -46,12 +44,14 @@ target_include_directories(toe-core PUBLIC
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
 # All GL/decoder deps are PRIVATE — implementation detail, not part of the ABI.
-target_link_libraries(toe-core PRIVATE
-  PkgConfig::FREETYPE PkgConfig::HARFBUZZ PkgConfig::FONTCONFIG
-  PkgConfig::PNG PkgConfig::EPOXY)
+target_link_libraries(toe-core PRIVATE PkgConfig::PNG PkgConfig::EPOXY)
 
 target_compile_features(toe-core PUBLIC cxx_std_23)
 target_compile_options(toe-core PRIVATE ${TOE_WARNINGS})
+
+# stb_truetype is vendored third-party C: don't hold it to our strict warnings.
+set_source_files_properties(gfx/stb_impl.cpp PROPERTIES
+  COMPILE_OPTIONS "-w")
 
 # ===========================================================================
 # toe::platform — OPTIONAL Linux Surface backends (Wayland / X11 / offscreen).

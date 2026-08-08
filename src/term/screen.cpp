@@ -690,7 +690,9 @@ void Screen::scroll_up(std::int32_t n) {
     std::rotate(first, first + n, last);
 
     // Shift the live soft-wrap flags up by n within the region; blank the last n.
-    if (scroll_top_ == 0 && scroll_bottom_ == size_.rows - 1 &&
+    // Skipped entirely when no row is soft-wrapped (the common flood case) —
+    // any_wrapped_ tracks whether live_wrapped_ has a true anywhere.
+    if (any_wrapped_ && scroll_top_ == 0 && scroll_bottom_ == size_.rows - 1 &&
         static_cast<std::int32_t>(live_wrapped_.size()) == size_.rows) {
         for (std::int32_t r = 0; r + n < size_.rows; ++r)
             live_wrapped_[static_cast<std::size_t>(r)] =
@@ -699,7 +701,8 @@ void Screen::scroll_up(std::int32_t n) {
             live_wrapped_[static_cast<std::size_t>(r)] = false;
     }
     // Line attributes follow their rows up the screen (blank the new bottom n).
-    if (scroll_top_ == 0 && scroll_bottom_ == size_.rows - 1 &&
+    // Skipped when no row has a DEC line attribute (the common case).
+    if (any_line_attr_ && scroll_top_ == 0 && scroll_bottom_ == size_.rows - 1 &&
         static_cast<std::int32_t>(line_attr_.size()) == size_.rows) {
         for (std::int32_t r = 0; r + n < size_.rows; ++r)
             line_attr_[static_cast<std::size_t>(r)] = line_attr_[static_cast<std::size_t>(r + n)];
@@ -1671,6 +1674,7 @@ void Screen::set_line_attr(std::int32_t row, LineAttr a) {
     if (row >= 0 && row < static_cast<std::int32_t>(line_attr_.size())) {
         if (line_attr_[static_cast<std::size_t>(row)] != a) {
             line_attr_[static_cast<std::size_t>(row)] = a;
+            if (a != LineAttr::normal) any_line_attr_ = true;
             stamp(row);
             touch();
         }

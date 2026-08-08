@@ -462,6 +462,8 @@ private:
     std::deque<bool> hist_wrapped_{};
     // Parallel to the LIVE grid's logical rows: soft-wrap flag per row.
     std::vector<bool> live_wrapped_{};
+    bool any_wrapped_ = false;   // fast-skip flag: any live_wrapped_ true?
+    bool any_line_attr_ = false; // fast-skip flag: any non-normal line_attr_?
     std::int32_t scroll_offset_{0};                 // rows scrolled into history
     std::size_t max_history_{10000};                // ring-buffer cap
 
@@ -471,8 +473,10 @@ private:
 
     // Soft-wrap flag helpers for the live grid (indexed by logical row).
     void set_wrapped(std::int32_t row, bool w) noexcept {
-        if (row >= 0 && row < static_cast<std::int32_t>(live_wrapped_.size()))
+        if (row >= 0 && row < static_cast<std::int32_t>(live_wrapped_.size())) {
             live_wrapped_[static_cast<std::size_t>(row)] = w;
+            if (w) any_wrapped_ = true;
+        }
     }
     [[nodiscard]] bool wrapped_at(std::int32_t row) const noexcept {
         return row >= 0 && row < static_cast<std::int32_t>(live_wrapped_.size()) &&

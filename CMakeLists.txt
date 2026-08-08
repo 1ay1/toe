@@ -46,7 +46,7 @@ if(TOE_BUILD_DEMO AND NOT TOE_BUILD_PLATFORM)
 endif()
 
 if(NOT CMAKE_BUILD_TYPE AND _toe_top)
-  set(CMAKE_BUILD_TYPE Debug CACHE STRING "" FORCE)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
 include(GNUInstallDirs)

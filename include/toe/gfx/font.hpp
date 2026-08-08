@@ -16,6 +16,9 @@
 #include <cstdint>
 #include <array>
 #include <string>
+#include <cmath>
+#include <span>
+#include <vector>
 #include <unordered_map>
 
 #include "toe/core/types.hpp"
@@ -44,7 +47,12 @@ class FontAtlas {
 public:
     // Load a monospace font at `pixel_size`. If `family` is empty, Fontconfig
     // picks the system default monospace. Creates the GL atlas texture.
-    static Result<FontAtlas> create(std::string family, int pixel_size);
+    // Build the atlas from a font FILE path at `pixel_size`. `fallback_path`
+    // (may be empty) is a secondary font used for codepoints the primary lacks
+    // (CJK/emoji/symbols). `ligatures` enables GSUB calt/liga shaping.
+    [[nodiscard]] static Result<FontAtlas> create(std::string font_path, int pixel_size,
+                                                  std::string fallback_path = {},
+                                                  bool ligatures = true);
 
     FontAtlas(const FontAtlas &) = delete;
     FontAtlas &operator=(const FontAtlas &) = delete;
@@ -98,9 +106,12 @@ public:
         return rasterize_index(gindex, style);
     }
 
-    // The HarfBuzz font for the primary face (created lazily), for shaping runs.
-    // Returns an hb_font_t* (as void* to keep harfbuzz out of the header).
-    [[nodiscard]] void *hb_font();
+    // Shape a run of codepoints into glyph ids via the primary font's GSUB
+    // calt/liga (programming ligatures). `out` is filled with one glyph id per
+    // input cell; a ligated-away position gets glyph 0 (the renderer skips it).
+    // No-op (identity glyph ids) when ligatures are disabled or unavailable.
+    void shape_run(std::span<const char32_t> cps, std::span<std::uint32_t> out) const;
+    [[nodiscard]] bool has_shaper() const noexcept;
 
     // The GL atlas texture id (GL_R8), for binding by the renderer.
     [[nodiscard]] std::uint32_t texture() const noexcept { return tex_; }
@@ -110,22 +121,21 @@ private:
     FontAtlas() = default;
     void destroy() noexcept;
     const GlyphInfo *rasterize(char32_t cp, FontStyle style);
-    // Rasterize+pack a glyph selected by FreeType glyph index (for ligatures).
+    // Rasterize+pack a glyph selected by GLYPH INDEX (for ligatures/shaping).
     const GlyphInfo *rasterize_index(std::uint32_t gindex, FontStyle style);
 
-    // opaque FreeType handles (kept as void* to avoid leaking ft2 into the hdr)
-    void *ft_{nullptr};   // FT_Library
-    void *face_{nullptr}; // FT_Face (primary)
-    void *hb_font_{nullptr}; // hb_font_t for the primary face (lazy)
-
-    // Font fallback: codepoints the primary face lacks (CJK, emoji, symbols)
-    // are rasterized from a font Fontconfig says covers them. Keyed by the
-    // resolved font path so each fallback face is opened at most once.
-    std::unordered_map<std::string, void *> fallback_faces_{}; // path -> FT_Face
+    // Owned font blobs (mmapped/read into memory; stb points INTO these).
+    std::vector<std::uint8_t> primary_data_{};
+    std::vector<std::uint8_t> fallback_data_{};
+    // stbtt_fontinfo for primary + fallback, and the ligature shaper. Held as
+    // opaque storage so stb_truetype / opentype don't leak into this header.
+    void *primary_font_{nullptr};   // stbtt_fontinfo*
+    void *fallback_font_{nullptr};  // stbtt_fontinfo* (null if no fallback)
+    void *shaper_{nullptr};         // ot::Shaper*
+    float scale_{0.0f};             // stb scale for pixel_size
+    float fallback_scale_{0.0f};
     int pixel_size_{0};
-    // Resolve the FT_Face to use for `cp`: the primary if it has the glyph,
-    // else a fallback face (loaded on demand), else the primary as notdef.
-    void *face_for(char32_t cp);
+    bool ligatures_{true};
 
     std::uint32_t tex_{0};
     int atlas_dim_{0};

@@ -8,6 +8,7 @@
 #include <cstring>
 #include <span>
 #include <string>
+#include <filesystem>
 #include <vector>
 #include <epoxy/gl.h>
 #include "toe/gfx/font.hpp"
@@ -38,7 +39,12 @@ int main() {
     glGenFramebuffers(1,&fbo); glBindFramebuffer(GL_FRAMEBUFFER,fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,tex,0);
 
-    auto mk_atlas=[]{ return gfx::FontAtlas::create("monospace",14); };
+    auto mk_atlas=[]{
+        std::string fp="/usr/share/fonts/TTF/JetBrainsMono-Regular.ttf";
+        if(!std::filesystem::exists(fp)){ namespace fs=std::filesystem; std::error_code ec;
+            for(auto it=fs::recursive_directory_iterator("/usr/share/fonts",fs::directory_options::skip_permission_denied,ec); it!=fs::recursive_directory_iterator(); it.increment(ec)){ if(ec)break; auto e=it->path().extension().string(); if(e==".ttf"||e==".otf"){fp=it->path().string();break;} } }
+        return gfx::FontAtlas::create(fp,14);
+    };
     auto a1=mk_atlas(); auto a2=mk_atlas();
     if(!a1||!a2){ std::fprintf(stderr,"no font\n"); return 1; }
     auto warm = gfx::Renderer::create(std::move(*a1));

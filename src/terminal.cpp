@@ -12,6 +12,9 @@
 #include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <vector>
+#include <cctype>
+#include <filesystem>
 #include <optional>
 #include <algorithm>
 #include <cstdlib>
@@ -345,8 +348,71 @@ std::optional<std::string> Session::take_clipboard_request() {
 // ---------------------------------------------------------------------------
 // Terminal — construction and the single transition.
 
+namespace {
+// Resolve a font family to a file path by globbing the standard font dirs.
+// Generic aliases (monospace/sans/serif) map to a monospace search, preferring
+// well-known programming fonts. No fontconfig — zero deps, zero threads.
+std::string resolve_font_path(std::string family) {
+    std::string needle;
+    for (char c : family)
+        if (c != ' ') needle += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    const bool generic = needle.empty() || needle == "monospace" || needle == "mono" ||
+                         needle == "sans" || needle == "serif" || needle == "sans-serif";
+    if (generic) needle = "mono";
+
+    const char *home = std::getenv("HOME");
+    std::vector<std::filesystem::path> roots = {"/usr/share/fonts", "/usr/local/share/fonts"};
+    if (home) roots.emplace_back(std::string{home} + "/.local/share/fonts");
+    if (home) roots.emplace_back(std::string{home} + "/.fonts");
+
+    static const char *prefer[] = {
+        "jetbrainsmono-regular", "firacode-regular", "cascadiacode", "cascadiamono",
+        "iosevka-regular", "hack-regular", "dejavusansmono", "notosansmono-regular",
+        "liberationmono-regular", "adwaitamono-regular", "ubuntumono-r",
+    };
+    std::string first_mono, first_any, named_best;
+    for (const auto &root : roots) {
+        std::error_code ec;
+        if (!std::filesystem::exists(root, ec)) continue;
+        for (auto it = std::filesystem::recursive_directory_iterator(
+                 root, std::filesystem::directory_options::skip_permission_denied, ec);
+             it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+            if (ec) break;
+            const auto &p = it->path();
+            const auto ext = p.extension().string();
+            if (ext != ".ttf" && ext != ".otf" && ext != ".TTF" && ext != ".OTF") continue;
+            std::string name;
+            for (char c : p.filename().string())
+                name += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            const bool plain = name.find("bold") == std::string::npos &&
+                               name.find("italic") == std::string::npos &&
+                               name.find("light") == std::string::npos &&
+                               name.find("thin") == std::string::npos;
+            if (generic) {
+                for (const char *pref : prefer)
+                    if (name.find(pref) != std::string::npos) return p.string();
+                if (first_any.empty() && plain) first_any = p.string();
+                if (first_mono.empty() && plain && name.find("mono") != std::string::npos)
+                    first_mono = p.string();
+            } else if (name.find(needle) != std::string::npos) {
+                if (name.find("regular") != std::string::npos || plain) return p.string();
+                if (named_best.empty()) named_best = p.string();
+            }
+        }
+    }
+    if (generic) return !first_mono.empty() ? first_mono : first_any;
+    return named_best;
+}
+} // namespace
+
 Result<Terminal> Terminal::create(const Config &cfg, PixelSize px) {
-    auto atlas = gfx::FontAtlas::create(cfg.font_family, cfg.font_pixel_size);
+    std::string font_path = cfg.font_file;
+    if (font_path.empty()) font_path = resolve_font_path(cfg.font_family);
+    if (font_path.empty())
+        return fail("font: no font file for '" + cfg.font_family +
+                    "' (set font.file to a .ttf/.otf path)");
+    auto atlas =
+        gfx::FontAtlas::create(font_path, cfg.font_pixel_size, cfg.font_fallback, cfg.ligatures);
     if (!atlas) {
         return std::unexpected(atlas.error());
     }

@@ -7,7 +7,9 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -50,7 +52,20 @@ int main() {
     glViewport(0, 0, W, H);
 
     // Build the render stack.
-    auto atlas = gfx::FontAtlas::create("monospace", 18);
+    // Find any usable TTF/OTF on the system (no fontconfig in the lib now).
+    std::string fpath = "/usr/share/fonts/TTF/JetBrainsMono-Regular.ttf";
+    if (!std::filesystem::exists(fpath)) {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        for (auto it = fs::recursive_directory_iterator("/usr/share/fonts",
+                 fs::directory_options::skip_permission_denied, ec);
+             it != fs::recursive_directory_iterator(); it.increment(ec)) {
+            if (ec) break;
+            const auto ext = it->path().extension().string();
+            if (ext == ".ttf" || ext == ".otf") { fpath = it->path().string(); break; }
+        }
+    }
+    auto atlas = gfx::FontAtlas::create(fpath, 18);
     if (!atlas) {
         std::fprintf(stderr, "font: %s\n", atlas.error().message.c_str());
         return 1;

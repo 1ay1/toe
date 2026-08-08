@@ -12,7 +12,6 @@
 
 #include <epoxy/gl.h>
 
-#include <hb.h>
 
 namespace toe::gfx {
 
@@ -694,12 +693,10 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
 // where shaping yields nothing special. Only runs when a row is (re)built.
 void Renderer::shape_row(std::span<const term::Cell> cells, int cols) {
     shape_scratch_.assign(static_cast<std::size_t>(cols), ShapedCell{});
-    if (!ligatures_) return;
-    auto *hbf = static_cast<hb_font_t *>(atlas_.hb_font());
-    if (!hbf) return;
+    if (!ligatures_ || !atlas_.has_shaper()) return;
 
-    static hb_buffer_t *buf = hb_buffer_create(); // reused across calls (single-threaded)
-
+    std::vector<char32_t> run;
+    std::vector<std::uint32_t> gids;
     int c = 0;
     while (c < cols) {
         // A run is contiguous same-style printable ASCII (ligatures are ASCII).
@@ -716,29 +713,26 @@ void Renderer::shape_row(std::span<const term::Cell> cells, int cols) {
         }
         const int len = e - c;
         if (len >= 2) {
-            hb_buffer_clear_contents(buf);
+            run.assign(static_cast<std::size_t>(len), 0);
+            gids.assign(static_cast<std::size_t>(len), 0);
             for (int i = 0; i < len; ++i)
-                hb_buffer_add(buf,
-                              static_cast<hb_codepoint_t>(cells[static_cast<std::size_t>(c + i)].cp),
-                              static_cast<unsigned>(i));
-            hb_buffer_set_content_type(buf, HB_BUFFER_CONTENT_TYPE_UNICODE);
-            hb_buffer_set_direction(buf, HB_DIRECTION_LTR);
-            hb_buffer_set_script(buf, HB_SCRIPT_LATIN);
-            hb_buffer_guess_segment_properties(buf);
-            hb_shape(hbf, buf, nullptr, 0);
-
-            unsigned n = 0;
-            const hb_glyph_info_t *gi = hb_buffer_get_glyph_infos(buf, &n);
-            for (unsigned k = 0; k < n; ++k) {
-                const int cell = c + static_cast<int>(gi[k].cluster);
-                const int next = (k + 1 < n) ? c + static_cast<int>(gi[k + 1].cluster) : e;
-                if (cell < 0 || cell >= cols) continue;
-                shape_scratch_[static_cast<std::size_t>(cell)].gindex = gi[k].codepoint;
-                // If this glyph's cluster spans >1 cell (a true liga glyph),
-                // hide the covered trailing cells.
-                for (int scell = cell + 1; scell < next && scell < cols; ++scell)
-                    shape_scratch_[static_cast<std::size_t>(scell)].skip = true;
+                run[static_cast<std::size_t>(i)] = cells[static_cast<std::size_t>(c + i)].cp;
+            atlas_.shape_run(run, gids);
+            for (int i = 0; i < len; ++i) {
+                const std::uint32_t g = gids[static_cast<std::size_t>(i)];
+                if (g == 0) {
+                    // Ligated-away cell: hidden, its glyph merged into an
+                    // earlier one. Skip drawing it.
+                    shape_scratch_[static_cast<std::size_t>(c + i)].skip = true;
+                } else {
+                    // Draw this glyph by index (may be a connected ligature
+                    // variant even when it maps 1:1 to the cell).
+                    shape_scratch_[static_cast<std::size_t>(c + i)].gindex = g;
+                }
             }
+            // The first cell of a run is never a skip (glyph 0 there means the
+            // shaper produced nothing special — fall back to the codepoint).
+            shape_scratch_[static_cast<std::size_t>(c)].skip = false;
         }
         c = e;
     }
