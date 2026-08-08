@@ -1136,39 +1136,48 @@ void Screen::move_cursor_abs(Row r, Col c) {
 
 void Screen::erase_in_line(int mode) {
     const Row r = cursor_.row;
+    const Cell b = blank_cell();
     switch (mode) {
     case 0: // cursor to end of line
-        for (std::int32_t c = cursor_.col.get(); c < size_.cols; ++c) at(r, Col{c}) = blank_cell();
+        stamp(r.get());
+        ring_.blank_view_span(r.get(), cursor_.col.get(), size_.cols, b);
         break;
     case 1: // start of line to cursor
-        for (std::int32_t c = 0; c <= cursor_.col.get() && c < size_.cols; ++c)
-            at(r, Col{c}) = blank_cell();
+        stamp(r.get());
+        ring_.blank_view_span(r.get(), 0, cursor_.col.get() + 1, b);
         break;
     case 2: // whole line
-        for (std::int32_t c = 0; c < size_.cols; ++c) at(r, Col{c}) = blank_cell();
+        stamp(r.get());
+        ring_.blank_view_span(r.get(), 0, size_.cols, b);
         set_wrapped(r.get(), false); // an erased line no longer soft-wraps
         break;
     default: break;
     }
     touch();
 }
-
 void Screen::erase_in_display(int mode) {
+    const Cell b = blank_cell();
     switch (mode) {
     case 0: // cursor to end of screen
         erase_in_line(0);
-        for (std::int32_t rr = cursor_.row.get() + 1; rr < size_.rows; ++rr)
-            for (std::int32_t c = 0; c < size_.cols; ++c) at(Row{rr}, Col{c}) = blank_cell();
+        for (std::int32_t rr = cursor_.row.get() + 1; rr < size_.rows; ++rr) {
+            stamp(rr);
+            ring_.blank_view_span(rr, 0, size_.cols, b);
+            ring_.set_view_wrapped(rr, false);
+        }
         break;
     case 1: // start of screen to cursor
-        for (std::int32_t rr = 0; rr < cursor_.row.get(); ++rr)
-            for (std::int32_t c = 0; c < size_.cols; ++c) at(Row{rr}, Col{c}) = blank_cell();
+        for (std::int32_t rr = 0; rr < cursor_.row.get(); ++rr) {
+            stamp(rr);
+            ring_.blank_view_span(rr, 0, size_.cols, b);
+            ring_.set_view_wrapped(rr, false);
+        }
         erase_in_line(1);
         break;
     case 2: // entire screen
     case 3:
         for (std::int32_t r = 0; r < size_.rows; ++r) {
-            ring_.blank_view_row(r, blank_cell());
+            ring_.blank_view_row(r, b);
             ring_.set_view_wrapped(r, false);
         }
         graphics_.clear(); // clearing the screen removes inline images too

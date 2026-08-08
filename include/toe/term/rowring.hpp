@@ -110,6 +110,23 @@ public:
         blank_row(view_base() + static_cast<std::size_t>(r));
     }
 
+    // Blank columns [c0, c1) of visible row r with the current `blank` cell in
+    // one bulk fill — the erase (ED/EL/ECH) fast path, replacing per-cell at()
+    // loops. Extends used_ so a later blank_row still clears the full prefix.
+    void blank_view_span(std::int32_t r, std::int32_t c0, std::int32_t c1,
+                         const Cell &blank) noexcept {
+        if (c0 < 0) c0 = 0;
+        if (c1 > cols_) c1 = cols_;
+        if (c1 <= c0) return;
+        set_blank(blank);
+        ensure_blank_line();
+        Cell *row = view_row(r);
+        std::memcpy(row + c0, blank_line_.data(),
+                    static_cast<std::size_t>(c1 - c0) * sizeof(Cell));
+        const std::size_t slot = slot_of(view_base() + static_cast<std::size_t>(r));
+        if (static_cast<std::size_t>(c1) > used_[slot]) used_[slot] = static_cast<std::size_t>(c1);
+    }
+
     // Rotate the visible rows [top,bottom] (inclusive, view-relative) so that
     // the row `k` steps down moves to `top`. Positive k scrolls the region UP
     // by k (content moves toward the top); the bottom k rows are left as-is for
@@ -274,7 +291,9 @@ private:
     // Left-rotate visible rows [top,bottom] (inclusive) by k, moving both cell
     // contents and wrapped flags. std::rotate semantics: the row originally at
     // top+k ends up at top. Rows are non-contiguous in the ring (modular), so
-    // this cycles through them via a scratch row. O(span*cols) copy.
+    // we rotate via the cycle-leader (juggling) algorithm using a single
+    // reusable scratch row — O(span*cols) copies, ZERO heap allocation per call
+    // (the scroll-region hot path fires this hundreds of thousands of times).
     void rotate_region(std::int32_t top, std::int32_t bottom, std::int32_t k) noexcept {
         if (top < 0) top = 0;
         if (bottom > rows_ - 1) bottom = rows_ - 1;
@@ -284,30 +303,46 @@ private:
         if (k < 0) k += span;
         if (k == 0) return;
         const std::size_t rowbytes = static_cast<std::size_t>(cols_) * sizeof(Cell);
-        std::vector<bool> new_wrapped(static_cast<std::size_t>(span));
-        std::vector<std::size_t> new_used(static_cast<std::size_t>(span));
-        // Compute the destination image in a temp, then write back. Simpler and
-        // safe against overlap in the modular arena. dst row i <- src row (i+k).
-        std::vector<Cell> image(static_cast<std::size_t>(span) *
-                                static_cast<std::size_t>(cols_));
-        for (std::int32_t i = 0; i < span; ++i) {
-            const std::int32_t src = top + ((i + k) % span);
-            std::memcpy(image.data() + static_cast<std::size_t>(i) *
-                                           static_cast<std::size_t>(cols_),
-                        view_row(src), rowbytes);
-            new_wrapped[static_cast<std::size_t>(i)] = view_wrapped(src);
-            new_used[static_cast<std::size_t>(i)] =
-                used_[slot_of(view_base() + static_cast<std::size_t>(src))];
+        const std::size_t vbase = view_base();
+        // Reusable scratch row (grows once, then persists across calls).
+        if (scratch_.size() < static_cast<std::size_t>(cols_))
+            scratch_.resize(static_cast<std::size_t>(cols_));
+        Cell *tmp = scratch_.data();
+
+        // Left-rotate by k using cycle leaders: element i receives element
+        // (i+k) mod span. gcd(span,k) cycles cover all positions; each element
+        // is moved exactly once. Track wrapped/used alongside the cell bytes.
+        const std::int32_t g = gcd_i32(span, k);
+        for (std::int32_t start = 0; start < g; ++start) {
+            const std::int32_t s0 = top + start;
+            const std::size_t slot0 = slot_of(vbase + static_cast<std::size_t>(s0));
+            std::memcpy(tmp, view_row(s0), rowbytes);
+            const bool w0 = wrapped_[slot0];
+            const std::size_t u0 = used_[slot0];
+            std::int32_t i = start;
+            for (;;) {
+                const std::int32_t j = (i + k) % span;
+                if (j == start) break;
+                Cell *di = view_row(top + i);
+                const Cell *sj = view_row(top + j);
+                const std::size_t sloti = slot_of(vbase + static_cast<std::size_t>(top + i));
+                const std::size_t slotj = slot_of(vbase + static_cast<std::size_t>(top + j));
+                std::memcpy(di, sj, rowbytes);
+                wrapped_[sloti] = wrapped_[slotj];
+                used_[sloti] = used_[slotj];
+                i = j;
+            }
+            Cell *dlast = view_row(top + i);
+            const std::size_t slotlast = slot_of(vbase + static_cast<std::size_t>(top + i));
+            std::memcpy(dlast, tmp, rowbytes);
+            wrapped_[slotlast] = w0;
+            used_[slotlast] = u0;
         }
-        for (std::int32_t i = 0; i < span; ++i) {
-            std::memcpy(view_row(top + i),
-                        image.data() + static_cast<std::size_t>(i) *
-                                           static_cast<std::size_t>(cols_),
-                        rowbytes);
-            set_view_wrapped(top + i, new_wrapped[static_cast<std::size_t>(i)]);
-            used_[slot_of(view_base() + static_cast<std::size_t>(top + i))] =
-                new_used[static_cast<std::size_t>(i)];
-        }
+    }
+
+    static std::int32_t gcd_i32(std::int32_t a, std::int32_t b) noexcept {
+        while (b) { std::int32_t t = a % b; a = b; b = t; }
+        return a;
     }
 
     void ensure_blank_line() {
@@ -337,6 +372,7 @@ private:
     std::vector<bool> wrapped_{};      // per-slot soft-wrap flag
     std::vector<std::size_t> used_{};  // per-slot high-water column (dirty prefix)
     std::vector<Cell> blank_line_{};   // cached blank row for fast blanking
+    std::vector<Cell> scratch_{};      // reusable scratch row for rotate_region
     bool blank_line_valid_ = false;    // is blank_line_ current for blank_?
     Cell blank_{};
     Cell fill_{};                      // cell the arena was assign()ed with
