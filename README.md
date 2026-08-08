@@ -1,15 +1,18 @@
-# toe — a GPU terminal engine you can drop into any project
+# toe — a GPU terminal engine that renders anywhere
 
 `toe` is a from-scratch terminal emulator **library** — no VTE, no GTK, no
 SDL. It owns the entire stack (PTY → escape-sequence parser → grid model →
 GPU renderer) and is the engine behind [`hand`](../hand).
 
-It is a *real* library, not an application wearing a library's clothes. The
-engine (`toe::core`) knows nothing about your window system, does not own your
-GL context, and does not decide how your shell is spawned. The three things a
-terminal library should *not* dictate — **the window, the GL context, and the
-child process** — are handed to the host, and each boundary is encoded in the
-type system so illegal wiring is a compile error.
+It renders a live terminal into **anything that can hold an OpenGL context** —
+a Wayland or X11 window, an offscreen framebuffer, a texture inside your own
+engine's UI, a headless CI job taking screenshots. Not "any project": any
+*surface*, anywhere. The engine (`toe::core`) knows nothing about your window
+system, does not own your GL context, and does not decide how your shell is
+spawned. The three things a terminal library should *not* dictate — **the
+surface, the GL context, and the child process** — are handed to the host, and
+each boundary is encoded in the type system so illegal wiring is a compile
+error.
 
 ```cmake
 find_package(toe CONFIG REQUIRED COMPONENTS Core)          # bring your own window
