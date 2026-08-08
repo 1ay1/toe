@@ -237,6 +237,12 @@ bool Session::set_hover(int vrow, int col) noexcept {
     return impl_->model.screen.set_hover(vrow, col);
 }
 
+void Session::report_focus(bool focused) {
+    if (std::string_view seq = impl_->model.screen.report_focus(focused); !seq.empty()) {
+        (void)impl_->pty.write(seq);
+    }
+}
+
 // --- mouse reporting -------------------------------------------------------
 bool Session::wants_mouse() const noexcept {
     return impl_->model.screen.mouse_mode() != term::Screen::MouseMode::off;

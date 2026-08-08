@@ -153,7 +153,7 @@ Result<void> X11Surface::init(std::string_view title, PixelSize initial) {
     swa.background_pixel = 0;
     swa.border_pixel = 0;
     swa.event_mask = KeyPressMask | StructureNotifyMask | ExposureMask | ButtonPressMask |
-                     ButtonReleaseMask | PointerMotionMask;
+                     ButtonReleaseMask | PointerMotionMask | FocusChangeMask;
 
     Window win = XCreateWindow(display_, root, 0, 0, static_cast<unsigned>(size_.w),
                                static_cast<unsigned>(size_.h), 0, depth, InputOutput, visual,
@@ -501,6 +501,12 @@ void X11Surface::poll_events(const std::function<void(const Event &)> &sink) {
             XFlush(display_);
             break;
         }
+        case XCB_FOCUS_IN:
+            sink(Event{FocusChanged{true}});
+            break;
+        case XCB_FOCUS_OUT:
+            sink(Event{FocusChanged{false}});
+            break;
         default:
             break;
         }

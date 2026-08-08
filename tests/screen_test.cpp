@@ -664,6 +664,18 @@ int main() {
         expect(s.graphics().placements().empty(), "ED 2 clears inline images");
     }
 
+    // Focus reporting (DEC 1004): report_focus() emits CSI I / CSI O only when
+    // the app enabled it.
+    {
+        term::Screen s{Extent{20, 3}};
+        expect(s.report_focus(true).empty(), "no focus report when 1004 is off");
+        feed(s, "\x1b[?1004h");
+        expect(s.report_focus(true) == "\x1b[I", "focus-in -> CSI I when 1004 on");
+        expect(s.report_focus(false) == "\x1b[O", "focus-out -> CSI O when 1004 on");
+        feed(s, "\x1b[?1004l");
+        expect(s.report_focus(true).empty(), "no focus report after 1004 off");
+    }
+
     if (failures == 0) {
         std::printf("all screen tests passed\n");
         return 0;

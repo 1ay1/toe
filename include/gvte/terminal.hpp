@@ -110,6 +110,10 @@ public:
     // Returns true if the hovered link changed (host should redraw).
     bool set_hover(int vrow, int col) noexcept;
 
+    // Focus in/out from the window system. If the app enabled focus reporting
+    // (DEC 1004), sends CSI I / CSI O to the child; otherwise a no-op.
+    void report_focus(bool focused);
+
     // --- mouse reporting ---------------------------------------------------
     // True when the running app has requested mouse tracking (?1000/1002/1003).
     // While true, the host should forward pointer events to the app via

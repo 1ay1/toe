@@ -70,10 +70,15 @@ public:
     static void seat_capabilities(void *data, wl_seat *seat, uint32_t caps);
     static void seat_name(void *, wl_seat *, const char *) {}
     static void kb_keymap(void *data, wl_keyboard *, uint32_t format, int fd, uint32_t size);
-    static void kb_enter(void *, wl_keyboard *, uint32_t, wl_surface *, wl_array *) {}
+    static void kb_enter(void *data, wl_keyboard *, uint32_t, wl_surface *, wl_array *) {
+        auto *self = static_cast<WaylandSurface *>(data);
+        if (self->sink_) (*self->sink_)(Event{FocusChanged{true}});
+    }
     static void kb_leave(void *data, wl_keyboard *, uint32_t, wl_surface *) {
+        auto *self = static_cast<WaylandSurface *>(data);
         // Losing keyboard focus must cancel any in-flight key repeat.
-        static_cast<WaylandSurface *>(data)->disarm_repeat();
+        self->disarm_repeat();
+        if (self->sink_) (*self->sink_)(Event{FocusChanged{false}});
     }
     static void kb_key(void *data, wl_keyboard *, uint32_t serial, uint32_t time, uint32_t key,
                        uint32_t state);

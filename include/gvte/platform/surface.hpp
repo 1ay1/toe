@@ -62,9 +62,12 @@ struct MouseMove {
 struct MouseWheel {
     std::int32_t dx, dy; // discrete steps; dy>0 = up
 };
+struct FocusChanged {
+    bool focused; // window gained (true) or lost (false) keyboard focus
+};
 
 using Event = std::variant<CloseRequested, Resized, KeyPressed, TextEntered, MouseDown, MouseUp,
-                           MouseMove, MouseWheel>;
+                           MouseMove, MouseWheel, FocusChanged>;
 
 // --- the abstract surface --------------------------------------------------
 class Surface {

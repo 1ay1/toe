@@ -291,6 +291,14 @@ public:
     bool set_hover(std::int32_t vrow, std::int32_t col) noexcept;
     [[nodiscard]] std::uint16_t hover_link() const noexcept { return hover_link_; }
 
+    // Focus reporting (DEC 1004): when the app enabled it, returns the bytes to
+    // send the child on focus in/out (CSI I / CSI O), else empty. The host
+    // writes them to the PTY.
+    [[nodiscard]] std::string_view report_focus(bool focused) const noexcept {
+        if (!focus_events_) return {};
+        return focused ? "\x1b[I" : "\x1b[O";
+    }
+
     // Inline images (kitty graphics protocol). The renderer reads placements
     // and image pixels to draw them over the grid.
     [[nodiscard]] const Graphics &graphics() const noexcept { return graphics_; }
