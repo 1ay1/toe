@@ -60,6 +60,14 @@ as a `Cmd` instead of forgetting to write it.)
 **Localised impurity.** All I/O lives in one small interpreter. Everything else
 is a value transformation you can reason about in isolation.
 
+**Single-threaded on purpose.** That one impure interpreter, the parse, and the
+render all run on **one cooperative thread** — the model (the one hot shared
+object) is therefore lock-free by construction. This is a measured decision, not
+an oversight: a terminal is I/O-bound (~99% of a flood is spent in `poll()`
+waiting on the child, not in CPU), so a second thread overlaps nothing and only
+adds a lock on the critical path. The full argument, the profiling data, and the
+two-thread experiment we reverted are in [SINGLE_THREADED.md](SINGLE_THREADED.md).
+
 ## The layering: core vs platform
 
 toe is two libraries with a one-way dependency.
