@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.0-or-later
 //
-// gvte public API — a GPU-accelerated terminal, no GTK, no VTE.
+// toe public API — a GPU-accelerated terminal, no GTK, no VTE.
 //
 // Design principle: illegal states are unrepresentable. A terminal's lifecycle
 // is a two-state machine — Running or Exited — encoded as a sum type, not a
@@ -10,8 +10,8 @@
 // a runtime check. The one transition, `poll()`, is the sole way to observe a
 // Running -> Exited change; you cannot fabricate the reverse.
 
-#ifndef GVTE_TERMINAL_HPP
-#define GVTE_TERMINAL_HPP
+#ifndef TOE_TERMINAL_HPP
+#define TOE_TERMINAL_HPP
 
 #include <memory>
 #include <cstdint>
@@ -21,13 +21,13 @@
 #include <variant>
 #include <vector>
 
-#include "gvte/core/tea.hpp"
-#include "gvte/core/types.hpp"
-#include "gvte/gfx/render_target.hpp"
-#include "gvte/input.hpp"
-#include "gvte/pty/pty_source.hpp"
+#include "toe/core/tea.hpp"
+#include "toe/core/types.hpp"
+#include "toe/gfx/render_target.hpp"
+#include "toe/input.hpp"
+#include "toe/pty/pty_source.hpp"
 
-namespace gvte {
+namespace toe {
 
 // --- configuration ---------------------------------------------------------
 struct Config {
@@ -38,7 +38,7 @@ struct Config {
 
     // Where the child terminal comes from. Defaults to spawning $SHELL via
     // forkpty (SpawnCommand{}), but a host may inject an already-open PTY fd
-    // (AdoptFd) so gvte never forks — see gvte/pty/pty_source.hpp.
+    // (AdoptFd) so toe never forks — see toe/pty/pty_source.hpp.
     PtySource source = SpawnCommand{};
 
     // Legacy convenience: if non-empty AND `source` still holds a default
@@ -69,7 +69,7 @@ public:
 
     // Draw the current grid into `rc`'s target framebuffer. `rc` is the
     // capability token proving a GL context is current on this thread (see
-    // gvte/gfx/render_target.hpp): render is now impossible to call without it,
+    // toe/gfx/render_target.hpp): render is now impossible to call without it,
     // and the host chooses the destination FBO. `cursor_on` lets the host drive
     // cursor blink from a wall-clock phase; pass true for a steady cursor.
     void render(gfx::RenderContext &rc, PixelSize px, bool cursor_on = true,
@@ -220,6 +220,6 @@ private:
     std::variant<Session, Exited> state_;
 };
 
-} // namespace gvte
+} // namespace toe
 
-#endif // GVTE_TERMINAL_HPP
+#endif // TOE_TERMINAL_HPP

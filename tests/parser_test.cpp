@@ -10,9 +10,9 @@
 #include <string_view>
 #include <vector>
 
-#include "gvte/vt/parser.hpp"
+#include "toe/vt/parser.hpp"
 
-using namespace gvte::vt;
+using namespace toe::vt;
 
 namespace {
 

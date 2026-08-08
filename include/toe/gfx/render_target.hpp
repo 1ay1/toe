@@ -9,13 +9,13 @@
 // It also drew into whatever framebuffer happened to be bound, so a host that
 // brings its own window couldn't say WHERE to draw.
 //
-// The fix, in the spirit of the rest of gvte (illegal states unrepresentable):
+// The fix, in the spirit of the rest of toe (illegal states unrepresentable):
 // render() now REQUIRES a `RenderContext&`. You can only obtain one by making a
 // claim the compiler then holds you to:
 //
 //   * RenderContext::adopt_current()  — "I promise a GL context is current on
 //     this thread right now." Returns the token; you pass it to render().
-//   * gvte::platform surfaces hand you one from their own make-current path.
+//   * toe::platform surfaces hand you one from their own make-current path.
 //
 // The token also carries the TARGET framebuffer, so the host controls exactly
 // where the terminal is composited (default 0 = the current/default FBO). This
@@ -24,14 +24,14 @@
 // The token is move-only (a capability is not freely copyable) and non-owning
 // (it does not create or destroy the GL context — the host owns that).
 
-#ifndef GVTE_GFX_RENDER_TARGET_HPP
-#define GVTE_GFX_RENDER_TARGET_HPP
+#ifndef TOE_GFX_RENDER_TARGET_HPP
+#define TOE_GFX_RENDER_TARGET_HPP
 
 #include <cstdint>
 
-#include "gvte/core/types.hpp"
+#include "toe/core/types.hpp"
 
-namespace gvte::gfx {
+namespace toe::gfx {
 
 // A GL framebuffer object name. Strong newtype so a raw int (a texture, a
 // width, anything) can't be passed where an FBO is meant. 0 = the default /
@@ -47,8 +47,8 @@ inline constexpr Framebuffer default_framebuffer{0};
 class RenderContext {
 public:
     // Claim that a GL context is current on THIS thread, right now. The host
-    // (or a gvte::platform surface, right after its make-current/swap setup)
-    // makes this claim; gvte trusts it — that is the whole point of a
+    // (or a toe::platform surface, right after its make-current/swap setup)
+    // makes this claim; toe trusts it — that is the whole point of a
     // capability token. Optionally names the destination framebuffer.
     [[nodiscard]] static RenderContext adopt_current(
         Framebuffer target = default_framebuffer) noexcept {
@@ -76,6 +76,6 @@ private:
     Framebuffer target_{default_framebuffer};
 };
 
-} // namespace gvte::gfx
+} // namespace toe::gfx
 
-#endif // GVTE_GFX_RENDER_TARGET_HPP
+#endif // TOE_GFX_RENDER_TARGET_HPP

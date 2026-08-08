@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: LGPL-2.0-or-later
 //
-// gvte::Terminal / Session implementation. The engine (PTY -> parser -> grid
+// toe::Terminal / Session implementation. The engine (PTY -> parser -> grid
 // -> GPU) lives in Session::Impl; Terminal is the {Running, Exited} state
 // machine whose sole transition is poll().
 
-#include "gvte/terminal.hpp"
-#include "gvte/input/keymap.hpp"
+#include "toe/terminal.hpp"
+#include "toe/input/keymap.hpp"
 
 #include <epoxy/gl.h>
 
@@ -18,14 +18,14 @@
 #include <span>
 #include <utility>
 
-#include "gvte/gfx/font.hpp"
-#include "gvte/gfx/renderer.hpp"
-#include "gvte/pty/pty.hpp"
-#include "gvte/term/screen.hpp"
-#include "gvte/term/update.hpp"
-#include "gvte/vt/parser.hpp"
+#include "toe/gfx/font.hpp"
+#include "toe/gfx/renderer.hpp"
+#include "toe/pty/pty.hpp"
+#include "toe/term/screen.hpp"
+#include "toe/term/update.hpp"
+#include "toe/vt/parser.hpp"
 
-namespace gvte {
+namespace toe {
 
 // ---------------------------------------------------------------------------
 // The live engine. Only reachable through a Session, which only exists while
@@ -153,7 +153,7 @@ void Session::resize(PixelSize px) {
 void Session::send_text(std::string_view utf8) { (void)impl_->pty.write(utf8); }
 
 // --- pure input encoding ---------------------------------------------------
-// Key encoding lives in gvte/input/keymap.cpp: a zero-allocation, fixed-buffer
+// Key encoding lives in toe/input/keymap.cpp: a zero-allocation, fixed-buffer
 // encoder covering the full modifier matrix, function keys, Alt/Meta and the
 // application-cursor-keys mode. update() just supplies the terminal context.
 
@@ -392,4 +392,4 @@ Terminal::Poll Terminal::poll() {
     return result;
 }
 
-} // namespace gvte
+} // namespace toe

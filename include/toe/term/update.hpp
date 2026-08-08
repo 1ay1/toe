@@ -13,24 +13,24 @@
 // terminal's response to any byte stream is now `update(model, ChildOutput{…})`
 // returning a deterministic `Cmds` we can assert on directly.
 
-#ifndef GVTE_TERM_UPDATE_HPP
-#define GVTE_TERM_UPDATE_HPP
+#ifndef TOE_TERM_UPDATE_HPP
+#define TOE_TERM_UPDATE_HPP
 
 #include <string>
 
-#include "gvte/core/tea.hpp"
-#include "gvte/terminal.hpp" // Config
-#include "gvte/term/screen.hpp"
-#include "gvte/vt/parser.hpp"
+#include "toe/core/tea.hpp"
+#include "toe/terminal.hpp" // Config
+#include "toe/term/screen.hpp"
+#include "toe/vt/parser.hpp"
 
-namespace gvte::term {
+namespace toe::term {
 
 // The terminal Model: pure state. No I/O handles live here.
 struct Model {
     Config cfg;
     Screen screen;
     vt::Parser parser;
-    std::string title{"gvte"};
+    std::string title{"toe"};
 
     explicit Model(Config c, Extent grid) : cfg(std::move(c)), screen(grid) {}
 };
@@ -41,6 +41,6 @@ struct Model {
 // thing mutated; everything else is returned data.
 [[nodiscard]] Cmds feed_output(Model &m, std::string_view bytes);
 
-} // namespace gvte::term
+} // namespace toe::term
 
-#endif // GVTE_TERM_UPDATE_HPP
+#endif // TOE_TERM_UPDATE_HPP

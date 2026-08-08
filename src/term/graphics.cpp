@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.0-or-later
 
-#include "gvte/term/graphics.hpp"
+#include "toe/term/graphics.hpp"
 
 #include <algorithm>
 #include <array>
@@ -9,7 +9,7 @@
 
 #include <png.h>
 
-namespace gvte::term {
+namespace toe::term {
 
 namespace {
 
@@ -560,4 +560,4 @@ std::uint64_t Graphics::next_animation_deadline() const noexcept {
     return soonest;
 }
 
-} // namespace gvte::term
+} // namespace toe::term

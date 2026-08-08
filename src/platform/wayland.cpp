@@ -5,7 +5,7 @@
 // context, and translates wl_keyboard events (decoded through xkbcommon) into
 // the platform-neutral Event sum type.
 
-#include "gvte/platform/surface.hpp"
+#include "toe/platform/surface.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -30,7 +30,7 @@
 
 #include "xdg-shell-client-protocol.h"
 
-namespace gvte::platform {
+namespace toe::platform {
 
 namespace {
 
@@ -486,7 +486,7 @@ Result<void> WaylandSurface::init(std::string_view title, PixelSize initial) {
     toplevel_ = xdg_surface_get_toplevel(xdg_surface_);
     xdg_toplevel_add_listener(toplevel_, &kToplevelListener, this);
     xdg_toplevel_set_title(toplevel_, std::string{title}.c_str());
-    xdg_toplevel_set_app_id(toplevel_, "gvte");
+    xdg_toplevel_set_app_id(toplevel_, "toe");
 
     wl_surface_commit(surface_);
     wl_display_roundtrip(display_); // wait for first configure
@@ -767,4 +767,4 @@ Result<AnySurface> open_wayland_surface(std::string_view title, PixelSize initia
     return AnySurface{std::move(*ws)};
 }
 
-} // namespace gvte::platform
+} // namespace toe::platform

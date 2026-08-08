@@ -5,8 +5,8 @@
 // pixel for a cell. We make those categories distinct in the type system so
 // the compiler rejects the confusion.
 
-#ifndef GVTE_CORE_TYPES_HPP
-#define GVTE_CORE_TYPES_HPP
+#ifndef TOE_CORE_TYPES_HPP
+#define TOE_CORE_TYPES_HPP
 
 #include <compare>
 #include <cstddef>
@@ -15,7 +15,7 @@
 #include <string>
 #include <string_view>
 
-namespace gvte {
+namespace toe {
 
 // --- strong integer newtype ------------------------------------------------
 // A phantom Tag makes each axis a distinct type. Arithmetic is deliberately
@@ -100,6 +100,6 @@ using Result = std::expected<T, Error>;
     return std::unexpected(Error{std::move(msg)});
 }
 
-} // namespace gvte
+} // namespace toe
 
-#endif // GVTE_CORE_TYPES_HPP
+#endif // TOE_CORE_TYPES_HPP

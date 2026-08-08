@@ -1,31 +1,31 @@
-# Integrating gvte
+# Integrating toe
 
-How to embed gvte in your application. See [ARCHITECTURE.md](ARCHITECTURE.md)
+How to embed toe in your application. See [ARCHITECTURE.md](ARCHITECTURE.md)
 for the design and [API.md](API.md) for the full reference.
 
-There are two ways to use gvte, depending on whether you want its Linux
+There are two ways to use toe, depending on whether you want its Linux
 window backends or bring your own window.
 
-- **Path A — batteries included** (Linux, use `gvte::platform`): link both
+- **Path A — batteries included** (Linux, use `toe::platform`): link both
   targets, call `open_surface()`, and you have a working terminal in ~60 lines.
-- **Path B — bring your own window** (any OS, `gvte::core` only): model the
+- **Path B — bring your own window** (any OS, `toe::core` only): model the
   `Surface` concept over your own windowing/GL layer (GLFW, Qt, SDL, Win32,
-  Cocoa) and never link a windowing library through gvte.
+  Cocoa) and never link a windowing library through toe.
 
-## Getting gvte into your build
+## Getting toe into your build
 
 ### With an installed package
 
 ```cmake
-find_package(gvte CONFIG REQUIRED COMPONENTS Core Platform)   # Path A
-# find_package(gvte CONFIG REQUIRED COMPONENTS Core)          # Path B
-target_link_libraries(app PRIVATE gvte::core gvte::platform)
+find_package(toe CONFIG REQUIRED COMPONENTS Core Platform)   # Path A
+# find_package(toe CONFIG REQUIRED COMPONENTS Core)          # Path B
+target_link_libraries(app PRIVATE toe::core toe::platform)
 ```
 
-Install gvte first:
+Install toe first:
 
 ```sh
-cmake -S gvte -B build -DGVTE_INSTALL=ON
+cmake -S toe -B build -DTOE_INSTALL=ON
 cmake --build build -j
 cmake --install build --prefix /your/prefix
 ```
@@ -33,15 +33,15 @@ cmake --install build --prefix /your/prefix
 ### As a subdirectory / FetchContent
 
 ```cmake
-set(GVTE_BUILD_PLATFORM ON  CACHE BOOL "" FORCE)   # OFF for Path B
-set(GVTE_BUILD_DEMO     OFF CACHE BOOL "" FORCE)
-set(GVTE_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
-add_subdirectory(gvte)
-target_link_libraries(app PRIVATE gvte::core gvte::platform)
+set(TOE_BUILD_PLATFORM ON  CACHE BOOL "" FORCE)   # OFF for Path B
+set(TOE_BUILD_DEMO     OFF CACHE BOOL "" FORCE)
+set(TOE_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+add_subdirectory(toe)
+target_link_libraries(app PRIVATE toe::core toe::platform)
 ```
 
-(When gvte is `add_subdirectory`'d, `DEMO`/`TESTS`/`INSTALL` default off
-automatically; only `GVTE_BUILD_PLATFORM` needs a choice.)
+(When toe is `add_subdirectory`'d, `DEMO`/`TESTS`/`INSTALL` default off
+automatically; only `TOE_BUILD_PLATFORM` needs a choice.)
 
 ## The host contract
 
@@ -56,7 +56,7 @@ Whichever path, a host does the same four things every frame:
 4. **Render if changed** → watch `generation()`; when it moves, `render(rc, px)`
    and present.
 
-To stay idle-efficient, `poll()` on the fds gvte gives you (`pty_fd()`, the
+To stay idle-efficient, `poll()` on the fds toe gives you (`pty_fd()`, the
 surface's `event_fd()`/`repeat_fd()`) instead of spinning.
 
 ## Path A — a complete minimal host
@@ -65,42 +65,42 @@ This is essentially `src/demo.cpp`. It is a full, working terminal.
 
 ```cpp
 #include <epoxy/gl.h>
-#include "gvte/gfx/render_target.hpp"
-#include "gvte/platform/backend.hpp"
-#include "gvte/terminal.hpp"
+#include "toe/gfx/render_target.hpp"
+#include "toe/platform/backend.hpp"
+#include "toe/terminal.hpp"
 
 int main() {
     // 1. A batteries-included Linux surface (Wayland → X11 → offscreen).
     //    The GL context is current on return.
-    auto surface = gvte::platform::open_surface("myterm", gvte::PixelSize{960, 600});
+    auto surface = toe::platform::open_surface("myterm", toe::PixelSize{960, 600});
     if (!surface) { std::fprintf(stderr, "%s\n", surface.error().message.c_str()); return 1; }
-    gvte::platform::AnySurface &surf = *surface;
+    toe::platform::AnySurface &surf = *surface;
 
-    gvte::PixelSize px = surf.pixel_size();
+    toe::PixelSize px = surf.pixel_size();
 
     // 2. The terminal. cfg.source defaults to spawning $SHELL; override for a
     //    specific shell, a custom TERM, a pre-exec hook, or an adopted fd.
-    gvte::Config cfg;
-    auto term = gvte::Terminal::create(cfg, px);
+    toe::Config cfg;
+    auto term = toe::Terminal::create(cfg, px);
     if (!term) { std::fprintf(stderr, "%s\n", term.error().message.c_str()); return 1; }
 
     bool running = true;
     while (running && !surf.should_close()) {
         // (a) the lifecycle's only transition: Running -> (Running | Exited).
-        gvte::Terminal::Poll p = term->poll();
+        toe::Terminal::Poll p = term->poll();
         if (p.exited) return p.exited->code;   // dead: nothing to render/type into
-        gvte::Session &session = *p.running;
+        toe::Session &session = *p.running;
 
         // (b) drain window events into Session actions.
-        surf.poll_events([&](const gvte::platform::Event &ev) {
+        surf.poll_events([&](const toe::platform::Event &ev) {
             std::visit([&](auto &&e) {
                 using T = std::decay_t<decltype(e)>;
-                if constexpr (std::is_same_v<T, gvte::platform::CloseRequested>) running = false;
-                else if constexpr (std::is_same_v<T, gvte::platform::Resized>) {
+                if constexpr (std::is_same_v<T, toe::platform::CloseRequested>) running = false;
+                else if constexpr (std::is_same_v<T, toe::platform::Resized>) {
                     px = e.size; session.resize(px);
-                } else if constexpr (std::is_same_v<T, gvte::platform::KeyPressed>) {
+                } else if constexpr (std::is_same_v<T, toe::platform::KeyPressed>) {
                     session.send_key(e.key);
-                } else if constexpr (std::is_same_v<T, gvte::platform::TextEntered>) {
+                } else if constexpr (std::is_same_v<T, toe::platform::TextEntered>) {
                     session.send_text(e.utf8);
                 }
                 // ...mouse events -> session.report_mouse / select_* as desired
@@ -114,7 +114,7 @@ int main() {
 
         // (d) render into the window's back buffer (FBO 0).
         glViewport(0, 0, px.w, px.h);
-        auto rc = gvte::gfx::RenderContext::adopt_current();
+        auto rc = toe::gfx::RenderContext::adopt_current();
         session.render(rc, px);
         surf.swap();
     }
@@ -128,22 +128,22 @@ via `generation()`, and cursor-blink timing.
 
 ## Path B — bring your own window
 
-Link `gvte::core` only. Provide a type that **models the `Surface` concept** —
+Link `toe::core` only. Provide a type that **models the `Surface` concept** —
 no base class to inherit. Anything satisfying the five required methods works;
 add the optional ones for title/clipboard/repeat/flush.
 
 ```cpp
-#include "gvte/platform/surface.hpp"   // the concept + Event, from core
-#include "gvte/gfx/render_target.hpp"
-#include "gvte/terminal.hpp"
+#include "toe/platform/surface.hpp"   // the concept + Event, from core
+#include "toe/gfx/render_target.hpp"
+#include "toe/terminal.hpp"
 
 // Your window over GLFW / Qt / SDL / Win32 / Cocoa. Must make a GL context
 // current before you render.
 struct MyWindow {
     // --- required by concept Surface ---
     void swap();                                             // present the back buffer
-    gvte::PixelSize pixel_size() const;                     // drawable size in px
-    void poll_events(const gvte::platform::EventSink &sink); // drain -> translate -> sink(Event)
+    toe::PixelSize pixel_size() const;                     // drawable size in px
+    void poll_events(const toe::platform::EventSink &sink); // drain -> translate -> sink(Event)
     int  event_fd() const;                                  // pollable fd, or -1
     bool should_close() const;
 
@@ -154,39 +154,39 @@ struct MyWindow {
     int  repeat_fd() const;
     void flush();
 };
-static_assert(gvte::platform::Surface<MyWindow>);   // enforce the contract at compile time
+static_assert(toe::platform::Surface<MyWindow>);   // enforce the contract at compile time
 ```
 
-Your `poll_events` translates native events into gvte's neutral `Event` sum
+Your `poll_events` translates native events into toe's neutral `Event` sum
 type (`KeyPressed{KeyEvent}`, `TextEntered{utf8}`, `Resized{PixelSize}`,
 `MouseDown/Up/Move/Wheel`, `FocusChanged`, `CloseRequested`) and calls `sink`
 for each. The rest of the loop is identical to Path A — you own the window,
-gvte owns everything from PTY to pixels.
+toe owns everything from PTY to pixels.
 
 If you want runtime backend selection, wrap any model in `AnySurface`:
 
 ```cpp
-gvte::platform::AnySurface surf{ MyWindow{...} };   // erased; still a Surface
+toe::platform::AnySurface surf{ MyWindow{...} };   // erased; still a Surface
 ```
 
 ## Configuring the child (`PtySource`)
 
 ```cpp
-gvte::Config cfg;
+toe::Config cfg;
 
 // Default: spawn $SHELL (then /bin/sh) with TERM=xterm-256color.
 // cfg.source is already SpawnCommand{}.
 
 // A specific shell + terminfo + a child hook (runs after fork, before exec):
-cfg.source = gvte::SpawnCommand{
+cfg.source = toe::SpawnCommand{
     .argv     = {"/usr/bin/fish"},
     .term     = "xterm-kitty",
     .pre_exec = [] { ::setsid(); ::setenv("MYVAR", "1", 1); },   // async-signal-safe
 };
 
-// Or adopt a PTY you already own (SSH channel, container, replay) — gvte
+// Or adopt a PTY you already own (SSH channel, container, replay) — toe
 // never forks; it drives your fd:
-cfg.source = gvte::AdoptFd{ .master_fd = my_master, .child = my_pid, .owns_fd = true };
+cfg.source = toe::AdoptFd{ .master_fd = my_master, .child = my_pid, .owns_fd = true };
 ```
 
 ## Efficiency checklist

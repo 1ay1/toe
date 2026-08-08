@@ -10,17 +10,17 @@
 // Row/Col cell coordinates — the boundary between "cells" and "pixels" is the
 // renderer's job (slice 6), and this module speaks only pixels.
 
-#ifndef GVTE_GFX_FONT_HPP
-#define GVTE_GFX_FONT_HPP
+#ifndef TOE_GFX_FONT_HPP
+#define TOE_GFX_FONT_HPP
 
 #include <cstdint>
 #include <array>
 #include <string>
 #include <unordered_map>
 
-#include "gvte/core/types.hpp"
+#include "toe/core/types.hpp"
 
-namespace gvte::gfx {
+namespace toe::gfx {
 
 // UV rect (normalized) + placement metrics for one rasterized glyph.
 struct GlyphInfo {
@@ -146,6 +146,6 @@ private:
     std::array<std::array<FastSlot, kFastCount>, kStyles> fast_{};
 };
 
-} // namespace gvte::gfx
+} // namespace toe::gfx
 
-#endif // GVTE_GFX_FONT_HPP
+#endif // TOE_GFX_FONT_HPP

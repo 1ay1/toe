@@ -13,13 +13,13 @@
 
 #include <epoxy/gl.h>
 
-#include "gvte/gfx/font.hpp"
-#include "gvte/gfx/renderer.hpp"
-#include "gvte/platform/backend.hpp"
-#include "gvte/term/screen.hpp"
-#include "gvte/vt/parser.hpp"
+#include "toe/gfx/font.hpp"
+#include "toe/gfx/renderer.hpp"
+#include "toe/platform/backend.hpp"
+#include "toe/term/screen.hpp"
+#include "toe/vt/parser.hpp"
 
-using namespace gvte;
+using namespace toe;
 
 int main() {
     // Open a real surface (Wayland/X11 + EGL) to get a current GL context, then
@@ -71,7 +71,7 @@ int main() {
         "Hello, GPU!\r\n\x1b[31mXXXX\x1b[0m \x1b[42m \x1b[0m\r\n\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88";
     parser.feed(std::span<const char>{input.data(), input.size()},
                 [&](const vt::Action &a) {
-                    gvte::Cmds out;
+                    toe::Cmds out;
                     screen.apply(a, out);
                 });
 

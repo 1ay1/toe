@@ -8,8 +8,8 @@
 // terminal directly — the parser stays a pure function of (state, byte), which
 // makes it unit-testable in isolation from rendering and the PTY.
 
-#ifndef GVTE_VT_PARSER_HPP
-#define GVTE_VT_PARSER_HPP
+#ifndef TOE_VT_PARSER_HPP
+#define TOE_VT_PARSER_HPP
 
 #include <array>
 #include <cstddef>
@@ -20,7 +20,7 @@
 #include <variant>
 #include <vector>
 
-namespace gvte::vt {
+namespace toe::vt {
 
 // --- typed actions ---------------------------------------------------------
 // A decoded UTF-8 codepoint to place at the cursor.
@@ -137,8 +137,8 @@ private:
     int utf8_remaining_{0};
 };
 
-} // namespace gvte::vt
+} // namespace toe::vt
 
-#include "gvte/vt/parser.inl"
+#include "toe/vt/parser.inl"
 
-#endif // GVTE_VT_PARSER_HPP
+#endif // TOE_VT_PARSER_HPP

@@ -2,15 +2,15 @@
 //
 // Minimal GL shader-program wrapper: compile + link from source, RAII delete.
 
-#ifndef GVTE_GFX_SHADER_HPP
-#define GVTE_GFX_SHADER_HPP
+#ifndef TOE_GFX_SHADER_HPP
+#define TOE_GFX_SHADER_HPP
 
 #include <cstdint>
 #include <string_view>
 
-#include "gvte/core/types.hpp"
+#include "toe/core/types.hpp"
 
-namespace gvte::gfx {
+namespace toe::gfx {
 
 class Program {
 public:
@@ -35,6 +35,6 @@ private:
     std::uint32_t prog_{0};
 };
 
-} // namespace gvte::gfx
+} // namespace toe::gfx
 
-#endif // GVTE_GFX_SHADER_HPP
+#endif // TOE_GFX_SHADER_HPP

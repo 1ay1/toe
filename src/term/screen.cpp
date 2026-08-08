@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: LGPL-2.0-or-later
 
-#include "gvte/term/screen.hpp"
+#include "toe/term/screen.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <clocale>
 #include <cwchar>
 
-namespace gvte::term {
+namespace toe::term {
 
 namespace {
 // A CSI parameter with a default when absent or zero-as-omitted.
@@ -814,8 +814,8 @@ void Screen::csi(const vt::CsiDispatch &d) {
         break;
     case 'q': // XTVERSION: CSI > 0 q  -> report name+version as a DCS string.
         if (d.private_marker && d.marker == '>') {
-            // DCS > | gvte(0.1) ST
-            reply("\x1bP>|gvte(0.1)\x1b\\");
+            // DCS > | toe(0.1) ST
+            reply("\x1bP>|toe(0.1)\x1b\\");
         }
         break;
     case 'm': apply_sgr(p, d.sub); break;                   // SGR
@@ -1221,4 +1221,4 @@ std::string Screen::selected_text() const {
     return out;
 }
 
-} // namespace gvte::term
+} // namespace toe::term

@@ -2,7 +2,7 @@
 //
 // The Elm Architecture, in C++.
 //
-// gvte's terminal core is a pure state machine. Nothing in the model performs
+// toe's terminal core is a pure state machine. Nothing in the model performs
 // I/O directly; instead, every side effect is *reified as data* — a value of
 // the `Cmd` sum type below — and returned from the pure `update` function. A
 // thin Runtime (the only impure code in the library) interprets those Cmds:
@@ -18,18 +18,18 @@
 // mocks), makes effects auditable (they're a closed list), and localizes all
 // impurity to one interpreter.
 
-#ifndef GVTE_CORE_TEA_HPP
-#define GVTE_CORE_TEA_HPP
+#ifndef TOE_CORE_TEA_HPP
+#define TOE_CORE_TEA_HPP
 
 #include <cstdint>
 #include <string>
 #include <variant>
 #include <vector>
 
-#include "gvte/core/types.hpp"
-#include "gvte/input.hpp"
+#include "toe/core/types.hpp"
+#include "toe/input.hpp"
 
-namespace gvte {
+namespace toe {
 
 // ===========================================================================
 // Cmd — effects, as data. Produced by `update`, interpreted by the Runtime.
@@ -129,6 +129,6 @@ struct Tick {
 using Msg = std::variant<ChildOutput, ChildExited, Key, Paste, Resized, MouseDown, MouseUp,
                          MouseDrag, MouseWheel, Tick>;
 
-} // namespace gvte
+} // namespace toe
 
-#endif // GVTE_CORE_TEA_HPP
+#endif // TOE_CORE_TEA_HPP

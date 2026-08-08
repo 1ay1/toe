@@ -1,8 +1,8 @@
 // Demonstrate the TEA core: update(Msg) -> Cmds, asserted directly.
 #include <cstdio>
 #include <string>
-#include "gvte/term/update.hpp"
-using namespace gvte;
+#include "toe/term/update.hpp"
+using namespace toe;
 static int fails=0;
 void ok(bool c,const char*n){ printf("%s %s\n",c?"ok  ":"FAIL",n); if(!c)fails++; }
 std::string writes(const Cmds&cs){ std::string s; for(auto&c:cs) if(auto*w=std::get_if<WriteChild>(&c)) s+=w->bytes; return s; }

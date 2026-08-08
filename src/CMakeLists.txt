@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: LGPL-2.0-or-later
 #
-# Two libraries, one strict rule: gvte::core must never link or include a
+# Two libraries, one strict rule: toe::core must never link or include a
 # window-system dependency. The compiler enforces the API contract (the Surface
 # concept, the RenderContext token); CMake enforces the DEPENDENCY contract.
 
 find_package(PkgConfig REQUIRED)
 
 # ===========================================================================
-# gvte::core — the terminal engine + the abstract Surface contract.
+# toe::core — the terminal engine + the abstract Surface contract.
 #
 # Every dependency here is either a content decoder/shaper (freetype, harfbuzz,
 # fontconfig, png) or the GL *loader* (epoxy). NONE is a windowing system.
@@ -21,7 +21,7 @@ pkg_check_modules(FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
 pkg_check_modules(PNG        REQUIRED IMPORTED_TARGET libpng)
 pkg_check_modules(EPOXY      REQUIRED IMPORTED_TARGET epoxy)
 
-add_library(gvte-core
+add_library(toe-core
   terminal.cpp
   pty/pty.cpp
   gfx/font.cpp
@@ -32,35 +32,35 @@ add_library(gvte-core
   term/screen.cpp
   term/update.cpp
   term/graphics.cpp)
-add_library(gvte::core ALIAS gvte-core)
+add_library(toe::core ALIAS toe-core)
 
-set_target_properties(gvte-core PROPERTIES
+set_target_properties(toe-core PROPERTIES
   VERSION     ${PROJECT_VERSION}
   SOVERSION   ${PROJECT_VERSION_MAJOR}
   EXPORT_NAME core
-  OUTPUT_NAME gvte)
+  OUTPUT_NAME toe)
 
 # Public include dir: source tree during build, <prefix>/include after install.
-target_include_directories(gvte-core PUBLIC
+target_include_directories(toe-core PUBLIC
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
 # All GL/decoder deps are PRIVATE — implementation detail, not part of the ABI.
-target_link_libraries(gvte-core PRIVATE
+target_link_libraries(toe-core PRIVATE
   PkgConfig::FREETYPE PkgConfig::HARFBUZZ PkgConfig::FONTCONFIG
   PkgConfig::PNG PkgConfig::EPOXY)
 
-target_compile_features(gvte-core PUBLIC cxx_std_23)
-target_compile_options(gvte-core PRIVATE ${GVTE_WARNINGS})
+target_compile_features(toe-core PUBLIC cxx_std_23)
+target_compile_options(toe-core PRIVATE ${TOE_WARNINGS})
 
 # ===========================================================================
-# gvte::platform — OPTIONAL Linux Surface backends (Wayland / X11 / offscreen).
+# toe::platform — OPTIONAL Linux Surface backends (Wayland / X11 / offscreen).
 #
 # This is the ONLY target that links a window system. A host that brings its
-# own window simply does not build/link this; it models gvte::platform::Surface
+# own window simply does not build/link this; it models toe::platform::Surface
 # (the concept, which lives in core) with its own type.
 # ===========================================================================
-if(GVTE_BUILD_PLATFORM)
+if(TOE_BUILD_PLATFORM)
   pkg_check_modules(EGL     REQUIRED IMPORTED_TARGET egl)
   pkg_check_modules(WAYLAND REQUIRED IMPORTED_TARGET wayland-client wayland-egl wayland-cursor)
   pkg_check_modules(XKB     REQUIRED IMPORTED_TARGET xkbcommon)
@@ -81,32 +81,32 @@ if(GVTE_BUILD_PLATFORM)
     COMMAND ${WAYLAND_SCANNER} private-code "${XDG_XML}" "${GEN}/xdg-shell-protocol.c"
     DEPENDS "${XDG_XML}" VERBATIM)
 
-  add_library(gvte-platform
+  add_library(toe-platform
     platform/surface.cpp
     platform/wayland.cpp
     platform/x11.cpp
     platform/offscreen.cpp
     "${GEN}/xdg-shell-client-protocol.h"
     "${GEN}/xdg-shell-protocol.c")
-  add_library(gvte::platform ALIAS gvte-platform)
+  add_library(toe::platform ALIAS toe-platform)
 
-  set_target_properties(gvte-platform PROPERTIES
+  set_target_properties(toe-platform PROPERTIES
     VERSION     ${PROJECT_VERSION}
     SOVERSION   ${PROJECT_VERSION_MAJOR}
     EXPORT_NAME platform
-    OUTPUT_NAME gvte-platform)
+    OUTPUT_NAME toe-platform)
 
-  target_include_directories(gvte-platform
+  target_include_directories(toe-platform
     PUBLIC
       $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
       $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     PRIVATE "${GEN}")
 
   # platform depends on core (uses the concept/types); windowing deps PRIVATE.
-  target_link_libraries(gvte-platform
-    PUBLIC  gvte::core
+  target_link_libraries(toe-platform
+    PUBLIC  toe::core
     PRIVATE PkgConfig::EGL PkgConfig::WAYLAND PkgConfig::XKB PkgConfig::X11 PkgConfig::EPOXY)
 
-  target_compile_features(gvte-platform PUBLIC cxx_std_23)
-  target_compile_options(gvte-platform PRIVATE ${GVTE_WARNINGS})
+  target_compile_features(toe-platform PUBLIC cxx_std_23)
+  target_compile_options(toe-platform PRIVATE ${TOE_WARNINGS})
 endif()

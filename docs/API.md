@@ -1,7 +1,7 @@
-# gvte API Reference
+# toe API Reference
 
-The public surface of gvte, grouped by header. All symbols are in namespace
-`gvte` (or `gvte::gfx` / `gvte::platform` as noted). For the design behind these
+The public surface of toe, grouped by header. All symbols are in namespace
+`toe` (or `toe::gfx` / `toe::platform` as noted). For the design behind these
 types see [ARCHITECTURE.md](ARCHITECTURE.md); for a working host see
 [INTEGRATION.md](INTEGRATION.md).
 
@@ -10,7 +10,7 @@ Everything fallible returns `Result<T> = std::expected<T, Error>` where
 
 ---
 
-## `gvte/terminal.hpp` — the facade
+## `toe/terminal.hpp` — the facade
 
 The main entry point. A `Terminal` is a two-state machine; you only ever touch a
 `Session` (the live state).
@@ -110,7 +110,7 @@ bool   on_alt_screen() const noexcept;
 
 ---
 
-## `gvte/pty/pty_source.hpp` — boundary 3
+## `toe/pty/pty_source.hpp` — boundary 3
 
 ```cpp
 struct SpawnCommand {
@@ -121,7 +121,7 @@ struct SpawnCommand {
 struct AdoptFd {
     int   master_fd = -1;   // an open PTY master (>= 0)
     pid_t child     = -1;   // child pid for reaping, or -1 (host manages it)
-    bool  owns_fd   = true; // gvte close()s the fd on teardown when true
+    bool  owns_fd   = true; // toe close()s the fd on teardown when true
 };
 using PtySource = std::variant<SpawnCommand, AdoptFd>;
 ```
@@ -130,7 +130,7 @@ Set `Config::source`. `pre_exec` must be async-signal-safe.
 
 ---
 
-## `gvte/gfx/render_target.hpp` — boundary 2
+## `toe/gfx/render_target.hpp` — boundary 2
 
 ```cpp
 struct Framebuffer { std::uint32_t id = 0; };            // strong newtype; 0 = default FBO
@@ -148,7 +148,7 @@ thread; `Session::render()` consumes the token and binds `target()`.
 
 ---
 
-## `gvte/gfx/renderer.hpp` — the view (advanced)
+## `toe/gfx/renderer.hpp` — the view (advanced)
 
 Most hosts never touch this directly — `Session` owns a `Renderer`. Exposed
 tunable:
@@ -157,11 +157,11 @@ tunable:
 static void Renderer::set_persistent_mapping(bool enabled) noexcept;
 ```
 Opt out of the GL 4.4 persistent-mapped instance ring (driver workaround).
-Call before `Terminal::create`. Replaces the former `GVTE_NO_PERSISTENT` env var.
+Call before `Terminal::create`. Replaces the former `TOE_NO_PERSISTENT` env var.
 
 ---
 
-## `gvte/platform/surface.hpp` — boundary 1 (in `gvte::platform`)
+## `toe/platform/surface.hpp` — boundary 1 (in `toe::platform`)
 
 Part of **core** (it's the contract).
 
@@ -194,9 +194,9 @@ model (by value or `unique_ptr`), and itself models `Surface`.
 
 ---
 
-## `gvte/platform/backend.hpp` — the Linux backends (in `gvte::platform`)
+## `toe/platform/backend.hpp` — the Linux backends (in `toe::platform`)
 
-Only in the optional `gvte::platform` target.
+Only in the optional `toe::platform` target.
 
 ```cpp
 enum class Backend { automatic, wayland, x11, offscreen };
@@ -205,13 +205,13 @@ Result<AnySurface> open_surface(std::string_view title, PixelSize initial,
                                 Backend backend = Backend::automatic);
 ```
 
-`automatic` picks Wayland → X11 → offscreen (honouring `GVTE_HEADLESS` for CI).
+`automatic` picks Wayland → X11 → offscreen (honouring `TOE_HEADLESS` for CI).
 On success a GL context is current on the calling thread. This is the *only*
-gvte function that talks to a window system.
+toe function that talks to a window system.
 
 ---
 
-## `gvte/input.hpp` — key events
+## `toe/input.hpp` — key events
 
 ```cpp
 enum class SpecialKey { Enter, Backspace, Tab, Escape, Up, Down, Left, Right,
@@ -222,12 +222,12 @@ struct Modifiers  { bool ctrl, alt, shift; };
 struct KeyEvent   { std::variant<TextInput, SpecialKey> key; Modifiers mods; };
 ```
 
-Construct a `KeyEvent` and hand it to `Session::send_key`; gvte encodes the
+Construct a `KeyEvent` and hand it to `Session::send_key`; toe encodes the
 correct escape sequence (respecting application-cursor / keypad modes).
 
 ---
 
-## `gvte/core/types.hpp` — foundations
+## `toe/core/types.hpp` — foundations
 
 ```cpp
 template <class Tag> struct Coord;      // strong int newtype
@@ -242,7 +242,7 @@ template <class T> using Result = std::expected<T, Error>;
 
 ---
 
-## `gvte/core/tea.hpp` — the architecture (advanced / testing)
+## `toe/core/tea.hpp` — the architecture (advanced / testing)
 
 ```cpp
 // Msg — every input, as data:

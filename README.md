@@ -1,36 +1,36 @@
-# gvte — a GPU terminal engine you can drop into any project
+# toe — a GPU terminal engine you can drop into any project
 
-`gvte` is a from-scratch terminal emulator **library** — no VTE, no GTK, no
+`toe` is a from-scratch terminal emulator **library** — no VTE, no GTK, no
 SDL. It owns the entire stack (PTY → escape-sequence parser → grid model →
 GPU renderer) and is the engine behind [`hand`](../hand).
 
 It is a *real* library, not an application wearing a library's clothes. The
-engine (`gvte::core`) knows nothing about your window system, does not own your
+engine (`toe::core`) knows nothing about your window system, does not own your
 GL context, and does not decide how your shell is spawned. The three things a
 terminal library should *not* dictate — **the window, the GL context, and the
 child process** — are handed to the host, and each boundary is encoded in the
 type system so illegal wiring is a compile error.
 
 ```cmake
-find_package(gvte CONFIG REQUIRED COMPONENTS Core)          # bring your own window
-find_package(gvte CONFIG REQUIRED COMPONENTS Core Platform) # or use the Linux backends
-target_link_libraries(app PRIVATE gvte::core [gvte::platform])
+find_package(toe CONFIG REQUIRED COMPONENTS Core)          # bring your own window
+find_package(toe CONFIG REQUIRED COMPONENTS Core Platform) # or use the Linux backends
+target_link_libraries(app PRIVATE toe::core [toe::platform])
 ```
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — the Elm-architecture core and the type-theoretic design.
-- **[docs/INTEGRATION.md](docs/INTEGRATION.md)** — how to embed gvte, with a complete minimal host.
+- **[docs/INTEGRATION.md](docs/INTEGRATION.md)** — how to embed toe, with a complete minimal host.
 - **[docs/API.md](docs/API.md)** — the public surface, header by header.
 
 ## Two libraries, one strict boundary
 
 | Target | What it is | Links |
 |--------|-----------|-------|
-| **`gvte::core`** | the whole terminal — pty, VT parser, grid model, TEA reducer, inline graphics, GPU renderer, keymap — **plus the `Surface` contract** | freetype, harfbuzz, fontconfig, libpng, epoxy (all **private**) |
-| **`gvte::platform`** *(optional)* | batteries-included Linux `Surface` backends: Wayland / X11 / offscreen EGL + `open_surface()` | core + wayland, x11, xcb, xkbcommon, egl |
+| **`toe::core`** | the whole terminal — pty, VT parser, grid model, TEA reducer, inline graphics, GPU renderer, keymap — **plus the `Surface` contract** | freetype, harfbuzz, fontconfig, libpng, epoxy (all **private**) |
+| **`toe::platform`** *(optional)* | batteries-included Linux `Surface` backends: Wayland / X11 / offscreen EGL + `open_surface()` | core + wayland, x11, xcb, xkbcommon, egl |
 
-`gvte::core` links **zero** windowing libraries. A host on macOS, Windows, or an
-embedded compositor consumes `gvte::core` and provides its own `Surface`; a
-Linux terminal like `hand` also links `gvte::platform` and gets a window for
+`toe::core` links **zero** windowing libraries. A host on macOS, Windows, or an
+embedded compositor consumes `toe::core` and provides its own `Surface`; a
+Linux terminal like `hand` also links `toe::platform` and gets a window for
 free. The dependency arrow only ever points `core ← platform ← host`.
 
 ## The three boundaries that give the host all the power
@@ -38,8 +38,8 @@ free. The dependency arrow only ever points `core ← platform ← host`.
 ### 1. `Surface` is a concept, not a base class
 
 Bring your own window (GLFW, Qt, SDL, Win32, Cocoa) by *modelling* the
-`gvte::platform::Surface` **C++23 concept** — a structural contract. No
-inheritance, no vtable forced on your type, no gvte header pulled into your
+`toe::platform::Surface` **C++23 concept** — a structural contract. No
+inheritance, no vtable forced on your type, no toe header pulled into your
 window class beyond the contract. Optional capabilities (title, clipboard,
 key-repeat, flush) are refinement concepts, so a minimal host implements five
 methods. `AnySurface` offers opt-in type erasure for hosts that want runtime
@@ -55,7 +55,7 @@ target `Framebuffer`, so the host says exactly where the terminal composites
 (default: the window's back buffer; or an offscreen FBO / a texture you own).
 
 ```cpp
-auto rc = gvte::gfx::RenderContext::adopt_current();  // "my GL context is live"
+auto rc = toe::gfx::RenderContext::adopt_current();  // "my GL context is live"
 session.render(rc, px);                                // impossible to call without proof
 ```
 
@@ -63,7 +63,7 @@ session.render(rc, px);                                // impossible to call wit
 
 `Config::source` is a closed sum type. Spawn a shell the batteries-included way
 (with `TERM` and a `pre_exec` hook as *fields*, not hard-coded), or adopt a PTY
-fd you already own — an SSH channel, a container, a recorded session — so gvte
+fd you already own — an SSH channel, a container, a recorded session — so toe
 never `fork`s:
 
 ```cpp
@@ -116,7 +116,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full treatment.
 
 ## Library hygiene
 
-gvte::core behaves like a guest in the host's process:
+toe::core behaves like a guest in the host's process:
 
 - **No environment reads for policy.** Backend selection is an explicit
   `Backend` argument; the persistent-mapping escape hatch is
@@ -129,7 +129,7 @@ gvte::core behaves like a guest in the host's process:
   post-`fork` write is async-signal-safe.
 - **Per-instance C handles.** Each `FontAtlas` owns its own `FT_Library`; the
   only process-global touch is Fontconfig's idempotent, refcounted `FcInit()`.
-- **Fully packaged.** `install()` + `find_package(gvte COMPONENTS Core [Platform])`,
+- **Fully packaged.** `install()` + `find_package(toe COMPONENTS Core [Platform])`,
   versioned SONAMEs, pkg-config. Private deps stay private — no GL type leaks
   through a public header.
 
@@ -139,23 +139,23 @@ gvte::core behaves like a guest in the host's process:
 cmake -S . -B build
 cmake --build build -j
 ctest --test-dir build          # parser, screen, tea, keymap, render, cache
-./build/gvte-demo               # a minimal host that drives the library
+./build/toe-demo               # a minimal host that drives the library
 ```
 
 Useful options:
 
 | Option | Default | Effect |
 |--------|---------|--------|
-| `GVTE_BUILD_PLATFORM` | `ON` | build the Linux Surface backends |
-| `GVTE_BUILD_DEMO` | top-level | build `gvte-demo` (needs platform) |
-| `GVTE_BUILD_TESTS` | top-level | build the test suite |
-| `GVTE_INSTALL` | top-level | emit install + `find_package` rules |
+| `TOE_BUILD_PLATFORM` | `ON` | build the Linux Surface backends |
+| `TOE_BUILD_DEMO` | top-level | build `toe-demo` (needs platform) |
+| `TOE_BUILD_TESTS` | top-level | build the test suite |
+| `TOE_INSTALL` | top-level | emit install + `find_package` rules |
 
 A core-only build has no windowing dependencies:
 
 ```sh
-cmake -S . -B build -DGVTE_BUILD_PLATFORM=OFF -DGVTE_BUILD_DEMO=OFF
-# libgvte links no wayland / xcb / x11 / egl
+cmake -S . -B build -DTOE_BUILD_PLATFORM=OFF -DTOE_BUILD_DEMO=OFF
+# libtoe links no wayland / xcb / x11 / egl
 ```
 
 ## Layout
@@ -171,7 +171,7 @@ cmake -S . -B build -DGVTE_BUILD_PLATFORM=OFF -DGVTE_BUILD_DEMO=OFF
 | `gfx/render_target.hpp` | `RenderContext` capability token (**boundary 2**) |
 | `gfx/*` | font atlas, palette, SDF shaders, instanced renderer (`view`) |
 | `platform/surface.hpp` | the `Surface` **concept** + `Event` + `AnySurface` (**boundary 1**) |
-| `platform/*.cpp` | Wayland / X11 / offscreen backends (`gvte::platform`) |
+| `platform/*.cpp` | Wayland / X11 / offscreen backends (`toe::platform`) |
 | `terminal.*` | `Terminal` lifecycle SM + `Session` + Runtime |
 
 ## Status

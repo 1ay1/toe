@@ -6,7 +6,7 @@
 // event translation and EGL setup mirror the Wayland backend so both satisfy
 // the exact same interface.
 
-#include "gvte/platform/surface.hpp"
+#include "toe/platform/surface.hpp"
 
 #include <cstdlib>
 #include <cstring>
@@ -26,7 +26,7 @@
 
 #include <unistd.h>
 
-namespace gvte::platform {
+namespace toe::platform {
 
 namespace {
 
@@ -68,7 +68,7 @@ private:
     Atom a_clipboard_ = 0;
     Atom a_utf8_ = 0;
     Atom a_targets_ = 0;
-    Atom a_prop_ = 0; // property used for transfers ("GVTE_CLIP")
+    Atom a_prop_ = 0; // property used for transfers ("TOE_CLIP")
     std::string clipboard_owned_; // text we currently offer
 
     // Pointer / click-count tracking.
@@ -171,7 +171,7 @@ Result<void> X11Surface::init(std::string_view title, PixelSize initial) {
     a_clipboard_ = XInternAtom(display_, "CLIPBOARD", False);
     a_utf8_ = XInternAtom(display_, "UTF8_STRING", False);
     a_targets_ = XInternAtom(display_, "TARGETS", False);
-    a_prop_ = XInternAtom(display_, "GVTE_CLIP", False);
+    a_prop_ = XInternAtom(display_, "TOE_CLIP", False);
 
     XMapWindow(display_, win);
     // Detectable auto-repeat: the server sends only KeyPress on repeat (no
@@ -547,4 +547,4 @@ Result<AnySurface> open_x11_surface(std::string_view title, PixelSize initial) {
     return AnySurface{std::move(*s)};
 }
 
-} // namespace gvte::platform
+} // namespace toe::platform

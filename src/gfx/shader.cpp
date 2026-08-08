@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.0-or-later
 
-#include "gvte/gfx/shader.hpp"
+#include "toe/gfx/shader.hpp"
 
 #include <algorithm>
 #include <string>
@@ -9,7 +9,7 @@
 
 #include <epoxy/gl.h>
 
-namespace gvte::gfx {
+namespace toe::gfx {
 
 namespace {
 
@@ -92,4 +92,4 @@ int Program::uniform(const char *name) const noexcept {
     return glGetUniformLocation(prog_, name);
 }
 
-} // namespace gvte::gfx
+} // namespace toe::gfx

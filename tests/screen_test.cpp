@@ -7,10 +7,10 @@
 #include <string>
 #include <string_view>
 
-#include "gvte/term/screen.hpp"
-#include "gvte/vt/parser.hpp"
+#include "toe/term/screen.hpp"
+#include "toe/vt/parser.hpp"
 
-using namespace gvte;
+using namespace toe;
 
 namespace {
 
@@ -19,7 +19,7 @@ void feed(term::Screen &scr, std::string_view bytes) {
     vt::Parser p;
     p.feed(std::span<const char>{bytes.data(), bytes.size()},
            [&](const vt::Action &a) {
-               gvte::Cmds out;
+               toe::Cmds out;
                scr.apply(a, out);
            });
 }
@@ -30,10 +30,10 @@ std::string feed_replies(term::Screen &scr, std::string_view bytes) {
     vt::Parser p;
     std::string replies;
     p.feed(std::span<const char>{bytes.data(), bytes.size()}, [&](const vt::Action &a) {
-        gvte::Cmds out;
+        toe::Cmds out;
         scr.apply(a, out);
-        for (const gvte::Cmd &c : out) {
-            if (const auto *w = std::get_if<gvte::WriteChild>(&c)) {
+        for (const toe::Cmd &c : out) {
+            if (const auto *w = std::get_if<toe::WriteChild>(&c)) {
                 replies += w->bytes;
             }
         }
@@ -356,7 +356,7 @@ int main() {
         // CPR: move cursor to row 3 col 7 (1-based CUP), then request position.
         expect(feed_replies(s, "\x1b[3;7H\x1b[6n") == "\x1b[3;7R",
                "CPR cursor position reply (1-based)");
-        expect(feed_replies(s, "\x1b[>0q") == "\x1bP>|gvte(0.1)\x1b\\", "XTVERSION reply (DCS)");
+        expect(feed_replies(s, "\x1b[>0q") == "\x1bP>|toe(0.1)\x1b\\", "XTVERSION reply (DCS)");
         // XTGETTCAP for 'Co' (colours): 436f hex. Reply advertises 256.
         expect(feed_replies(s, "\x1bP+q436f\x1b\\") == "\x1bP1+r436F=323536\x1b\\",
                "XTGETTCAP Co -> 256");

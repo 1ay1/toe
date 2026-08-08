@@ -5,21 +5,21 @@
 // are drawn with a single instanced draw call over a unit quad, so the whole
 // screen is a couple of GL calls regardless of cell count.
 
-#ifndef GVTE_GFX_RENDERER_HPP
-#define GVTE_GFX_RENDERER_HPP
+#ifndef TOE_GFX_RENDERER_HPP
+#define TOE_GFX_RENDERER_HPP
 
 #include <cstdint>
 #include <span>
 #include <unordered_map>
 #include <vector>
 
-#include "gvte/core/types.hpp"
-#include "gvte/gfx/font.hpp"
-#include "gvte/gfx/palette.hpp"
-#include "gvte/gfx/shader.hpp"
-#include "gvte/term/screen.hpp"
+#include "toe/core/types.hpp"
+#include "toe/gfx/font.hpp"
+#include "toe/gfx/palette.hpp"
+#include "toe/gfx/shader.hpp"
+#include "toe/term/screen.hpp"
 
-namespace gvte::gfx {
+namespace toe::gfx {
 
 class Renderer {
 public:
@@ -29,7 +29,7 @@ public:
     // escape hatch — some broken drivers advertise GL_ARB_buffer_storage but
     // mishandle coherent mapping). Off by default; the library auto-detects the
     // capability and already falls back on a failed map. Call before create().
-    // Replaces the former GVTE_NO_PERSISTENT environment variable: policy is a
+    // Replaces the former TOE_NO_PERSISTENT environment variable: policy is a
     // host decision, not an env read inside the library.
     static void set_persistent_mapping(bool enabled) noexcept;
 
@@ -176,6 +176,6 @@ private:
     std::vector<Instance> glyphs_{}; // scratch for the fused build pass
 };
 
-} // namespace gvte::gfx
+} // namespace toe::gfx
 
-#endif // GVTE_GFX_RENDERER_HPP
+#endif // TOE_GFX_RENDERER_HPP

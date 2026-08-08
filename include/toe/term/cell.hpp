@@ -6,15 +6,15 @@
 // palette index vs true-color) so "which kind of color" is impossible to
 // confuse with "which value".
 
-#ifndef GVTE_TERM_CELL_HPP
-#define GVTE_TERM_CELL_HPP
+#ifndef TOE_TERM_CELL_HPP
+#define TOE_TERM_CELL_HPP
 
 #include <cstdint>
 #include <variant>
 
-#include "gvte/core/types.hpp"
+#include "toe/core/types.hpp"
 
-namespace gvte::term {
+namespace toe::term {
 
 // --- color as a sum type ---------------------------------------------------
 // The terminal's notion of a color is one of three disjoint things. Encoding
@@ -110,6 +110,6 @@ struct Cell {
     constexpr auto operator<=>(const Cell &) const = default;
 };
 
-} // namespace gvte::term
+} // namespace toe::term
 
-#endif // GVTE_TERM_CELL_HPP
+#endif // TOE_TERM_CELL_HPP

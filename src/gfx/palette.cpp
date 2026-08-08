@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LGPL-2.0-or-later
 
-#include "gvte/gfx/palette.hpp"
+#include "toe/gfx/palette.hpp"
 
-namespace gvte::gfx {
+namespace toe::gfx {
 
 Palette::Palette() {
     // 0-15: standard + bright ANSI colors (a common Tango-ish set).
@@ -31,4 +31,4 @@ Palette::Palette() {
     }
 }
 
-} // namespace gvte::gfx
+} // namespace toe::gfx

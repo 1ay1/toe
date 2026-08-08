@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.0-or-later
 //
-// The Surface contract, as a *concept* — the seam between gvte's engine and a
-// window system. This header lives in gvte::core and names NO platform type
+// The Surface contract, as a *concept* — the seam between toe's engine and a
+// window system. This header lives in toe::core and names NO platform type
 // (no wl_*, no xcb_*, no EGL). It defines only:
 //
 //   1. the platform-neutral `Event` closed sum type,
@@ -12,12 +12,12 @@
 //
 // Design: a host brings its own window (GLFW, Qt, SDL, Win32, Cocoa) by making
 // a type that *models* `Surface`. There is no base class to inherit, no vtable
-// forced on the host's type, and no gvte header pulled into the host's window
-// class beyond this one. The shipped Wayland/X11 backends (gvte::platform) are
+// forced on the host's type, and no toe header pulled into the host's window
+// class beyond this one. The shipped Wayland/X11 backends (toe::platform) are
 // merely one set of models of this same concept.
 
-#ifndef GVTE_PLATFORM_SURFACE_HPP
-#define GVTE_PLATFORM_SURFACE_HPP
+#ifndef TOE_PLATFORM_SURFACE_HPP
+#define TOE_PLATFORM_SURFACE_HPP
 
 #include <concepts>
 #include <cstdint>
@@ -28,10 +28,10 @@
 #include <utility>
 #include <variant>
 
-#include "gvte/core/types.hpp"
-#include "gvte/input.hpp"
+#include "toe/core/types.hpp"
+#include "toe/input.hpp"
 
-namespace gvte::platform {
+namespace toe::platform {
 
 // --- windowing events (platform-neutral) ----------------------------------
 struct CloseRequested {};
@@ -80,7 +80,7 @@ struct FocusChanged {
 using Event = std::variant<CloseRequested, Resized, KeyPressed, TextEntered, MouseDown, MouseUp,
                            MouseMove, MouseWheel, FocusChanged>;
 
-// The callback shape gvte hands to a surface to receive drained events.
+// The callback shape toe hands to a surface to receive drained events.
 using EventSink = std::function<void(const Event &)>;
 
 // ===========================================================================
@@ -103,7 +103,7 @@ concept Surface = requires(S s, const S cs, const EventSink &sink) {
     { s.poll_events(sink) } -> std::same_as<void>;
 
     // The fd the windowing connection multiplexes on (-1 if none), so a host
-    // — or gvte's own reference loop — can poll() it to block idle.
+    // — or toe's own reference loop — can poll() it to block idle.
     { cs.event_fd() } -> std::convertible_to<int>;
 
     // True once the server/compositor has closed the connection.
@@ -138,7 +138,7 @@ concept FlushableSurface = Surface<S> && requires(S s) {
 
 // --- uniform accessors -----------------------------------------------------
 // Free functions that work on ANY model, filling in sensible no-op defaults
-// for the optional refinements. gvte's runtime calls these, so it never has to
+// for the optional refinements. toe's runtime calls these, so it never has to
 // know whether a given host implemented the optional bits.
 
 template <Surface S>
@@ -247,6 +247,6 @@ private:
 
 static_assert(Surface<AnySurface>, "AnySurface must itself model Surface");
 
-} // namespace gvte::platform
+} // namespace toe::platform
 
-#endif // GVTE_PLATFORM_SURFACE_HPP
+#endif // TOE_PLATFORM_SURFACE_HPP

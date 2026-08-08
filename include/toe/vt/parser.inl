@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: LGPL-2.0-or-later
 //
-// Template implementation of gvte::vt::Parser. Included by parser.hpp.
+// Template implementation of toe::vt::Parser. Included by parser.hpp.
 
-#ifndef GVTE_VT_PARSER_INL
-#define GVTE_VT_PARSER_INL
+#ifndef TOE_VT_PARSER_INL
+#define TOE_VT_PARSER_INL
 
-namespace gvte::vt {
+namespace toe::vt {
 
 inline void Parser::clear_csi() noexcept {
     params_.clear();
@@ -314,6 +314,6 @@ void Parser::feed(std::span<const char> bytes, Sink &&sink) {
     }
 }
 
-} // namespace gvte::vt
+} // namespace toe::vt
 
-#endif // GVTE_VT_PARSER_INL
+#endif // TOE_VT_PARSER_INL

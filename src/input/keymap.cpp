@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LGPL-2.0-or-later
 
-#include "gvte/input/keymap.hpp"
+#include "toe/input/keymap.hpp"
 
-namespace gvte {
+namespace toe {
 
 namespace {
 
@@ -184,4 +184,4 @@ std::span<const char> encode_key(const KeyEvent &ev, const KeyContext &ctx, KeyB
     return {};
 }
 
-} // namespace gvte
+} // namespace toe

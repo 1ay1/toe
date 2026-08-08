@@ -10,12 +10,12 @@
 #include <string>
 #include <vector>
 #include <epoxy/gl.h>
-#include "gvte/gfx/font.hpp"
-#include "gvte/gfx/renderer.hpp"
-#include "gvte/platform/backend.hpp"
-#include "gvte/term/screen.hpp"
-#include "gvte/vt/parser.hpp"
-using namespace gvte;
+#include "toe/gfx/font.hpp"
+#include "toe/gfx/renderer.hpp"
+#include "toe/platform/backend.hpp"
+#include "toe/term/screen.hpp"
+#include "toe/vt/parser.hpp"
+using namespace toe;
 
 static std::vector<unsigned char> render_to_pixels(gfx::Renderer& r, term::Screen& s,
                                                     int W, int H, GLuint fbo) {
@@ -47,7 +47,7 @@ int main() {
     term::Screen s{Extent{40,20}}; // small grid
     vt::Parser parser;
     auto feed=[&](const std::string& t){ parser.feed(std::span<const char>{t.data(),t.size()},
-        [&](const vt::Action& act){ gvte::Cmds out; s.apply(act,out); }); };
+        [&](const vt::Action& act){ toe::Cmds out; s.apply(act,out); }); };
 
     // A sequence of mutations, rendering the warm renderer after each so its
     // cache is exercised incrementally. Deliberately covers the ops that bypass

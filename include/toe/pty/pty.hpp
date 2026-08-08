@@ -4,18 +4,18 @@
 // The master fd is non-blocking so the render loop can poll it without ever
 // stalling on a read.
 
-#ifndef GVTE_PTY_PTY_HPP
-#define GVTE_PTY_PTY_HPP
+#ifndef TOE_PTY_PTY_HPP
+#define TOE_PTY_PTY_HPP
 
 #include <span>
 #include <string_view>
 
 #include <sys/types.h>
 
-#include "gvte/core/types.hpp"
-#include "gvte/pty/pty_source.hpp"
+#include "toe/core/types.hpp"
+#include "toe/pty/pty_source.hpp"
 
-namespace gvte {
+namespace toe {
 
 class Pty {
 public:
@@ -26,7 +26,7 @@ public:
     static Result<Pty> spawn(const SpawnCommand &cmd, Extent size);
 
     // Adopt a PTY master fd the host already owns (SSH, container, replay).
-    // gvte never forks. See AdoptFd for ownership semantics.
+    // toe never forks. See AdoptFd for ownership semantics.
     static Result<Pty> adopt(const AdoptFd &src);
 
     Pty(const Pty &) = delete;
@@ -73,6 +73,6 @@ private:
     bool owns_child_{true};    // false when the host manages the child lifetime
 };
 
-} // namespace gvte
+} // namespace toe
 
-#endif // GVTE_PTY_PTY_HPP
+#endif // TOE_PTY_PTY_HPP

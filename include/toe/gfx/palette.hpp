@@ -4,16 +4,16 @@
 // screen model keeps SGR handling pure (it only records *which* color, as a
 // sum type) and localizes the "what pixels" decision to the renderer.
 
-#ifndef GVTE_GFX_PALETTE_HPP
-#define GVTE_GFX_PALETTE_HPP
+#ifndef TOE_GFX_PALETTE_HPP
+#define TOE_GFX_PALETTE_HPP
 
 #include <array>
 #include <variant>
 
-#include "gvte/core/types.hpp"
-#include "gvte/term/cell.hpp"
+#include "toe/core/types.hpp"
+#include "toe/term/cell.hpp"
 
-namespace gvte::gfx {
+namespace toe::gfx {
 
 class Palette {
 public:
@@ -46,6 +46,6 @@ private:
     Rgb bg_{rgb(23, 23, 28)};
 };
 
-} // namespace gvte::gfx
+} // namespace toe::gfx
 
-#endif // GVTE_GFX_PALETTE_HPP
+#endif // TOE_GFX_PALETTE_HPP

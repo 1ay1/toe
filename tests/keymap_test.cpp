@@ -9,9 +9,9 @@
 #include <string>
 #include <string_view>
 
-#include "gvte/input/keymap.hpp"
+#include "toe/input/keymap.hpp"
 
-using namespace gvte;
+using namespace toe;
 
 namespace {
 

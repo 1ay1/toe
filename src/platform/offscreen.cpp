@@ -6,12 +6,12 @@
 // (and any batch/CI job) exercise the real GL renderer without a Wayland or X11
 // server. Event, clipboard and title methods are inert stubs.
 
-#include "gvte/platform/surface.hpp"
+#include "toe/platform/surface.hpp"
 
 #include <epoxy/egl.h>
 #include <epoxy/gl.h>
 
-namespace gvte::platform {
+namespace toe::platform {
 
 namespace {
 
@@ -117,4 +117,4 @@ Result<AnySurface> open_offscreen_surface(PixelSize size) {
     return AnySurface{std::move(*s)};
 }
 
-} // namespace gvte::platform
+} // namespace toe::platform

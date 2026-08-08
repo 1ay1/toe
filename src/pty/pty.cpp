@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.0-or-later
 
-#include "gvte/pty/pty.hpp"
+#include "toe/pty/pty.hpp"
 
 #include <cerrno>
 #include <csignal>
@@ -14,7 +14,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-namespace gvte {
+namespace toe {
 
 namespace {
 
@@ -76,7 +76,7 @@ Result<Pty> Pty::spawn(const SpawnCommand &cmd, Extent size) {
         ::execvp(cargv[0], cargv.data());
         // exec failed. perror is not async-signal-safe after fork; write a
         // fixed diagnostic via the raw syscall, then leave with 127.
-        const char msg[] = "gvte: exec failed\n";
+        const char msg[] = "toe: exec failed\n";
         ssize_t ignored = ::write(STDERR_FILENO, msg, sizeof(msg) - 1);
         (void)ignored;
         ::_exit(127);
@@ -215,4 +215,4 @@ int Pty::child_exit_code() noexcept {
     return 0;
 }
 
-} // namespace gvte
+} // namespace toe

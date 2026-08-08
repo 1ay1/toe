@@ -1,6 +1,6 @@
-# gvte Architecture
+# toe Architecture
 
-This document explains *how* gvte is built and *why* it's built that way. For
+This document explains *how* toe is built and *why* it's built that way. For
 embedding it, see [INTEGRATION.md](INTEGRATION.md); for the exact public
 surface, see [API.md](API.md).
 
@@ -12,7 +12,7 @@ set the title, ring the bell, touch the clipboard). The classic way to write
 one is a tangle of callbacks that mutate shared state and perform I/O inline —
 untestable, and full of "forgot to send the reply" bugs.
 
-gvte instead uses **The Elm Architecture (TEA)**: a *pure* core and a *thin*
+toe instead uses **The Elm Architecture (TEA)**: a *pure* core and a *thin*
 impure runtime.
 
 ```
@@ -53,7 +53,7 @@ suites run headless this way.
 **Auditability.** Every effect the terminal can produce is one of a closed list
 of `Cmd` alternatives. You can't accidentally bury a `pty.write()` deep in a
 parser branch — a reply is a `WriteChild` value handed back to the runtime, or
-it doesn't happen. (This is a real bug gvte fixed: fish hung 10s on an
+it doesn't happen. (This is a real bug toe fixed: fish hung 10s on an
 unanswered Primary Device Attributes query; the fix was to *return* the reply
 as a `Cmd` instead of forgetting to write it.)
 
@@ -62,7 +62,7 @@ is a value transformation you can reason about in isolation.
 
 ## The layering: core vs platform
 
-gvte is two libraries with a one-way dependency.
+toe is two libraries with a one-way dependency.
 
 ```
         ┌─────────────── your host (hand, demo, your app) ──────────────┐
@@ -70,7 +70,7 @@ gvte is two libraries with a one-way dependency.
         └───────┬───────────────────────────────────────────┬──────────┘
                 │ uses                                        │ links (optional)
                 ▼                                             ▼
-        gvte::core                                     gvte::platform
+        toe::core                                     toe::platform
    pty · vt · screen · update · graphics ·        WaylandSurface / X11Surface /
    gfx renderer · keymap · terminal facade        OffscreenSurface + open_surface()
    + the Surface CONCEPT + RenderContext          (models the concept from core)
@@ -78,12 +78,12 @@ gvte is two libraries with a one-way dependency.
                 └───────────── does NOT depend on ────────────┘
 ```
 
-- **`gvte::core` never names a windowing type.** No `wl_*`, no `xcb_*`, no EGL.
+- **`toe::core` never names a windowing type.** No `wl_*`, no `xcb_*`, no EGL.
   It depends only on content libraries (freetype, harfbuzz, fontconfig, libpng)
   and the GL *loader* (epoxy) — all as **private** link deps, so no consumer
   inherits their headers.
-- **`gvte::platform` is one implementation of core's `Surface` contract.** It is
-  optional (`GVTE_BUILD_PLATFORM`). A host on another OS provides its own model
+- **`toe::platform` is one implementation of core's `Surface` contract.** It is
+  optional (`TOE_BUILD_PLATFORM`). A host on another OS provides its own model
   of the concept and never builds it.
 
 The `Surface` *contract* lives in core (it's the API); the *concrete backends*
@@ -91,7 +91,7 @@ live in platform (they're a convenience). That distinction is the whole design.
 
 ## The three type-enforced host boundaries
 
-gvte hands the host control over the three things a terminal library should not
+toe hands the host control over the three things a terminal library should not
 dictate. Each is a type, so misuse fails to compile rather than at runtime.
 
 ### 1. `Surface` — a concept (`platform/surface.hpp`)
@@ -111,7 +111,7 @@ concept Surface = requires(S s, const S cs, const EventSink &sink) {
 };
 ```
 
-A host models it structurally — no inheritance, no vtable, no gvte type in the
+A host models it structurally — no inheritance, no vtable, no toe type in the
 host's window class. Optional capabilities are refinement concepts
 (`TitledSurface`, `ClipboardSurface`, `RepeatingSurface`, `FlushableSurface`)
 resolved through uniform free functions (`platform::title(s, …)` etc.), so a
@@ -122,7 +122,7 @@ models `Surface`, so it flows anywhere the concept is accepted.
 ### 2. `RenderContext` — a capability token (`gfx/render_target.hpp`)
 
 `Session::render()` issues GL calls, which has an invisible precondition: a GL
-context must be current on the calling thread. gvte turns that into a value:
+context must be current on the calling thread. toe turns that into a value:
 
 ```cpp
 class RenderContext {              // move-only, non-owning
@@ -149,8 +149,8 @@ struct AdoptFd      { int master_fd; pid_t child; bool owns_fd; };
 using  PtySource    = std::variant<SpawnCommand, AdoptFd>;
 ```
 
-`SpawnCommand` is the batteries-included path — gvte `forkpty`s, but `TERM` and
-a `pre_exec` child hook are fields, not hard-coded. `AdoptFd` hands gvte a PTY
+`SpawnCommand` is the batteries-included path — toe `forkpty`s, but `TERM` and
+a `pre_exec` child hook are fields, not hard-coded. `AdoptFd` hands toe a PTY
 you already own (SSH, container, replay) and it never forks. `Config::source`
 selects between them.
 

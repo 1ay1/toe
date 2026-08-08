@@ -6,8 +6,8 @@
 // bounds-checked accessors keyed on the strong Row/Col types, so an out-of-
 // range or axis-swapped access is a logic error we can localize, not UB.
 
-#ifndef GVTE_TERM_SCREEN_HPP
-#define GVTE_TERM_SCREEN_HPP
+#ifndef TOE_TERM_SCREEN_HPP
+#define TOE_TERM_SCREEN_HPP
 
 #include <cstdint>
 #include <deque>
@@ -18,13 +18,13 @@
 #include <utility>
 #include <vector>
 
-#include "gvte/core/tea.hpp"
-#include "gvte/core/types.hpp"
-#include "gvte/term/graphics.hpp"
-#include "gvte/term/cell.hpp"
-#include "gvte/vt/parser.hpp"
+#include "toe/core/tea.hpp"
+#include "toe/core/types.hpp"
+#include "toe/term/graphics.hpp"
+#include "toe/term/cell.hpp"
+#include "toe/vt/parser.hpp"
 
-namespace gvte::term {
+namespace toe::term {
 
 class Screen {
 public:
@@ -341,6 +341,6 @@ private:
     std::size_t max_history_{10000};                // ring-buffer cap
 };
 
-} // namespace gvte::term
+} // namespace toe::term
 
-#endif // GVTE_TERM_SCREEN_HPP
+#endif // TOE_TERM_SCREEN_HPP

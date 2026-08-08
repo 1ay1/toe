@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.0-or-later
 
-#include "gvte/gfx/font.hpp"
+#include "toe/gfx/font.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -16,7 +16,7 @@
 #include <hb.h>
 #include <hb-ft.h>
 
-namespace gvte::gfx {
+namespace toe::gfx {
 
 namespace {
 
@@ -304,4 +304,4 @@ void *FontAtlas::hb_font() {
     return hb_font_;
 }
 
-} // namespace gvte::gfx
+} // namespace toe::gfx

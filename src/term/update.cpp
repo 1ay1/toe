@@ -3,11 +3,11 @@
 // The pure terminal reducer. See update.hpp. This translation unit performs no
 // I/O; it only mutates the Model and returns Cmds.
 
-#include "gvte/term/update.hpp"
+#include "toe/term/update.hpp"
 
 #include <cstdio>
 
-namespace gvte::term {
+namespace toe::term {
 
 namespace {
 
@@ -93,4 +93,4 @@ Cmds feed_output(Model &m, std::string_view bytes) {
     return out;
 }
 
-} // namespace gvte::term
+} // namespace toe::term

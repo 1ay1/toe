@@ -11,8 +11,8 @@
 // naturally. Advanced features (animation, relative/Unicode placeholders,
 // z-stacking beyond a simple order) are out of scope for now.
 
-#ifndef GVTE_TERM_GRAPHICS_HPP
-#define GVTE_TERM_GRAPHICS_HPP
+#ifndef TOE_TERM_GRAPHICS_HPP
+#define TOE_TERM_GRAPHICS_HPP
 
 #include <cstdint>
 #include <string>
@@ -20,7 +20,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace gvte::term {
+namespace toe::term {
 
 // One decoded image: tightly-packed RGBA8, top-left origin.
 struct Image {
@@ -122,6 +122,6 @@ private:
                       const std::string &b64, bool &changed);
 };
 
-} // namespace gvte::term
+} // namespace toe::term
 
-#endif // GVTE_TERM_GRAPHICS_HPP
+#endif // TOE_TERM_GRAPHICS_HPP

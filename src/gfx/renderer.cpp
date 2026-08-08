@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.0-or-later
 
-#include "gvte/gfx/renderer.hpp"
+#include "toe/gfx/renderer.hpp"
 
 #include <cstdio>
 #include <cstdint>
@@ -14,7 +14,7 @@
 
 #include <hb.h>
 
-namespace gvte::gfx {
+namespace toe::gfx {
 
 namespace {
 
@@ -188,7 +188,7 @@ inline int cell_fills(char32_t cp, CellRect out[5]) noexcept {
 namespace {
 // Host-controllable opt-out for the GL 4.4 persistent-mapped instance ring.
 // Defaults to allowed; the library still auto-detects the GL capability and
-// falls back on a failed map. Replaces the former GVTE_NO_PERSISTENT env read.
+// falls back on a failed map. Replaces the former TOE_NO_PERSISTENT env read.
 bool g_persistent_mapping_allowed = true;
 } // namespace
 
@@ -1091,4 +1091,4 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on, bo
     if (has_any_image) draw_placeholders(screen, px);
 }
 
-} // namespace gvte::gfx
+} // namespace toe::gfx

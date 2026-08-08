@@ -12,16 +12,16 @@
 // span. No allocation, no std::string, on any keystroke. The whole encoding is
 // a handful of branches and byte stores.
 
-#ifndef GVTE_INPUT_KEYMAP_HPP
-#define GVTE_INPUT_KEYMAP_HPP
+#ifndef TOE_INPUT_KEYMAP_HPP
+#define TOE_INPUT_KEYMAP_HPP
 
 #include <array>
 #include <cstddef>
 #include <span>
 
-#include "gvte/input.hpp"
+#include "toe/input.hpp"
 
-namespace gvte {
+namespace toe {
 
 // Terminal state that affects encoding (set by the app via escape sequences).
 struct KeyContext {
@@ -37,6 +37,6 @@ using KeyBuf = std::array<char, 16>;
 [[nodiscard]] std::span<const char> encode_key(const KeyEvent &ev, const KeyContext &ctx,
                                                KeyBuf &buf) noexcept;
 
-} // namespace gvte
+} // namespace toe
 
-#endif // GVTE_INPUT_KEYMAP_HPP
+#endif // TOE_INPUT_KEYMAP_HPP

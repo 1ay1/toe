@@ -8,13 +8,13 @@
 // Encoding that as a sum type makes the degenerate states of a
 // struct-with-two-fields unrepresentable.
 
-#ifndef GVTE_INPUT_HPP
-#define GVTE_INPUT_HPP
+#ifndef TOE_INPUT_HPP
+#define TOE_INPUT_HPP
 
 #include <string>
 #include <variant>
 
-namespace gvte {
+namespace toe {
 
 enum class SpecialKey {
     // Editing / navigation
@@ -41,6 +41,6 @@ struct KeyEvent {
     Modifiers mods{};
 };
 
-} // namespace gvte
+} // namespace toe
 
-#endif // GVTE_INPUT_HPP
+#endif // TOE_INPUT_HPP
