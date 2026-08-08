@@ -676,6 +676,16 @@ int main() {
         expect(s.report_focus(true).empty(), "no focus report after 1004 off");
     }
 
+    // XTWINOPS size reports (apps use these for image sizing / layout).
+    {
+        term::Screen s{Extent{80, 24}};
+        s.set_cell_size(8, 16);
+        expect(feed_replies(s, "\x1b[16t") == "\x1b[6;16;8t", "CSI 16 t -> cell size in px");
+        expect(feed_replies(s, "\x1b[14t") == "\x1b[4;384;640t",
+               "CSI 14 t -> text area px (24*16 x 80*8)");
+        expect(feed_replies(s, "\x1b[18t") == "\x1b[8;24;80t", "CSI 18 t -> size in cells");
+    }
+
     if (failures == 0) {
         std::printf("all screen tests passed\n");
         return 0;

@@ -819,6 +819,35 @@ void Screen::csi(const vt::CsiDispatch &d) {
         }
         break;
     case 'm': apply_sgr(p, d.sub); break;                   // SGR
+    case 't': { // XTWINOPS — window operations / size reports
+        if (d.private_marker) break;
+        const int op = param_raw(p, 0, 0);
+        if (op == 14) { // report text-area size in pixels: CSI 4 ; h ; w t
+            std::string r = "\x1b[4;";
+            r += std::to_string(size_.rows * cell_h_);
+            r += ';';
+            r += std::to_string(size_.cols * cell_w_);
+            r += 't';
+            reply(r);
+        } else if (op == 16) { // report cell size in pixels: CSI 6 ; h ; w t
+            std::string r = "\x1b[6;";
+            r += std::to_string(cell_h_);
+            r += ';';
+            r += std::to_string(cell_w_);
+            r += 't';
+            reply(r);
+        } else if (op == 18) { // report text-area size in cells: CSI 8 ; r ; c t
+            std::string r = "\x1b[8;";
+            r += std::to_string(size_.rows);
+            r += ';';
+            r += std::to_string(size_.cols);
+            r += 't';
+            reply(r);
+        }
+        // Other window ops (resize/move/iconify) are honoured by the host, not
+        // the model — ignored here.
+        break;
+    }
     default: break; // unhandled — silently ignore for now
     }
 }
