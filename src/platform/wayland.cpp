@@ -544,8 +544,15 @@ void WaylandSurface::kb_key(void *data, wl_keyboard *, uint32_t serial, uint32_t
     // press supersedes any previous repeat (last-key-wins, like every terminal).
     self->emit_key(key, KeyEvent::Kind::press);
     // Only repeat keys that actually produce output; modifiers/dead keys don't.
+    // Crucially, NEVER repeat while Ctrl or Alt is held: those are shortcuts
+    // (Ctrl+Shift+V paste, Ctrl+C copy, ...) and auto-repeating them fires the
+    // action twice on a single press. Held plain text keys still repeat.
     const xkb_keysym_t sym = xkb_state_key_get_one_sym(self->xkb_state_, key + 8);
-    const bool repeatable = self->xkb_keymap_ &&
+    const bool ctrl = xkb_state_mod_name_is_active(self->xkb_state_, XKB_MOD_NAME_CTRL,
+                                                   XKB_STATE_MODS_EFFECTIVE) > 0;
+    const bool alt = xkb_state_mod_name_is_active(self->xkb_state_, XKB_MOD_NAME_ALT,
+                                                  XKB_STATE_MODS_EFFECTIVE) > 0;
+    const bool repeatable = self->xkb_keymap_ && !ctrl && !alt &&
                             xkb_keymap_key_repeats(self->xkb_keymap_, key + 8) &&
                             sym != XKB_KEY_NoSymbol;
     if (repeatable) {
@@ -811,6 +818,18 @@ void WaylandSurface::set_clipboard(std::string_view utf8) {
 }
 
 std::string WaylandSurface::get_clipboard() {
+    // This pumps the display internally, which would re-dispatch a pending key
+    // event (e.g. the very Ctrl+Shift+V that triggered this paste) back into the
+    // sink and paste twice. Detach the sink for the duration so nested events
+    // are parsed into wl state but NOT re-delivered to the host.
+    const std::function<void(const Event &)> *saved_sink = sink_;
+    sink_ = nullptr;
+    struct SinkRestore {
+        WaylandSurface *s;
+        const std::function<void(const Event &)> *v;
+        ~SinkRestore() { s->sink_ = v; }
+    } restore{this, saved_sink};
+
     // Ensure any pending selection announcement has been processed so
     // selection_offer_ reflects the current clipboard owner.
     wl_display_roundtrip(display_);
