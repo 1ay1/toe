@@ -326,6 +326,27 @@ bool Graphics::handle_apc(std::string_view data, std::int64_t cursor_abs_row,
         return changed;
     }
 
+    if (action == 'p') { // display a previously-transmitted image by id
+        auto it = images_.find(id);
+        if (it == images_.end()) return false;
+        const Image &stored = it->second;
+        Placement pl;
+        pl.image_id = id;
+        pl.placement_id = pid;
+        pl.abs_row = cursor_abs_row;
+        pl.col = cursor_col;
+        pl.z = z;
+        pl.cols = cols > 0 ? cols : (cell_w > 0 ? (stored.width + cell_w - 1) / cell_w : 1);
+        pl.rows = rows > 0 ? rows : (cell_h > 0 ? (stored.height + cell_h - 1) / cell_h : 1);
+        std::erase_if(placements_, [&](const Placement &e) {
+            return e.image_id == pl.image_id && e.placement_id == pl.placement_id;
+        });
+        placements_.push_back(pl);
+        ++revision_;
+        respond_ok();
+        return true;
+    }
+
     // Transmit (a=t) or transmit+display (a=T). Both accumulate payload, keyed
     // by id; a=q (query) is ignored. Auto-assign an id when none is given so
     // chunked transfers can coalesce.
