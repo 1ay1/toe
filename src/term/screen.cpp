@@ -23,6 +23,9 @@ int param_raw(std::span<const int> p, std::size_t i, int def) {
 Screen::Screen(Extent size) : size_{size}, cells_(size.area()) {
     scroll_top_ = 0;
     scroll_bottom_ = size_.rows - 1;
+    scroll_left_ = 0;
+    scroll_right_ = size_.cols - 1;
+    lr_margins_ = false;
     live_wrapped_.assign(static_cast<std::size_t>(std::max(size_.rows, 0)), false);
     line_attr_.assign(static_cast<std::size_t>(std::max(size_.rows, 0)), LineAttr::normal);
     reset_row_map();
@@ -134,6 +137,9 @@ void Screen::resize(Extent size) {
     // A resize resets the scroll region to the full screen (xterm behavior).
     scroll_top_ = 0;
     scroll_bottom_ = size_.rows - 1;
+    scroll_left_ = 0;
+    scroll_right_ = size_.cols - 1;
+    lr_margins_ = false;
     // Rebuild default tab stops for the new width.
     tab_stops_.assign(static_cast<std::size_t>(std::max(size_.cols, 1)), false);
     for (std::int32_t c = 0; c < size_.cols; c += 8) {
@@ -371,18 +377,18 @@ void Screen::put(char32_t cp) {
     }
 
     if (wrap_pending_) {
-        cursor_.col = Col{0};
+        cursor_.col = Col{left_bound()};
         line_feed();
         wrap_pending_ = false;
     }
 
     // A double-width glyph that won't fit before the right margin wraps to the
     // next line first (leaving the last column blank), as real terminals do.
-    if (w == 2 && cursor_.col.get() + 1 >= size_.cols) {
+    if (w == 2 && cursor_.col.get() + 1 > right_bound()) {
         if (autowrap_) {
-            // Blank the final column, then wrap.
+            // Blank the final column, then wrap to the left margin.
             at(cursor_.row, cursor_.col) = Cell{};
-            cursor_.col = Col{0};
+            cursor_.col = Col{left_bound()};
             line_feed();
         } else {
             // No room and no wrap: overwrite in place as a single cell.
@@ -400,7 +406,7 @@ void Screen::put(char32_t cp) {
     }
 
     const int advance = w;
-    if (cursor_.col.get() + advance >= size_.cols) {
+    if (cursor_.col.get() + advance > right_bound()) {
         if (autowrap_) {
             wrap_pending_ = true;
             // This logical row's content continues onto the next (soft wrap):
@@ -511,7 +517,8 @@ void Screen::line_feed() {
 
 void Screen::carriage_return() {
     wrap_pending_ = false;
-    cursor_.col = Col{0};
+    // CR returns to the left margin when inside the horizontal region, else col 0.
+    cursor_.col = Col{(cursor_.col.get() >= left_bound()) ? left_bound() : 0};
     touch();
 }
 
@@ -574,6 +581,22 @@ void Screen::scroll_up(std::int32_t n) {
     const std::int32_t region = scroll_bottom_ - scroll_top_ + 1;
     n = std::clamp(n, 0, region);
     if (n == 0) return;
+
+    // Left/right margins active: scroll only the columns [left, right] within
+    // the region, cell by cell (the whole-row map rotation can't express a
+    // horizontal sub-range). No scrollback in this mode (DEC semantics).
+    if (lr_margins_ && (scroll_left_ > 0 || scroll_right_ < size_.cols - 1)) {
+        const std::int32_t l = scroll_left_, r = scroll_right_;
+        for (std::int32_t row = scroll_top_; row <= scroll_bottom_ - n; ++row)
+            for (std::int32_t c = l; c <= r; ++c)
+                at(Row{row}, Col{c}) = at(Row{row + n}, Col{c});
+        for (std::int32_t row = scroll_bottom_ - n + 1; row <= scroll_bottom_; ++row)
+            for (std::int32_t c = l; c <= r; ++c) at(Row{row}, Col{c}) = blank_cell();
+        stamp_all();
+        touch();
+        return;
+    }
+
     const bool full_screen = (scroll_top_ == 0 && scroll_bottom_ == size_.rows - 1);
 
     // Lines that scroll off the top of a FULL-screen scroll go into the
@@ -641,6 +664,20 @@ void Screen::scroll_down(std::int32_t n) {
     const std::int32_t region = scroll_bottom_ - scroll_top_ + 1;
     n = std::clamp(n, 0, region);
     if (n == 0) return;
+
+    // Column-restricted scroll when left/right margins are active.
+    if (lr_margins_ && (scroll_left_ > 0 || scroll_right_ < size_.cols - 1)) {
+        const std::int32_t l = scroll_left_, r = scroll_right_;
+        for (std::int32_t row = scroll_bottom_; row >= scroll_top_ + n; --row)
+            for (std::int32_t c = l; c <= r; ++c)
+                at(Row{row}, Col{c}) = at(Row{row - n}, Col{c});
+        for (std::int32_t row = scroll_top_; row < scroll_top_ + n; ++row)
+            for (std::int32_t c = l; c <= r; ++c) at(Row{row}, Col{c}) = blank_cell();
+        stamp_all();
+        touch();
+        return;
+    }
+
     // Rotate the row map the other way: bottom n rows wrap to the top.
     auto first = row_of_.begin() + scroll_top_;
     auto last = row_of_.begin() + scroll_bottom_ + 1;
@@ -702,10 +739,12 @@ void Screen::delete_lines(std::int32_t n) {
 void Screen::insert_chars(std::int32_t n) {
     const Row r = cursor_.row;
     const std::int32_t start = cursor_.col.get();
-    n = std::clamp(n, 0, size_.cols - start);
+    const std::int32_t right = right_bound();
+    if (start < left_bound() || start > right) return; // outside the region
+    n = std::clamp(n, 0, right + 1 - start);
     if (n == 0) return;
-    // Shift cells [start, cols-n) right by n; blank the gap.
-    for (std::int32_t c = size_.cols - 1; c >= start + n; --c) {
+    // Shift cells [start, right-n] right by n within the margin; blank the gap.
+    for (std::int32_t c = right; c >= start + n; --c) {
         at(r, Col{c}) = at(r, Col{c - n});
     }
     for (std::int32_t c = start; c < start + n; ++c) at(r, Col{c}) = blank_cell();
@@ -715,17 +754,19 @@ void Screen::insert_chars(std::int32_t n) {
 void Screen::delete_chars(std::int32_t n) {
     const Row r = cursor_.row;
     const std::int32_t start = cursor_.col.get();
-    n = std::clamp(n, 0, size_.cols - start);
+    const std::int32_t right = right_bound();
+    if (start < left_bound() || start > right) return;
+    n = std::clamp(n, 0, right + 1 - start);
     if (n == 0) return;
-    for (std::int32_t c = start; c < size_.cols - n; ++c) at(r, Col{c}) = at(r, Col{c + n});
-    for (std::int32_t c = size_.cols - n; c < size_.cols; ++c) at(r, Col{c}) = blank_cell();
+    for (std::int32_t c = start; c <= right - n; ++c) at(r, Col{c}) = at(r, Col{c + n});
+    for (std::int32_t c = right - n + 1; c <= right; ++c) at(r, Col{c}) = blank_cell();
     touch();
 }
 
 void Screen::erase_chars(std::int32_t n) {
     const Row r = cursor_.row;
     const std::int32_t start = cursor_.col.get();
-    n = std::clamp(n, 0, size_.cols - start);
+    n = std::clamp(n, 0, size_.cols - start); // ECH ignores margins (per spec)
     for (std::int32_t c = start; c < start + n; ++c) at(r, Col{c}) = blank_cell();
     touch();
 }
@@ -750,6 +791,20 @@ void Screen::set_scroll_region(int top, int bottom) {
         scroll_bottom_ = b - 1;
         // DECSTBM homes the cursor.
         cursor_ = Pos{Row{0}, Col{0}};
+        touch();
+    }
+}
+
+void Screen::set_lr_margins(int left, int right) {
+    // DECSLRM params are 1-based; 0/absent means the extreme columns.
+    const int l = (left <= 0) ? 1 : left;
+    const int r = (right <= 0) ? size_.cols : right;
+    if (l < r && r <= size_.cols) {
+        scroll_left_ = l - 1;
+        scroll_right_ = r - 1;
+        // Like DECSTBM, DECSLRM homes the cursor (to the region origin).
+        cursor_ = Pos{Row{scroll_top_}, Col{scroll_left_}};
+        wrap_pending_ = false;
         touch();
     }
 }
@@ -815,6 +870,10 @@ void Screen::set_private_mode(int mode, bool set) {
         } else {
             leave_alt_screen();
         }
+        break;
+    case 69: // DECLRMM (DECVSSM) — enable/disable left+right margins.
+        lr_margins_ = set;
+        if (!set) { scroll_left_ = 0; scroll_right_ = size_.cols - 1; }
         break;
     default:
         break; // unhandled private mode
@@ -915,6 +974,9 @@ void Screen::soft_reset() {
     charset_use_g1_ = false;
     scroll_top_ = 0;
     scroll_bottom_ = size_.rows - 1;
+    scroll_left_ = 0;
+    scroll_right_ = size_.cols - 1;
+    lr_margins_ = false;
     saved_cursor_ = Pos{};
     kitty_stack_.assign(1, 0);
     wrap_pending_ = false;
@@ -1150,7 +1212,13 @@ void Screen::csi(const vt::CsiDispatch &d) {
         }
         break;
     case 's':
-        if (!d.private_marker) save_cursor(); // ANSI.SYS save cursor
+        if (d.private_marker) break;
+        if (lr_margins_) {
+            // DECSLRM: CSI l ; r s -> set left/right margins (1-based).
+            set_lr_margins(param_raw(p, 0, 0), param_raw(p, 1, 0));
+        } else {
+            save_cursor(); // ANSI.SYS save cursor (DECSC alias)
+        }
         break;
     case 'u':
         if (d.private_marker && (d.marker == '?' || d.marker == '>' || d.marker == '<' ||
@@ -1437,6 +1505,9 @@ void Screen::esc(const vt::EscDispatch &d) {
             wrap_pending_ = false;
             scroll_top_ = 0;
             scroll_bottom_ = size_.rows - 1;
+            scroll_left_ = 0;
+            scroll_right_ = size_.cols - 1;
+            lr_margins_ = false;
             charset_g0_ = charset_g1_ = Charset::Ascii;
             charset_use_g1_ = false;
             sync_output_ = false; // never leave rendering frozen after a reset
@@ -1454,6 +1525,32 @@ void Screen::esc(const vt::EscDispatch &d) {
         case 'H': set_tab_stop(); return;   // HTS (set tab stop)
         case '=': app_keypad_ = true; return;  // DECKPAM (application keypad)
         case '>': app_keypad_ = false; return; // DECKPNM (normal keypad)
+        case '6': // DECBI — back index: cursor left, or shift content right at
+                  // the left margin (a new blank column opens at the left).
+            if (cursor_.col.get() <= left_bound()) {
+                const std::int32_t l = left_bound(), r = right_bound();
+                for (std::int32_t row = scroll_top_; row <= scroll_bottom_; ++row) {
+                    for (std::int32_t c = r; c > l; --c) at(Row{row}, Col{c}) = at(Row{row}, Col{c - 1});
+                    at(Row{row}, Col{l}) = blank_cell();
+                }
+                touch();
+            } else {
+                cursor_.col = Col{cursor_.col.get() - 1};
+            }
+            return;
+        case '9': // DECFI — forward index: cursor right, or shift content left at
+                  // the right margin (a new blank column opens at the right).
+            if (cursor_.col.get() >= right_bound()) {
+                const std::int32_t l = left_bound(), r = right_bound();
+                for (std::int32_t row = scroll_top_; row <= scroll_bottom_; ++row) {
+                    for (std::int32_t c = l; c < r; ++c) at(Row{row}, Col{c}) = at(Row{row}, Col{c + 1});
+                    at(Row{row}, Col{r}) = blank_cell();
+                }
+                touch();
+            } else {
+                cursor_.col = Col{cursor_.col.get() + 1};
+            }
+            return;
         case 'M': // RI (reverse index)
             if (cursor_.row.get() == scroll_top_) {
                 scroll_down(1);

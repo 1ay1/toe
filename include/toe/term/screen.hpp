@@ -244,6 +244,21 @@ private:
     [[nodiscard]] std::int32_t next_tab_stop(std::int32_t col) const noexcept;
     [[nodiscard]] std::int32_t prev_tab_stop(std::int32_t col) const noexcept;
     void set_scroll_region(int top, int bottom); // DECSTBM
+    void set_lr_margins(int left, int right);     // DECSLRM
+    // The active right/left column bound: the margin when DECLRMM is on, else
+    // the screen edge. Used by wrap, CR, insert/delete, and horizontal scroll.
+    [[nodiscard]] std::int32_t left_bound() const noexcept {
+        return lr_margins_ ? scroll_left_ : 0;
+    }
+    [[nodiscard]] std::int32_t right_bound() const noexcept {
+        return lr_margins_ ? scroll_right_ : size_.cols - 1;
+    }
+    // True if the cursor is within the vertical scroll region (margins only
+    // constrain operations when the cursor is inside the region).
+    [[nodiscard]] bool cursor_in_region() const noexcept {
+        const std::int32_t r = cursor_.row.get(), c = cursor_.col.get();
+        return r >= scroll_top_ && r <= scroll_bottom_ && c >= left_bound() && c <= right_bound();
+    }
     void save_cursor();                    // DECSC / CSI s
     void restore_cursor();                 // DECRC / CSI u
     void set_private_mode(int mode, bool set); // CSI ? Pm h/l
@@ -312,6 +327,11 @@ private:
     // Scroll region (DECSTBM), 0-based inclusive. Defaults to the whole grid.
     std::int32_t scroll_top_{0};
     std::int32_t scroll_bottom_{0}; // set to rows-1 in ctor/resize
+    // Left/right margins (DECSLRM), 0-based inclusive. Only active when the
+    // DECLRMM mode (?69) is enabled; otherwise the full width [0, cols-1].
+    std::int32_t scroll_left_{0};
+    std::int32_t scroll_right_{0};  // set to cols-1 in ctor/resize
+    bool lr_margins_{false};        // DECLRMM (?69): left/right margins active
 
     // Saved cursor state (DECSC/DECRC).
     Pos saved_cursor_{};

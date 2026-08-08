@@ -177,7 +177,8 @@ cmake -S . -B build -DTOE_BUILD_PLATFORM=OFF -DTOE_BUILD_DEMO=OFF
 ## Status
 
 A real terminal: runs vim, tmux, htop; **reflow on resize** (logical lines
-rewrap when the width changes, scrollback included), scroll regions, alt screen,
+rewrap when the width changes, scrollback included), scroll regions, left/right
+margins (DECSLRM/DECLRMM, DECBI/DECFI), alt screen,
 selection (char/word/line/block), mouse in and out, clipboard (Wayland + X11),
 OSC titles/hyperlinks/52, working directory (OSC 7), shell integration marks
 (OSC 133), dynamic colours (OSC 4/104 palette, 10/11 default

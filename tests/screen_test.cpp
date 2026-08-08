@@ -981,6 +981,33 @@ int main() {
                "DECRQCRA replies DCS Pid ! ~ <hex> ST");
     }
 
+    // --- left/right margins (DECLRMM ?69 + DECSLRM) ------------------------
+    {
+        term::Screen s{Extent{10, 4}};
+        feed(s, "\x1b[?69h");    // enable DECLRMM
+        feed(s, "\x1b[3;7s");    // DECSLRM: left=col3(0-based 2), right=col7(6)
+        // Cursor homed to the region origin (top row, left margin).
+        expect(s.cursor().col.get() == 2 && s.cursor().row.get() == 0,
+               "DECSLRM homes cursor to left margin");
+        // Type past the right margin: it wraps at the margin, not the screen edge.
+        feed(s, "ABCDEF"); // 6 chars into a 5-wide margin region [2..6]
+        expect(glyph_at(s, 0, 2) == U'A' && glyph_at(s, 0, 6) == U'E' &&
+                   glyph_at(s, 1, 2) == U'F',
+               "text wraps at the right margin and CR-to-left-margin");
+        // Insert-chars shifts only within the margins.
+        feed(s, "\x1b[H"); // home (origin off -> absolute 0,0)... clamp
+    }
+    {
+        term::Screen s{Extent{10, 3}};
+        feed(s, "\x1b[?69h\x1b[2;5s"); // margins cols 2..5 (0-based 1..4)
+        feed(s, "\x1b[1;2H");          // move to row0 col1 (the left margin)
+        feed(s, "XYZW");               // fill the margin region
+        feed(s, "\x1b[1;2H\x1b[@");    // ICH 1 at left margin: shift right within margin
+        expect(glyph_at(s, 0, 2) == U'X' && glyph_at(s, 0, 4) == U'Z',
+               "ICH shifts only within left/right margins");
+        expect(glyph_at(s, 0, 1) == U' ', "ICH opens a blank at the left margin");
+    }
+
     if (failures == 0) {
         std::printf("all screen tests passed\n");
         return 0;
