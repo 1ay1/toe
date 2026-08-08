@@ -178,7 +178,8 @@ cmake -S . -B build -DTOE_BUILD_PLATFORM=OFF -DTOE_BUILD_DEMO=OFF
 
 A real terminal: runs vim, tmux, htop; scroll regions, alt screen, selection
 (char/word/line/block), mouse in and out, clipboard (Wayland + X11), OSC
-titles/hyperlinks/52, full device-query replies (DA/DSR/XTVERSION/XTGETTCAP),
+titles/hyperlinks/52, cursor shapes (DECSCUSR: block/underline/bar, steady or
+blinking), full device-query replies (DA/DSR/XTVERSION/XTGETTCAP/DECRQSS/DECRQM),
 inline images with animation.
 
 ## License

@@ -321,6 +321,9 @@ int Session::cell_width() const noexcept { return impl_->cell_w; }
 int Session::cell_height() const noexcept { return impl_->cell_h; }
 bool Session::bracketed_paste() const noexcept { return impl_->model.screen.bracketed_paste(); }
 bool Session::on_alt_screen() const noexcept { return impl_->model.screen.on_alt_screen(); }
+bool Session::cursor_blinks() const noexcept {
+    return impl_->model.screen.cursor_style().blink;
+}
 
 std::optional<std::string> Session::take_clipboard_request() {
     if (!impl_->clipboard_request) return std::nullopt;

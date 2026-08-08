@@ -169,6 +169,9 @@ public:
     // Terminal modes the host may need to honor.
     [[nodiscard]] bool bracketed_paste() const noexcept;
     [[nodiscard]] bool on_alt_screen() const noexcept;
+    // Whether the app requested a *blinking* cursor (DECSCUSR). A host driving
+    // its own blink timing should hold the cursor steady when this is false.
+    [[nodiscard]] bool cursor_blinks() const noexcept;
 
     // OSC 52: an app may ask to set the system clipboard. If one is pending,
     // returns the UTF-8 text and clears the request; else returns nullopt. The

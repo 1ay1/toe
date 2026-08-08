@@ -756,6 +756,62 @@ int main() {
         expect(id_ok, "image id encoded in the placeholder cell's fg colour");
     }
 
+    // --- DECSCUSR: cursor shape + blink ------------------------------------
+    {
+        term::Screen s{Extent{10, 3}};
+        expect(s.cursor_style().shape == term::Screen::CursorShape::block &&
+                   s.cursor_style().blink,
+               "default cursor is a blinking block");
+        feed(s, "\x1b[4 q"); // steady underline
+        expect(s.cursor_style().shape == term::Screen::CursorShape::underline &&
+                   !s.cursor_style().blink,
+               "CSI 4 SP q -> steady underline");
+        feed(s, "\x1b[5 q"); // blinking bar
+        expect(s.cursor_style().shape == term::Screen::CursorShape::bar &&
+                   s.cursor_style().blink,
+               "CSI 5 SP q -> blinking bar");
+        feed(s, "\x1b[0 q"); // reset -> blinking block
+        expect(s.cursor_style().shape == term::Screen::CursorShape::block,
+               "CSI 0 SP q -> block");
+    }
+
+    // --- DECRQSS: report settings ------------------------------------------
+    {
+        term::Screen s{Extent{20, 6}};
+        feed(s, "\x1b[3 q"); // blinking underline -> Ps 3
+        expect(feed_replies(s, "\x1bP$qq\x1b\\") == "\x1bP1$r3 q\x1b\\",
+               "DECRQSS q -> current DECSCUSR (3 q)");
+
+        feed(s, "\x1b[2;5r"); // DECSTBM rows 2..5
+        expect(feed_replies(s, "\x1bP$qr\x1b\\") == "\x1bP1$r2;5r\x1b\\",
+               "DECRQSS r -> scroll region (2;5r)");
+
+        feed(s, "\x1b[1;4m"); // bold + underline
+        {
+            const std::string sgr = feed_replies(s, "\x1bP$qm\x1b\\");
+            expect(sgr == "\x1bP1$r0;1;4m\x1b\\", "DECRQSS m -> active SGR (0;1;4m)");
+        }
+
+        expect(feed_replies(s, "\x1bP$qZZ\x1b\\") == "\x1bP0$r\x1b\\",
+               "DECRQSS unknown -> invalid (0$r)");
+    }
+
+    // --- DECRQM: report mode state -----------------------------------------
+    {
+        term::Screen s{Extent{10, 3}};
+        feed(s, "\x1b[?25l");  // hide cursor
+        expect(feed_replies(s, "\x1b[?25$p") == "\x1b[?25;2$y",
+               "DECRQM ?25 reports reset (2) when cursor hidden");
+        feed(s, "\x1b[?25h");  // show cursor
+        expect(feed_replies(s, "\x1b[?25$p") == "\x1b[?25;1$y",
+               "DECRQM ?25 reports set (1) when cursor shown");
+        feed(s, "\x1b[?2004h"); // bracketed paste on
+        expect(feed_replies(s, "\x1b[?2004$p") == "\x1b[?2004;1$y",
+               "DECRQM ?2004 reports set for bracketed paste");
+        expect(feed_replies(s, "\x1b[?9999$p") == "\x1b[?9999;0$y",
+               "DECRQM unknown mode -> unrecognized (0)");
+    }
+
     if (failures == 0) {
         std::printf("all screen tests passed\n");
         return 0;

@@ -58,6 +58,16 @@ public:
     // --- modes -------------------------------------------------------------
     // Whether the text cursor should be drawn (DECTCEM, CSI ?25 h/l).
     [[nodiscard]] bool cursor_shown() const noexcept { return cursor_shown_; }
+
+    // Cursor shape (DECSCUSR, CSI Ps SP q). `blink` is the app's requested
+    // blink state; a host that drives its own blink timing may ignore it.
+    enum class CursorShape { block, underline, bar };
+    struct CursorStyle {
+        CursorShape shape{CursorShape::block};
+        bool blink{true};
+        constexpr auto operator<=>(const CursorStyle &) const = default;
+    };
+    [[nodiscard]] CursorStyle cursor_style() const noexcept { return cursor_style_; }
     // Whether the alternate screen is active (no scrollback while on it).
     [[nodiscard]] bool on_alt_screen() const noexcept { return on_alt_; }
     // Mouse tracking mode requested by the app (CSI ?1000/1002/1003 + ?1006).
@@ -154,6 +164,9 @@ private:
     void csi(const vt::CsiDispatch &d);
     void esc(const vt::EscDispatch &d);
     void dcs(std::string_view prefix, std::string_view data);
+    void decrqss(std::string_view req);           // DECRQSS: report a setting
+    [[nodiscard]] std::string current_sgr() const; // active pen as SGR params
+    void report_mode(int mode, bool priv);         // DECRQM: report mode state
 
     void line_feed();
     void carriage_return();
@@ -248,6 +261,7 @@ private:
 
     // Terminal modes (DEC private).
     bool cursor_shown_{true};
+    CursorStyle cursor_style_{};
     bool on_alt_{false};
     bool bracketed_paste_{false};
     bool app_cursor_keys_{false};

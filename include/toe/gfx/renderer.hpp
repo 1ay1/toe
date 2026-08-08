@@ -94,7 +94,7 @@ private:
     // Build (or reuse) one row's instances into rows_[r]. Returns true if the
     // row was rebuilt (its key changed).
     bool build_row(const term::Screen &screen, int r, std::uint64_t key,
-                   bool row_has_cursor, int cur_col, std::int64_t abs_row,
+                   bool row_has_cursor, bool cursor_block, int cur_col, std::int64_t abs_row,
                    bool any_selection, bool blink_on);
 
     FontAtlas atlas_;

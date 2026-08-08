@@ -487,7 +487,7 @@ template <class T> inline void hash_val(std::uint64_t &h, const T &v) noexcept {
 // per-cell work and are spliced straight from the shadow. Returns true if the
 // row was rebuilt.
 bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
-                         bool row_has_cursor, int cur_col, std::int64_t abs_row,
+                         bool row_has_cursor, bool cursor_block, int cur_col, std::int64_t abs_row,
                          bool any_selection, bool blink_on) {
     RowCache &rc = rows_[static_cast<std::size_t>(r)];
     // Clean row: reuse the shadow — unless it holds blinking cells and the
@@ -509,7 +509,7 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
         const auto &cell = cells[static_cast<std::size_t>(c)];
         const bool selected = any_selection && screen.is_selected(abs_row, c);
         const bool reverse = term::has(cell.pen.attr, term::Attr::Reverse);
-        const bool on_cursor = row_has_cursor && c == cur_col;
+        const bool on_cursor = row_has_cursor && cursor_block && c == cur_col;
 
         if (selected) {
             rc.bg.push_back(rect_inst(static_cast<float>(c * cw), ry, static_cast<float>(cw),
@@ -1017,6 +1017,8 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on, bo
     // history, token 0) or a selection is active (selection isn't part of the
     // cell epoch), which are the rare interactive cases.
     bool any_row_dirty = false;
+    const bool cursor_block =
+        screen.cursor_style().shape == term::Screen::CursorShape::block;
     for (int r = 0; r < grid.rows; ++r) {
         const bool row_has_cursor = cursor_visible && r == cur_row;
         const std::int64_t abs_row = any_selection ? screen.viewport_to_abs(r) : 0;
@@ -1027,7 +1029,10 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on, bo
             // Fast path: fold the cursor column into the epoch token so a cursor
             // move on this row still invalidates it. Tag the high bit so an
             // epoch value can never collide with a hashed key (which is mixed).
-            key = (ver << 1) ^ (row_has_cursor ? (static_cast<std::uint64_t>(cur_col) + 1) : 0);
+            key = (ver << 1) ^ (row_has_cursor
+                                     ? (static_cast<std::uint64_t>(cur_col) + 1) |
+                                           (cursor_block ? 0x4000000000000000ULL : 0)
+                                     : 0);
             key |= 0x8000000000000000ULL;
         } else {
             // Fallback: fingerprint the row's cells + cursor + selection.
@@ -1044,8 +1049,8 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on, bo
             key = mix(h) & 0x7fffffffffffffffULL; // clear tag bit: distinct from epoch keys
         }
 
-        any_row_dirty |=
-            build_row(screen, r, key, row_has_cursor, cur_col, abs_row, any_selection, blink_on);
+        any_row_dirty |= build_row(screen, r, key, row_has_cursor, cursor_block, cur_col, abs_row,
+                                   any_selection, blink_on);
     }
 
 
@@ -1063,10 +1068,28 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on, bo
         // Cursor rect sits above backgrounds, beneath glyphs.
         if (cursor_visible) {
             const Rgb cc = palette_.default_fg();
-            instances_.push_back(rect_inst(static_cast<float>(cur_col * cw),
-                                           static_cast<float>(cur_row * ch),
-                                           static_cast<float>(cw), static_cast<float>(ch),
-                                           cc.r, cc.g, cc.b, /*radius=*/2));
+            const auto style = screen.cursor_style();
+            const float x = static_cast<float>(cur_col * cw);
+            const float y = static_cast<float>(cur_row * ch);
+            const float fw = static_cast<float>(cw);
+            const float fh = static_cast<float>(ch);
+            switch (style.shape) {
+            case term::Screen::CursorShape::block:
+                instances_.push_back(rect_inst(x, y, fw, fh, cc.r, cc.g, cc.b, /*radius=*/2));
+                break;
+            case term::Screen::CursorShape::underline: {
+                // A ~2px bar along the cell's bottom edge.
+                const float t = std::max(1.0f, fh * 0.12f);
+                instances_.push_back(rect_inst(x, y + fh - t, fw, t, cc.r, cc.g, cc.b, 0));
+                break;
+            }
+            case term::Screen::CursorShape::bar: {
+                // A ~2px vertical bar along the cell's left edge.
+                const float t = std::max(1.0f, fw * 0.15f);
+                instances_.push_back(rect_inst(x, y, t, fh, cc.r, cc.g, cc.b, 0));
+                break;
+            }
+            }
         }
     }
 

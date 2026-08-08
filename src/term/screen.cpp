@@ -649,6 +649,41 @@ void Screen::set_private_mode(int mode, bool set) {
     touch();
 }
 
+// DECRQM: report whether a mode is set. Reply is CSI [?] Ps ; Pv $ y, where Pv
+// is 0 (unrecognized), 1 (set), 2 (reset), 3 (permanently set), 4 (perm reset).
+void Screen::report_mode(int mode, bool priv) {
+    enum : int { kUnknown = 0, kSet = 1, kReset = 2 };
+    int pv = kUnknown;
+
+    const auto b = [](bool on) { return on ? kSet : kReset; };
+
+    if (priv) {
+        switch (mode) {
+        case 1:    pv = b(app_cursor_keys_); break;          // DECCKM
+        case 7:    pv = b(autowrap_); break;                 // DECAWM
+        case 25:   pv = b(cursor_shown_); break;            // DECTCEM
+        case 1000: pv = b(mouse_mode_ == MouseMode::normal); break;
+        case 1002: pv = b(mouse_mode_ == MouseMode::button); break;
+        case 1003: pv = b(mouse_mode_ == MouseMode::any); break;
+        case 1006: pv = b(mouse_sgr_); break;
+        case 1049: pv = b(on_alt_); break;                  // alt screen
+        case 2004: pv = b(bracketed_paste_); break;
+        default:   pv = kUnknown; break;
+        }
+    } else {
+        // ANSI modes: none of IRM/LNM are modelled, so they read unrecognized.
+        pv = kUnknown;
+    }
+
+    std::string r = "\x1b[";
+    if (priv) r += '?';
+    r += std::to_string(mode);
+    r += ';';
+    r += std::to_string(pv);
+    r += "$y";
+    reply(r);
+}
+
 void Screen::enter_alt_screen() {
     if (on_alt_) return;
     saved_primary_ = cells_;             // stash the primary buffer
@@ -812,10 +847,29 @@ void Screen::csi(const vt::CsiDispatch &d) {
             }
         }
         break;
-    case 'q': // XTVERSION: CSI > 0 q  -> report name+version as a DCS string.
+    case 'q':
         if (d.private_marker && d.marker == '>') {
-            // DCS > | toe(0.1) ST
+            // XTVERSION: CSI > 0 q -> report name+version as a DCS string.
             reply("\x1bP>|toe(0.1)\x1b\\");
+        } else if (d.intermediates.size() == 1 && d.intermediates[0] == ' ') {
+            // DECSCUSR: CSI Ps SP q -> set cursor shape + blink.
+            //   0/1 blinking block, 2 steady block, 3 blinking underline,
+            //   4 steady underline, 5 blinking bar, 6 steady bar.
+            const int ps = param_raw(p, 0, 0);
+            CursorStyle st;
+            switch (ps) {
+            case 0: case 1: st = {CursorShape::block, true}; break;
+            case 2:         st = {CursorShape::block, false}; break;
+            case 3:         st = {CursorShape::underline, true}; break;
+            case 4:         st = {CursorShape::underline, false}; break;
+            case 5:         st = {CursorShape::bar, true}; break;
+            case 6:         st = {CursorShape::bar, false}; break;
+            default:        st = {CursorShape::block, true}; break;
+            }
+            if (st != cursor_style_) {
+                cursor_style_ = st;
+                touch();
+            }
         }
         break;
     case 'm': apply_sgr(p, d.sub); break;                   // SGR
@@ -848,6 +902,14 @@ void Screen::csi(const vt::CsiDispatch &d) {
         // the model — ignored here.
         break;
     }
+    case 'p':
+        // DECRQM: CSI ? Ps $ p (private) or CSI Ps $ p (ANSI) -> report mode.
+        if (d.intermediates.size() == 1 && d.intermediates[0] == '$') {
+            report_mode(param_raw(p, 0, 0), d.private_marker);
+        }
+        // (CSI ! p is DECSTR soft reset, handled via RIS-like paths elsewhere;
+        //  bare CSI p variants we don't implement are ignored.)
+        break;
     default: break; // unhandled — silently ignore for now
     }
 }
@@ -855,8 +917,14 @@ void Screen::csi(const vt::CsiDispatch &d) {
 // XTGETTCAP (DCS + q ...): the app asks for terminfo capabilities by hex-
 // encoded name. We answer a small, high-value subset so shells stop probing.
 void Screen::dcs(std::string_view prefix, std::string_view data) {
+    // DECRQSS: DCS $ q <setting> ST  -> report the current value of a setting.
+    // The request body is the setting's final byte(s), verbatim (not hex).
+    if (prefix == "$q") {
+        decrqss(data);
+        return;
+    }
     if (prefix != "+q") {
-        return; // only XTGETTCAP is answered; DECRQSS etc. are ignored for now
+        return; // XTGETTCAP (+q) and DECRQSS ($q) are the answered DCS queries.
     }
 
     auto from_hex = [](std::string_view hex) {
@@ -923,6 +991,77 @@ void Screen::dcs(std::string_view prefix, std::string_view data) {
         if (semi == std::string_view::npos) break;
         start = semi + 1;
     }
+}
+
+void Screen::decrqss(std::string_view req) {
+    // Build the DECRQSS response body for a known setting, or report invalid.
+    //   valid:   DCS 1 $ r <body> ST
+    //   invalid: DCS 0 $ r ST
+    std::string body;
+    bool valid = true;
+
+    if (req == "q") {
+        // DECSCUSR: <ps> SP q, where ps encodes shape+blink (see the setter).
+        int ps = 1;
+        switch (cursor_style_.shape) {
+        case CursorShape::block:     ps = cursor_style_.blink ? 1 : 2; break;
+        case CursorShape::underline: ps = cursor_style_.blink ? 3 : 4; break;
+        case CursorShape::bar:       ps = cursor_style_.blink ? 5 : 6; break;
+        }
+        body = std::to_string(ps) + " q";
+    } else if (req == "r") {
+        // DECSTBM: <top> ; <bottom> r, 1-based.
+        body = std::to_string(scroll_top_ + 1) + ";" +
+               std::to_string(scroll_bottom_ + 1) + "r";
+    } else if (req == "m") {
+        // SGR: the active pen as a ';'-joined parameter list, ending in 'm'.
+        body = current_sgr() + "m";
+    } else {
+        valid = false;
+    }
+
+    std::string r = valid ? "\x1bP1$r" : "\x1bP0$r";
+    r += body;
+    r += "\x1b\\";
+    reply(r);
+}
+
+// Serialize the active pen as a ';'-joined SGR parameter list (no leading CSI,
+// no trailing 'm') for DECRQSS 'm'. Always starts at 0 (reset) so the list is
+// absolute, then adds each active attribute and non-default colour.
+std::string Screen::current_sgr() const {
+    std::string s = "0";
+    const auto add = [&](std::string_view code) { s += ';'; s += code; };
+
+    const Attr a = pen_.attr;
+    if (has(a, Attr::Bold)) add("1");
+    if (has(a, Attr::Faint)) add("2");
+    if (has(a, Attr::Italic)) add("3");
+    if (has(a, Attr::Underline)) add("4");
+    if (has(a, Attr::Blink)) add("5");
+    if (has(a, Attr::Reverse)) add("7");
+    if (has(a, Attr::Hidden)) add("8");
+    if (has(a, Attr::Strike)) add("9");
+    if (has(a, Attr::Overline)) add("53");
+
+    const auto add_color = [&](const Color &c, int base) {
+        // base 30 = fg (38 extended), 40 = bg (48 extended).
+        if (const auto *idx = std::get_if<IndexedColor>(&c)) {
+            const int i = idx->index;
+            if (i < 8) add(std::to_string(base + i));
+            else if (i < 16) add(std::to_string(base + 60 + (i - 8))); // bright
+            else { add(std::to_string(base + 8)); add("5"); add(std::to_string(i)); }
+        } else if (const auto *tc = std::get_if<TrueColor>(&c)) {
+            add(std::to_string(base + 8)); add("2");
+            add(std::to_string(tc->rgb.r));
+            add(std::to_string(tc->rgb.g));
+            add(std::to_string(tc->rgb.b));
+        }
+        // DefaultColor emits nothing (the leading 0 already reset it).
+    };
+    add_color(pen_.fg, 30);
+    add_color(pen_.bg, 40);
+    return s;
 }
 
 void Screen::esc(const vt::EscDispatch &d) {
