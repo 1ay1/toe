@@ -722,6 +722,7 @@ void Screen::erase_in_display(int mode) {
     case 3:
         std::fill(cells_.begin(), cells_.end(), blank_cell());
         reset_row_map();
+        graphics_.clear(); // clearing the screen removes inline images too
         stamp_all();
         break;
     default: break;
@@ -910,6 +911,7 @@ void Screen::esc(const vt::EscDispatch &d) {
             charset_use_g1_ = false;
             sync_output_ = false; // never leave rendering frozen after a reset
             focus_events_ = false;
+            graphics_.clear();
             stamp_all();
             touch();
             return;

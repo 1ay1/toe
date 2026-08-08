@@ -659,6 +659,9 @@ int main() {
             expect(img && img->rgba[0] == 255 && img->rgba[1] == 0 && img->rgba[2] == 0,
                    "sixel colour definition decoded to red");
         }
+        // Clearing the whole screen (ED 2) removes inline images.
+        feed(s, "\x1b[2J");
+        expect(s.graphics().placements().empty(), "ED 2 clears inline images");
     }
 
     if (failures == 0) {
