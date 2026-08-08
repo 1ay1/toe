@@ -17,10 +17,12 @@ namespace gvte {
 
 namespace {
 
-winsize to_winsize(Extent e) noexcept {
+winsize to_winsize(Extent e, int cell_w = 0, int cell_h = 0) noexcept {
     winsize ws{};
     ws.ws_col = static_cast<unsigned short>(e.cols);
     ws.ws_row = static_cast<unsigned short>(e.rows);
+    ws.ws_xpixel = static_cast<unsigned short>(e.cols * cell_w);
+    ws.ws_ypixel = static_cast<unsigned short>(e.rows * cell_h);
     return ws;
 }
 
@@ -134,7 +136,7 @@ Result<std::size_t> Pty::write(std::string_view bytes) {
 }
 
 Result<void> Pty::resize(Extent size) {
-    winsize ws = to_winsize(size);
+    winsize ws = to_winsize(size, cell_w_, cell_h_);
     if (::ioctl(master_, TIOCSWINSZ, &ws) < 0) {
         return fail(std::string{"ioctl(TIOCSWINSZ) failed: "} + std::strerror(errno));
     }

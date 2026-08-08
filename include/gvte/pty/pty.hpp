@@ -42,6 +42,11 @@ public:
     // Inform the kernel + child of a new cell grid size (TIOCSWINSZ + SIGWINCH).
     [[nodiscard]] Result<void> resize(Extent size);
 
+    // Set the per-cell pixel size, so the winsize carries ws_xpixel/ws_ypixel
+    // (apps read this via TIOCGWINSZ to size images). Applied on the next
+    // resize(); pass the current grid to push it immediately.
+    void set_cell_pixels(int cw, int ch) noexcept { cell_w_ = cw; cell_h_ = ch; }
+
     // True once the child process has exited.
     [[nodiscard]] bool child_exited() const noexcept;
 
@@ -55,6 +60,7 @@ private:
 
     int master_{-1};
     ::pid_t child_{-1};
+    int cell_w_{0}, cell_h_{0}; // for ws_xpixel/ws_ypixel
 };
 
 } // namespace gvte

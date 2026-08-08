@@ -45,6 +45,8 @@ struct Session::Impl {
         : model(std::move(c), g), renderer(std::move(r)), pty(std::move(p)), grid(g), cell_w(cw),
           cell_h(ch) {
         model.screen.set_cell_size(cw, ch); // for kitty-graphics placement sizing
+        pty.set_cell_pixels(cw, ch);        // ws_xpixel/ypixel for TIOCGWINSZ
+        (void)pty.resize(g);                // push the pixel dims to the child now
     }
 
     // The Cmd interpreter — the sole side-effecting code in the core. Runs of
