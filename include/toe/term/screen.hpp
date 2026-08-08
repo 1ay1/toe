@@ -69,6 +69,13 @@ public:
     };
     [[nodiscard]] CursorStyle cursor_style() const noexcept { return cursor_style_; }
 
+    // --- DEC line attributes (ESC # 3/4/5/6) -------------------------------
+    // Per-row rendition: normal, double-width, or the top/bottom half of a
+    // double-height line. The renderer scales the row's glyphs accordingly.
+    enum class LineAttr : std::uint8_t { normal, double_width, double_top, double_bottom };
+    [[nodiscard]] LineAttr line_attr(std::int32_t vrow) const noexcept;
+    void set_line_attr(std::int32_t row, LineAttr a);
+
     // --- Kitty keyboard protocol -------------------------------------------
     // Progressive-enhancement flags, as a bitset (kitty spec):
     //   1 disambiguate escape codes, 2 report event types (press/repeat/release),
@@ -314,6 +321,8 @@ private:
     bool cursor_shown_{true};
     CursorStyle cursor_style_{};
     char32_t last_char_{0}; // last printed codepoint, for REP (CSI b)
+    // Per logical row DEC line attribute (ESC # 3/4/5/6). Sized to rows.
+    std::vector<LineAttr> line_attr_{};
     // Kitty keyboard flag stack; back() is active. Never empty (base = 0).
     std::vector<std::uint8_t> kitty_stack_{0};
     // Dynamic-colour edits (OSC 4/104/10/11/12/112), applied by the renderer.

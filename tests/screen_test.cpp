@@ -940,6 +940,25 @@ int main() {
                "DECERA erases a rectangle, leaving the rest");
     }
 
+    // --- DEC line attributes (ESC # 3/4/5/6) + DECALN (# 8) ----------------
+    {
+        term::Screen s{Extent{10, 4}};
+        feed(s, "\x1b#6"); // DECDWL on row 0 (cursor there)
+        expect(s.line_attr(0) == term::Screen::LineAttr::double_width,
+               "ESC # 6 sets double-width on the cursor row");
+        feed(s, "\r\n\x1b#3"); // row 1: DECDHL top
+        expect(s.line_attr(1) == term::Screen::LineAttr::double_top,
+               "ESC # 3 sets double-height top half");
+        feed(s, "\x1b#5"); // DECSWL back to normal on row 1
+        expect(s.line_attr(1) == term::Screen::LineAttr::normal,
+               "ESC # 5 restores single-width");
+        // DECALN fills the screen with 'E' and homes the cursor.
+        feed(s, "\x1b#8");
+        expect(glyph_at(s, 0, 0) == U'E' && glyph_at(s, 3, 9) == U'E' &&
+                   s.cursor().row.get() == 0 && s.cursor().col.get() == 0,
+               "DECALN fills screen with E and homes cursor");
+    }
+
     if (failures == 0) {
         std::printf("all screen tests passed\n");
         return 0;

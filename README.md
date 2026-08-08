@@ -185,7 +185,8 @@ blinking), the Kitty keyboard protocol end-to-end (progressive-enhancement flag
 stack + disambiguating CSI-u encoding, event types incl. key-release from the
 Wayland/X11 backends, report-all-keys), programming ligatures (HarfBuzz calt
 shaping), curly/coloured underlines, synchronized output, soft reset (DECSTR),
-rectangular area ops (DECFRA/DECERA/DECCARA/DECRARA), REP, full device-query
+rectangular area ops (DECFRA/DECERA/DECCARA/DECRARA), REP, DEC line attributes
+(double-width/height, DECALN), full device-query
 replies (DA/DSR/XTVERSION/XTGETTCAP/DECRQSS/DECRQM), inline images (sixel +
 kitty graphics) with animation.
 

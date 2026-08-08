@@ -23,6 +23,7 @@ Screen::Screen(Extent size) : size_{size}, cells_(size.area()) {
     scroll_top_ = 0;
     scroll_bottom_ = size_.rows - 1;
     live_wrapped_.assign(static_cast<std::size_t>(std::max(size_.rows, 0)), false);
+    line_attr_.assign(static_cast<std::size_t>(std::max(size_.rows, 0)), LineAttr::normal);
     reset_row_map();
     row_epoch_.assign(static_cast<std::size_t>(std::max(size_.rows, 0)), 0);
     tab_stops_.assign(static_cast<std::size_t>(std::max(size_.cols, 1)), false);
@@ -139,6 +140,7 @@ void Screen::resize(Extent size) {
     }
     clamp_cursor();
     row_epoch_.assign(static_cast<std::size_t>(std::max(size_.rows, 0)), 0);
+    line_attr_.assign(static_cast<std::size_t>(std::max(size_.rows, 0)), LineAttr::normal);
     stamp_all();
     touch();
 }
@@ -613,6 +615,14 @@ void Screen::scroll_up(std::int32_t n) {
                 live_wrapped_[static_cast<std::size_t>(r + n)];
         for (std::int32_t r = std::max(0, size_.rows - n); r < size_.rows; ++r)
             live_wrapped_[static_cast<std::size_t>(r)] = false;
+    }
+    // Line attributes follow their rows up the screen (blank the new bottom n).
+    if (scroll_top_ == 0 && scroll_bottom_ == size_.rows - 1 &&
+        static_cast<std::int32_t>(line_attr_.size()) == size_.rows) {
+        for (std::int32_t r = 0; r + n < size_.rows; ++r)
+            line_attr_[static_cast<std::size_t>(r)] = line_attr_[static_cast<std::size_t>(r + n)];
+        for (std::int32_t r = std::max(0, size_.rows - n); r < size_.rows; ++r)
+            line_attr_[static_cast<std::size_t>(r)] = LineAttr::normal;
     }
     for (std::int32_t r = scroll_bottom_ - n + 1; r <= scroll_bottom_; ++r) {
         const std::size_t base = index(Row{r}, Col{0});
@@ -1407,6 +1417,7 @@ void Screen::esc(const vt::EscDispatch &d) {
             focus_events_ = false;
             kitty_stack_.assign(1, 0); // reset kitty keyboard flags to base
             cursor_style_ = {};        // reset cursor shape
+            std::fill(line_attr_.begin(), line_attr_.end(), LineAttr::normal);
             graphics_.clear();
             stamp_all();
             touch();
@@ -1440,6 +1451,48 @@ void Screen::esc(const vt::EscDispatch &d) {
         if (d.intermediates[0] == '(') charset_g0_ = cs;
         else charset_g1_ = cs;
         return;
+    }
+    // DEC line attributes + alignment test: ESC # <f>. These set a rendition on
+    // the current row (double width/height) or run the DECALN self-test.
+    if (d.intermediates.size() == 1 && d.intermediates[0] == '#') {
+        const std::int32_t r = cursor_.row.get();
+        switch (d.final) {
+        case '3': set_line_attr(r, LineAttr::double_top); return;    // DECDHL top
+        case '4': set_line_attr(r, LineAttr::double_bottom); return; // DECDHL bottom
+        case '5': set_line_attr(r, LineAttr::normal); return;        // DECSWL single
+        case '6': set_line_attr(r, LineAttr::double_width); return;  // DECDWL
+        case '8': // DECALN — fill the whole screen with 'E' (alignment test)
+            for (std::int32_t row = 0; row < size_.rows; ++row)
+                for (std::int32_t col = 0; col < size_.cols; ++col)
+                    at(Row{row}, Col{col}) = Cell{U'E', Pen{}, 1, 0};
+            std::fill(line_attr_.begin(), line_attr_.end(), LineAttr::normal);
+            cursor_ = Pos{};
+            touch();
+            return;
+        default: return;
+        }
+    }
+}
+
+Screen::LineAttr Screen::line_attr(std::int32_t vrow) const noexcept {
+    // Viewport rows drawn from scrollback have no line attribute (normal).
+    if (scroll_offset_ > 0) {
+        const std::int32_t live_row = vrow - scroll_offset_;
+        if (live_row < 0) return LineAttr::normal;
+        vrow = live_row;
+    }
+    if (vrow >= 0 && vrow < static_cast<std::int32_t>(line_attr_.size()))
+        return line_attr_[static_cast<std::size_t>(vrow)];
+    return LineAttr::normal;
+}
+
+void Screen::set_line_attr(std::int32_t row, LineAttr a) {
+    if (row >= 0 && row < static_cast<std::int32_t>(line_attr_.size())) {
+        if (line_attr_[static_cast<std::size_t>(row)] != a) {
+            line_attr_[static_cast<std::size_t>(row)] = a;
+            stamp(row);
+            touch();
+        }
     }
 }
 

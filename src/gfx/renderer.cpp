@@ -488,7 +488,7 @@ template <class T> inline void hash_val(std::uint64_t &h, const T &v) noexcept {
 // row was rebuilt.
 bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
                          bool row_has_cursor, bool cursor_block, int cur_col, std::int64_t abs_row,
-                         bool any_selection, bool blink_on) {
+                         bool any_selection, bool blink_on, term::Screen::LineAttr la) {
     RowCache &rc = rows_[static_cast<std::size_t>(r)];
     // Clean row: reuse the shadow — unless it holds blinking cells and the
     // blink phase just flipped, which needs a rebuild to hide/show them.
@@ -659,6 +659,29 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
     }
     rc.key = key;
     rc.valid = true;
+
+    // DEC line attributes: scale the row's primitives. Double-width (and both
+    // halves of double-height) doubles each cell's horizontal extent; double-
+    // height additionally scales vertically 2x and shows only its half.
+    if (la != term::Screen::LineAttr::normal) {
+        using LA = term::Screen::LineAttr;
+        const float row_top = ry;
+        const float row_h = static_cast<float>(ch);
+        const auto xform = [&](Instance &in) {
+            in.x = in.x * 2.0f;   // origin is column 0 of the row (x=0-based)
+            in.w = in.w * 2.0f;
+            if (la == LA::double_top || la == LA::double_bottom) {
+                // Map the glyph into a 2x-tall line, then show only this half.
+                const float rel = (in.y - row_top) * 2.0f;
+                float y2 = row_top + rel;
+                in.h *= 2.0f;
+                if (la == LA::double_bottom) y2 -= row_h; // bottom half slides up
+                in.y = y2;
+            }
+        };
+        for (auto &in : rc.bg) xform(in);
+        for (auto &in : rc.glyphs) xform(in);
+    }
     return true;
 }
 
@@ -1069,8 +1092,14 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on, bo
             key = mix(h) & 0x7fffffffffffffffULL; // clear tag bit: distinct from epoch keys
         }
 
+        const term::Screen::LineAttr la = screen.line_attr(r);
+        // Fold the line attribute into the key so a DECDWL/DECDHL change on this
+        // row forces a rebuild. Mask to the low 32 bits so the epoch/hash tag
+        // bits at the top are preserved.
+        key ^= (static_cast<std::uint64_t>(la) * 0x9E3779B1u) & 0x00000000FFFFFFFFULL;
+
         any_row_dirty |= build_row(screen, r, key, row_has_cursor, cursor_block, cur_col, abs_row,
-                                   any_selection, blink_on);
+                                   any_selection, blink_on, la);
     }
 
 
