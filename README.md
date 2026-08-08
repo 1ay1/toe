@@ -195,7 +195,9 @@ attributes (double-width/height, DECALN), full device-query
 replies (DA/DSR/XTVERSION/XTGETTCAP/DECRQSS/DECRQM), inline images (sixel +
 kitty graphics) with animation. IME preedit: a host-drivable composition string
 (`Session::set_preedit`) rendered inline at the cursor; the Wayland backend
-feeds dead-key / Compose sequences (´+e = é) through it.
+drives it from **text-input-v3** (real fcitx/ibus input methods) when the
+compositor offers it, falling back to xkb dead-key / Compose sequences
+(´+e = é) otherwise.
 
 ## License
 

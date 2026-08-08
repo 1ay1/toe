@@ -19,6 +19,10 @@
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-compose.h>
 
+#ifdef TOE_HAVE_TEXT_INPUT_V3
+#include "text-input-unstable-v3-client-protocol.h"
+#endif
+
 // epoxy must be included before (or instead of) the system EGL/GL headers; it
 // re-exports the EGL and GL symbols itself.
 #include <epoxy/egl.h>
@@ -130,6 +134,17 @@ public:
     static void ptr_axis_value120(void *, wl_pointer *, uint32_t, int32_t) {}
     static void ptr_axis_relative_direction(void *, wl_pointer *, uint32_t, uint32_t) {}
 
+#ifdef TOE_HAVE_TEXT_INPUT_V3
+    // text-input-v3 (IME) callbacks — public so the C listener table can take
+    // their addresses.
+    static void ti_enter(void *, zwp_text_input_v3 *, wl_surface *);
+    static void ti_leave(void *, zwp_text_input_v3 *, wl_surface *);
+    static void ti_preedit(void *, zwp_text_input_v3 *, const char *, int32_t, int32_t);
+    static void ti_commit_string(void *, zwp_text_input_v3 *, const char *);
+    static void ti_delete_surrounding(void *, zwp_text_input_v3 *, uint32_t, uint32_t);
+    static void ti_done(void *, zwp_text_input_v3 *, uint32_t);
+#endif
+
 private:
     WaylandSurface() = default;
     Result<void> init(std::string_view title, PixelSize initial);
@@ -182,6 +197,18 @@ private:
     xkb_state *xkb_state_ = nullptr;
     xkb_compose_table *compose_table_ = nullptr; // dead-key / Compose sequences
     xkb_compose_state *compose_state_ = nullptr;
+
+#ifdef TOE_HAVE_TEXT_INPUT_V3
+    zwp_text_input_manager_v3 *ti_manager_ = nullptr;
+    zwp_text_input_v3 *text_input_ = nullptr;
+    // Pending state accumulated between preedit/commit events and the `done`
+    // event that applies them atomically (per the protocol).
+    std::string ti_pending_preedit_{};
+    std::string ti_pending_commit_{};
+    int ti_pending_caret_ = -1;
+    bool ti_active_ = false; // enabled (we have focus + a text_input)
+    void ti_setup();
+#endif
 
     PixelSize size_{960, 600};
     bool closed_ = false;
@@ -250,6 +277,12 @@ void WaylandSurface::registry_global(void *data, wl_registry *reg, uint32_t name
         self->data_mgr_ = static_cast<wl_data_device_manager *>(
             wl_registry_bind(reg, name, &wl_data_device_manager_interface, std::min(version, 3u)));
     }
+#ifdef TOE_HAVE_TEXT_INPUT_V3
+    else if (std::strcmp(iface, zwp_text_input_manager_v3_interface.name) == 0) {
+        self->ti_manager_ = static_cast<zwp_text_input_manager_v3 *>(
+            wl_registry_bind(reg, name, &zwp_text_input_manager_v3_interface, 1));
+    }
+#endif
 }
 
 // --- xdg -------------------------------------------------------------------
@@ -369,8 +402,12 @@ void WaylandSurface::emit_key(uint32_t key, KeyEvent::Kind kind) {
     // real press. While composing, emit an inline Preedit; on completion, emit
     // the composed text as TextEntered and clear the preedit. This is how a
     // host without a full IME still gets ´+e = é, Compose+<3 = ❤, etc.
-    if (compose_state_ && kind == KeyEvent::Kind::press && !mods.ctrl && !mods.alt &&
-        sym != XKB_KEY_NoSymbol) {
+    bool ime_owns_text = false;
+#ifdef TOE_HAVE_TEXT_INPUT_V3
+    ime_owns_text = ti_active_; // a real IME (fcitx/ibus) is driving input
+#endif
+    if (compose_state_ && !ime_owns_text && kind == KeyEvent::Kind::press && !mods.ctrl &&
+        !mods.alt && sym != XKB_KEY_NoSymbol) {
         xkb_compose_state_feed(compose_state_, sym);
         const xkb_compose_status st = xkb_compose_state_get_status(compose_state_);
         if (st == XKB_COMPOSE_COMPOSING) {
@@ -561,6 +598,10 @@ Result<void> WaylandSurface::init(std::string_view title, PixelSize initial) {
     wl_surface_commit(surface_);
     wl_display_roundtrip(display_); // wait for first configure
 
+#ifdef TOE_HAVE_TEXT_INPUT_V3
+    ti_setup(); // create the text_input for IME (fcitx/ibus), if available
+#endif
+
     if (auto r = init_egl(); !r) {
         return r;
     }
@@ -644,6 +685,10 @@ WaylandSurface::~WaylandSurface() {
     if (xkb_state_) xkb_state_unref(xkb_state_);
     if (compose_state_) xkb_compose_state_unref(compose_state_);
     if (compose_table_) xkb_compose_table_unref(compose_table_);
+#ifdef TOE_HAVE_TEXT_INPUT_V3
+    if (text_input_) zwp_text_input_v3_destroy(text_input_);
+    if (ti_manager_) zwp_text_input_manager_v3_destroy(ti_manager_);
+#endif
     if (xkb_keymap_) xkb_keymap_unref(xkb_keymap_);
     if (xkb_ctx_) xkb_context_unref(xkb_ctx_);
     if (keyboard_) wl_keyboard_destroy(keyboard_);
@@ -838,6 +883,82 @@ void WaylandSurface::ptr_axis(void *data, wl_pointer *, uint32_t, uint32_t axis,
     const int steps = wl_fixed_to_int(value) > 0 ? -1 : 1;
     (*self->sink_)(Event{MouseWheel{0, steps}});
 }
+
+#ifdef TOE_HAVE_TEXT_INPUT_V3
+// --- text-input-v3: real IME (fcitx/ibus) --------------------------------
+namespace {
+// Some distros ship a text-input-v3 XML with vendor extension events (action/
+// language/preedit_hint). We only need the standard six; leave the rest null.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+const zwp_text_input_v3_listener kTextInputListener = {
+    .enter = &WaylandSurface::ti_enter,
+    .leave = &WaylandSurface::ti_leave,
+    .preedit_string = &WaylandSurface::ti_preedit,
+    .commit_string = &WaylandSurface::ti_commit_string,
+    .delete_surrounding_text = &WaylandSurface::ti_delete_surrounding,
+    .done = &WaylandSurface::ti_done,
+};
+#pragma GCC diagnostic pop
+} // namespace
+
+void WaylandSurface::ti_setup() {
+    if (!ti_manager_ || !seat_) return;
+    text_input_ = zwp_text_input_manager_v3_get_text_input(ti_manager_, seat_);
+    if (text_input_) zwp_text_input_v3_add_listener(text_input_, &kTextInputListener, this);
+}
+
+// The IME gained/lost the text field (our surface). enable + commit tells the
+// compositor we accept input methods; a serial handshake follows via done().
+void WaylandSurface::ti_enter(void *data, zwp_text_input_v3 *ti, wl_surface *) {
+    auto *self = static_cast<WaylandSurface *>(data);
+    self->ti_active_ = true;
+    zwp_text_input_v3_enable(ti);
+    zwp_text_input_v3_set_content_type(
+        ti, ZWP_TEXT_INPUT_V3_CONTENT_HINT_NONE, ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_TERMINAL);
+    zwp_text_input_v3_commit(ti);
+}
+void WaylandSurface::ti_leave(void *data, zwp_text_input_v3 *ti, wl_surface *) {
+    auto *self = static_cast<WaylandSurface *>(data);
+    self->ti_active_ = false;
+    zwp_text_input_v3_disable(ti);
+    zwp_text_input_v3_commit(ti);
+    if (self->sink_) (*self->sink_)(Event{Preedit{std::string_view{}, -1}}); // clear
+}
+
+// Preedit/commit arrive as a batch terminated by done(); accumulate here.
+void WaylandSurface::ti_preedit(void *data, zwp_text_input_v3 *, const char *text,
+                                int32_t cursor_begin, int32_t) {
+    auto *self = static_cast<WaylandSurface *>(data);
+    self->ti_pending_preedit_ = text ? text : "";
+    // cursor_begin is a byte offset; the engine wants a cell offset. Leave -1
+    // (caret at end) unless the IME put it at the start.
+    self->ti_pending_caret_ = (cursor_begin == 0) ? 0 : -1;
+}
+void WaylandSurface::ti_commit_string(void *data, zwp_text_input_v3 *, const char *text) {
+    auto *self = static_cast<WaylandSurface *>(data);
+    self->ti_pending_commit_ = text ? text : "";
+}
+void WaylandSurface::ti_delete_surrounding(void *, zwp_text_input_v3 *, uint32_t, uint32_t) {
+    // Terminals don't expose surrounding text, so there's nothing to delete.
+}
+
+// Apply the accumulated batch atomically: commit text first (as TextEntered),
+// then set the new preedit (or clear it).
+void WaylandSurface::ti_done(void *data, zwp_text_input_v3 *ti, uint32_t serial) {
+    auto *self = static_cast<WaylandSurface *>(data);
+    (void)ti;
+    (void)serial;
+    if (!self->sink_) { self->ti_pending_commit_.clear(); self->ti_pending_preedit_.clear(); return; }
+    if (!self->ti_pending_commit_.empty()) {
+        (*self->sink_)(Event{TextEntered{std::string_view{self->ti_pending_commit_}}});
+    }
+    (*self->sink_)(Event{Preedit{std::string_view{self->ti_pending_preedit_},
+                                 self->ti_pending_caret_}});
+    self->ti_pending_commit_.clear();
+    self->ti_pending_preedit_.clear();
+}
+#endif // TOE_HAVE_TEXT_INPUT_V3
 
 } // namespace
 

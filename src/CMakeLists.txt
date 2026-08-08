@@ -81,14 +81,40 @@ if(TOE_BUILD_PLATFORM)
     COMMAND ${WAYLAND_SCANNER} private-code "${XDG_XML}" "${GEN}/xdg-shell-protocol.c"
     DEPENDS "${XDG_XML}" VERBATIM)
 
+  # text-input-unstable-v3: real IME (fcitx/ibus) support. Optional — if the
+  # protocol XML isn't installed, TOE_HAVE_TEXT_INPUT_V3 stays undefined and the
+  # Wayland backend falls back to xkb Compose only.
+  set(TI_XML "${WLPROTO_DIR}/unstable/text-input/text-input-unstable-v3.xml")
+  set(_ti_sources "")
+  if(EXISTS "${TI_XML}")
+    add_custom_command(
+      OUTPUT "${GEN}/text-input-unstable-v3-client-protocol.h"
+      COMMAND ${WAYLAND_SCANNER} client-header "${TI_XML}"
+              "${GEN}/text-input-unstable-v3-client-protocol.h"
+      DEPENDS "${TI_XML}" VERBATIM)
+    add_custom_command(
+      OUTPUT "${GEN}/text-input-unstable-v3-protocol.c"
+      COMMAND ${WAYLAND_SCANNER} private-code "${TI_XML}"
+              "${GEN}/text-input-unstable-v3-protocol.c"
+      DEPENDS "${TI_XML}" VERBATIM)
+    set(_ti_sources
+      "${GEN}/text-input-unstable-v3-client-protocol.h"
+      "${GEN}/text-input-unstable-v3-protocol.c")
+  endif()
+
   add_library(toe-platform
     platform/surface.cpp
     platform/wayland.cpp
     platform/x11.cpp
     platform/offscreen.cpp
     "${GEN}/xdg-shell-client-protocol.h"
-    "${GEN}/xdg-shell-protocol.c")
+    "${GEN}/xdg-shell-protocol.c"
+    ${_ti_sources})
   add_library(toe::platform ALIAS toe-platform)
+
+  if(_ti_sources)
+    target_compile_definitions(toe-platform PRIVATE TOE_HAVE_TEXT_INPUT_V3=1)
+  endif()
 
   set_target_properties(toe-platform PROPERTIES
     VERSION     ${PROJECT_VERSION}
