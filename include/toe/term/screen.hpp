@@ -224,7 +224,11 @@ private:
     void reset_row_map(); // set row_of_ to identity
 
     // --- primitive operations the Actions decompose into ---
-    void put(char32_t cp);           // write glyph at cursor, advance
+    void put(char32_t cp);
+    // Fast bulk write of a printable-ASCII run at the cursor (the flood hot
+    // path): fills whole spans within the current row's margin in one stamped
+    // pass, wrapping via put() only at the boundary.
+    void put_ascii_run(std::string_view ascii);           // write glyph at cursor, advance
     void execute(std::uint8_t c0);   // handle a C0 control
     void csi(const vt::CsiDispatch &d);
     void esc(const vt::EscDispatch &d);

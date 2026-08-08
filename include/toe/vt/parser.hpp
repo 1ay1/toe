@@ -28,6 +28,14 @@ struct Print {
     char32_t cp{};
 };
 
+// A contiguous run of printable ASCII (0x20-0x7E) to place at the cursor — the
+// hot path under any flood. Batching a whole run into one action avoids a
+// per-character variant construction + visit + apply() dispatch. The view is
+// valid only for the duration of the sink call (it points into the fed bytes).
+struct PrintRun {
+    std::string_view text;
+};
+
 // A C0/C1 control (BS, LF, CR, BEL, HT, ...). Raw byte value.
 struct Execute {
     std::uint8_t byte{};
@@ -72,7 +80,8 @@ struct ApcDispatch {
 };
 
 using Action =
-    std::variant<Print, Execute, CsiDispatch, EscDispatch, OscDispatch, DcsDispatch, ApcDispatch>;
+    std::variant<Print, PrintRun, Execute, CsiDispatch, EscDispatch, OscDispatch, DcsDispatch,
+                 ApcDispatch>;
 
 // --- the parser ------------------------------------------------------------
 class Parser {

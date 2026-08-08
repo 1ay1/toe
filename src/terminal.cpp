@@ -102,12 +102,15 @@ struct Session::Impl {
     // and shows progressive output no matter how fast the app writes.
     bool more_pending = false;
     bool drain() {
-        // ~512 KiB/frame: still saturates throughput (a flood needs only a few
-        // frames to catch up) but yields to input + a redraw much sooner than a
-        // multi-MiB gulp would, keeping keystroke latency low even under a
-        // `yes`/`cat /dev/urandom` flood.
-        constexpr std::size_t kBudget = 512u * 1024;
-        std::array<char, 16384> buf{};
+        // Drain aggressively: a big budget so a flood is consumed in a few
+        // gulps (throughput), while still returning periodically so the host
+        // can check input and present a frame (latency). The host paces the
+        // actual *rendering* (its ~144 Hz flood cap), so a large drain here
+        // doesn't cause wasted frames — it just stops us round-tripping the
+        // read loop 40x for one `cat`. 8 MiB keeps a multi-MiB flood to ~1-2
+        // yields while a burst of typing (few KiB) still returns immediately.
+        constexpr std::size_t kBudget = 8u * 1024 * 1024;
+        std::array<char, 65536> buf{};
         std::size_t consumed = 0;
         more_pending = false;
         for (;;) {

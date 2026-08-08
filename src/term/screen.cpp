@@ -300,6 +300,8 @@ void Screen::apply(const vt::Action &action, Cmds &out) {
             using T = std::decay_t<decltype(a)>;
             if constexpr (std::is_same_v<T, vt::Print>) {
                 put(a.cp);
+            } else if constexpr (std::is_same_v<T, vt::PrintRun>) {
+                put_ascii_run(a.text);
             } else if constexpr (std::is_same_v<T, vt::Execute>) {
                 execute(a.byte);
             } else if constexpr (std::is_same_v<T, vt::CsiDispatch>) {
@@ -365,7 +367,63 @@ int char_width(char32_t cp) {
 }
 } // namespace
 
+// Bulk write of a printable-ASCII run — the flood hot path. Fills as many chars
+// as fit within the current row's [left,right] margin in one stamped span, then
+// hands the boundary char to put() (which wraps) and continues. This collapses
+// the per-char variant/visit/apply overhead into one call per parser run.
+void Screen::put_ascii_run(std::string_view ascii) {
+    std::size_t i = 0;
+    const std::size_t n = ascii.size();
+    while (i < n) {
+        // The general path handles a pending wrap or a non-default charset.
+        if (wrap_pending_ || charset_g0_ != Charset::Ascii || charset_use_g1_) {
+            put(static_cast<char32_t>(ascii[i++]));
+            continue;
+        }
+        const std::int32_t r = cursor_.row.get();
+        const std::int32_t right = right_bound();
+        std::int32_t col = cursor_.col.get();
+        if (col > right) { put(static_cast<char32_t>(ascii[i++])); continue; }
+        // How many chars fit from `col` up to and including the right margin?
+        const std::size_t room = static_cast<std::size_t>(right - col); // advance-without-wrap
+        const std::size_t take = std::min(room, n - i);
+        if (take > 0) {
+            stamp(r);
+            const std::size_t base = index(cursor_.row, Col{col});
+            for (std::size_t k = 0; k < take; ++k) {
+                cells_[base + k] = Cell{static_cast<char32_t>(ascii[i + k]), pen_, 1, cur_link_};
+            }
+            last_char_ = static_cast<char32_t>(ascii[i + take - 1]);
+            i += take;
+            cursor_.col = Col{col + static_cast<std::int32_t>(take)};
+            ++generation_;
+        }
+        // Now cursor is at the right margin (or run exhausted). One more char
+        // via put() writes the margin cell and sets wrap_pending_.
+        if (i < n) put(static_cast<char32_t>(ascii[i++]));
+    }
+}
+
 void Screen::put(char32_t cp) {
+    // Fast path: the overwhelmingly common case is a single-width printable that
+    // index() + ONE stamp(), skipping the general machinery below. This is the
+    // hot loop under any flood, so it's worth the special-case.
+    if (charset_g0_ == Charset::Ascii && !charset_use_g1_ && !wrap_pending_ &&
+        cp >= 0x20 && cp < 0x7f) {
+        const std::int32_t col = cursor_.col.get();
+        if (col < right_bound()) {
+            // Room to write and advance without wrapping.
+            const std::int32_t r = cursor_.row.get();
+            stamp(r);
+            cells_[index(cursor_.row, cursor_.col)] = Cell{cp, pen_, 1, cur_link_};
+            last_char_ = cp;
+            cursor_.col = Col{col + 1};
+            ++generation_;
+            return;
+        }
+        // At/over the right margin: fall through to the wrapping logic.
+    }
+
     cp = map_charset(cp); // VT100 line-drawing charset, if active
     const int w = char_width(cp);
 

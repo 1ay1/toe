@@ -305,8 +305,12 @@ void Parser::feed(std::span<const char> bytes, Sink &&sink) {
             while (p < end && *p >= 0x20 && *p < 0x7F) {
                 ++p;
             }
-            for (; run < p; ++run) {
-                sink(Action{Print{static_cast<char32_t>(*run)}});
+            if (run != p) {
+                // Emit the whole run as one action — the screen writes it in a
+                // tight loop without per-char variant/visit/apply overhead.
+                sink(Action{PrintRun{std::string_view{
+                    reinterpret_cast<const char *>(run),
+                    static_cast<std::size_t>(p - run)}}});
             }
             if (p == end) break;
         }

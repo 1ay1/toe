@@ -28,6 +28,15 @@ std::string trace(std::string_view input) {
                     out += "P(";
                     out += std::to_string(static_cast<unsigned>(x.cp));
                     out += ")";
+                } else if constexpr (std::is_same_v<T, PrintRun>) {
+                    // A batched ASCII run — expand to the same P(..) form so the
+                    // existing expectations (one Print per char) still hold.
+                    for (char c : x.text) {
+                        out += "P(";
+                        out += std::to_string(static_cast<unsigned>(
+                            static_cast<unsigned char>(c)));
+                        out += ")";
+                    }
                 } else if constexpr (std::is_same_v<T, Execute>) {
                     out += "X(";
                     out += std::to_string(static_cast<unsigned>(x.byte));
