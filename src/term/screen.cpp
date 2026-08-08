@@ -173,9 +173,12 @@ void Screen::apply(const vt::Action &action, Cmds &out) {
             } else if constexpr (std::is_same_v<T, vt::ApcDispatch>) {
                 // Kitty graphics: anchor a display at the cursor's absolute row.
                 const std::int64_t abs = viewport_to_abs(cursor_.row.get());
-                if (graphics_.handle_apc(a.data, abs, cursor_.col.get(), cell_w_, cell_h_)) {
+                std::string response;
+                if (graphics_.handle_apc(a.data, abs, cursor_.col.get(), cell_w_, cell_h_,
+                                         &response)) {
                     touch();
                 }
+                if (!response.empty()) reply(std::move(response));
             }
         },
         action);

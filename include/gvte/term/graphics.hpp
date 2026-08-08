@@ -48,9 +48,11 @@ class Graphics {
 public:
     // Handle one kitty graphics APC payload (the bytes between ESC _ and ST,
     // i.e. starting at 'G'). `cursor_abs_row` / `cursor_col` anchor a display.
+    // If `out_response` is non-null it receives the protocol response the client
+    // expects (e.g. ESC _ G i=<id>;OK ESC \), unless suppressed by q=1/q=2.
     // Returns true if anything visible changed (the caller bumps damage).
     bool handle_apc(std::string_view data, std::int64_t cursor_abs_row, std::int32_t cursor_col,
-                    int cell_w, int cell_h);
+                    int cell_w, int cell_h, std::string *out_response = nullptr);
 
     // Decode a sixel image (the DCS payload after the 'q', i.e. the sixel data)
     // into an RGBA image and place it at the cursor. Returns true on success.

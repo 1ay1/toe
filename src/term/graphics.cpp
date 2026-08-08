@@ -259,7 +259,8 @@ bool Graphics::handle_sixel(std::string_view params, std::string_view data,
 }
 
 bool Graphics::handle_apc(std::string_view data, std::int64_t cursor_abs_row,
-                          std::int32_t cursor_col, int cell_w, int cell_h) {
+                          std::int32_t cursor_col, int cell_w, int cell_h,
+                          std::string *out_response) {
     // kitty graphics packets start with 'G'. Anything else isn't ours.
     if (data.empty() || data.front() != 'G') return false;
     data.remove_prefix(1);
@@ -277,6 +278,7 @@ bool Graphics::handle_apc(std::string_view data, std::int64_t cursor_abs_row,
     int format = 32;     // 32=RGBA, 24=RGB, 100=PNG
     int width = 0, height = 0;
     int more = 0;        // m=1 => more chunks follow
+    int quiet = 0;       // q: 0 verbose, 1 suppress OK, 2 suppress all
     std::uint32_t id = 0, pid = 0;
     int cols = 0, rows = 0, z = 0;
     bool have_action = false;
@@ -296,6 +298,7 @@ bool Graphics::handle_apc(std::string_view data, std::int64_t cursor_abs_row,
             else if (k == "s") width = to_int(v);
             else if (k == "v") height = to_int(v);
             else if (k == "m") more = to_int(v);
+            else if (k == "q") quiet = to_int(v);
             else if (k == "i") id = static_cast<std::uint32_t>(to_ll(v));
             else if (k == "p") pid = static_cast<std::uint32_t>(to_ll(v));
             else if (k == "c") cols = to_int(v);
@@ -304,6 +307,16 @@ bool Graphics::handle_apc(std::string_view data, std::int64_t cursor_abs_row,
         }
     }
     (void)have_action;
+    const std::uint32_t client_id = id; // the id the client used (for the reply)
+
+    // A response is expected on the FINAL chunk of a command, unless q>=1 (OK
+    // suppressed) / q>=2 (all suppressed), and only when the client tagged the
+    // command with an id (i>0) so it can correlate the reply.
+    auto respond_ok = [&]() {
+        if (out_response && quiet < 1 && client_id != 0) {
+            *out_response = "\x1b_Gi=" + std::to_string(client_id) + ";OK\x1b\\";
+        }
+    };
 
     bool changed = false;
 
@@ -342,6 +355,7 @@ bool Graphics::handle_apc(std::string_view data, std::int64_t cursor_abs_row,
     if (more == 0) { // final chunk: decode + store
         commit(p, cursor_abs_row, cursor_col, cell_w, cell_h, changed);
         pending_.erase(id);
+        respond_ok();
     }
     if (changed) ++revision_;
     return changed;
