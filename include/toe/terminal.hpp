@@ -154,6 +154,9 @@ public:
     [[nodiscard]] Extent grid_size() const noexcept;
     [[nodiscard]] Pos cursor() const noexcept;
     [[nodiscard]] std::string window_title() const;
+    // OSC 7: the child's reported working directory (empty until reported). A
+    // host reads this to open new tabs/splits in the same directory.
+    [[nodiscard]] std::string working_dir() const;
     [[nodiscard]] int cell_width() const noexcept;
     [[nodiscard]] int cell_height() const noexcept;
 

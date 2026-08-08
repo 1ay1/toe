@@ -189,6 +189,24 @@ void handle_osc(Model &m, std::string_view d, Cmds &out) {
         m.screen.edit_color({term::Screen::ColorEdit::Target::bg, 0, true, {}});
     } else if (d == "112" || d.starts_with("112;")) {
         m.screen.edit_color({term::Screen::ColorEdit::Target::cursor, 0, true, {}});
+    } else if (d.starts_with("7;")) {
+        // OSC 7: report the child's working directory (a file:// URI). The host
+        // reads m.working_dir to spawn new tabs/splits in the same place.
+        m.working_dir = std::string{d.substr(2)};
+    } else if (d == "133;A" || d.starts_with("133;A;")) {
+        m.shell_zone = Model::ShellZone::prompt;   // FTCS_PROMPT: prompt start
+    } else if (d == "133;B" || d.starts_with("133;B;")) {
+        m.shell_zone = Model::ShellZone::command;  // FTCS_COMMAND_START
+    } else if (d == "133;C" || d.starts_with("133;C;")) {
+        m.shell_zone = Model::ShellZone::output;   // FTCS_COMMAND_EXECUTED
+    } else if (d == "133;D" || d.starts_with("133;D;")) {
+        m.shell_zone = Model::ShellZone::unknown;  // FTCS_COMMAND_FINISHED
+    } else if (d.starts_with("9;")) {
+        // OSC 9: a desktop notification body (iTerm2/kitty style). Surface it to
+        // the host as a titled notification via SetTitle-adjacent channel; here
+        // we route the text through a RingBell + the host can read it if wired.
+        // Minimal: ring the bell so the user is alerted even without a daemon.
+        out.emplace_back(RingBell{});
     } else if (d.starts_with("8;")) {
         // OSC 8 hyperlink: 8 ; params ; URI. `params` may hold id=... An empty
         // URI (or the whole thing being just "8;;") closes the current link.

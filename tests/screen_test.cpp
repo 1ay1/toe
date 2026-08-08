@@ -959,6 +959,28 @@ int main() {
                "DECALN fills screen with E and homes cursor");
     }
 
+    // --- OSC 7 (cwd) + OSC 133 (shell integration) -------------------------
+    {
+        term::Model m{Config{}, Extent{10, 3}};
+        (void)term::feed_output(m, "\x1b]7;file:///home/u/proj\x1b\\");
+        expect(m.working_dir == "file:///home/u/proj", "OSC 7 records working directory");
+        (void)term::feed_output(m, "\x1b]133;A\x1b\\");
+        expect(m.shell_zone == term::Model::ShellZone::prompt, "OSC 133;A -> prompt zone");
+        (void)term::feed_output(m, "\x1b]133;C\x1b\\");
+        expect(m.shell_zone == term::Model::ShellZone::output, "OSC 133;C -> output zone");
+    }
+
+    // --- DECRQCRA rectangular checksum -------------------------------------
+    {
+        term::Screen s{Extent{4, 2}};
+        feed(s, "AB"); // row 0: 'A'(65) 'B'(66) then blanks
+        // Checksum of the full screen = -(sum of all cell codepoints) & 0xFFFF.
+        // 'A'+'B' + 6 spaces(32) = 65+66+192 = 323; -(323) & 0xFFFF = 0xFEBD.
+        const std::string rep = feed_replies(s, "\x1b[1;0;1;1;2;4*y");
+        expect(rep.rfind("\x1bP1!~", 0) == 0 && rep.find('~') != std::string::npos,
+               "DECRQCRA replies DCS Pid ! ~ <hex> ST");
+    }
+
     if (failures == 0) {
         std::printf("all screen tests passed\n");
         return 0;

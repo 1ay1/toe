@@ -17,6 +17,7 @@
 #define TOE_TERM_UPDATE_HPP
 
 #include <string>
+#include <cstdint>
 
 #include "toe/core/tea.hpp"
 #include "toe/terminal.hpp" // Config
@@ -31,6 +32,14 @@ struct Model {
     Screen screen;
     vt::Parser parser;
     std::string title{"toe"};
+    // OSC 7: the child's reported working directory, as a file:// URI or path.
+    // Empty until the shell reports one. A host uses it to open new tabs there.
+    std::string working_dir{};
+    // OSC 133 shell integration: the semantic zone the cursor is currently in.
+    // A host can use prompt marks to implement jump-to-previous-prompt, and the
+    // command zone to time command duration.
+    enum class ShellZone : std::uint8_t { unknown, prompt, command, output };
+    ShellZone shell_zone{ShellZone::unknown};
 
     explicit Model(Config c, Extent grid) : cfg(std::move(c)), screen(grid) {}
 };

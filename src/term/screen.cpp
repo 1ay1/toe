@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdio>
 #include <clocale>
 #include <cwchar>
 
@@ -1110,6 +1111,31 @@ void Screen::csi(const vt::CsiDispatch &d) {
         if (d.intermediates.size() == 1 && d.intermediates[0] == '$') {
             fill_rect(param_raw(p, 0, 1), param_raw(p, 1, 1), param_raw(p, 2, 0),
                       param_raw(p, 3, 0), U' ');
+        }
+        break;
+    case 'y': // DECRQCRA — report a rectangle's checksum: CSI Pid;Pp;t;l;b;r * y
+        if (d.intermediates.size() == 1 && d.intermediates[0] == '*') {
+            const int pid = param_raw(p, 0, 0);
+            // param 1 is the page (ignored, single page). Rect is params 2..5.
+            const int t = std::clamp((param_raw(p, 2, 1) ? param_raw(p, 2, 1) : 1) - 1, 0,
+                                     size_.rows - 1);
+            const int l = std::clamp((param_raw(p, 3, 1) ? param_raw(p, 3, 1) : 1) - 1, 0,
+                                     size_.cols - 1);
+            const int b = std::clamp((param_raw(p, 4, 0) ? param_raw(p, 4, 0) : size_.rows) - 1,
+                                     0, size_.rows - 1);
+            const int r = std::clamp((param_raw(p, 5, 0) ? param_raw(p, 5, 0) : size_.cols) - 1,
+                                     0, size_.cols - 1);
+            std::uint16_t sum = 0;
+            for (int row = t; row <= b; ++row)
+                for (int col = l; col <= r; ++col) {
+                    const char32_t cp = at(Row{row}, Col{col}).cp;
+                    sum = static_cast<std::uint16_t>(sum + (cp ? cp : U' '));
+                }
+            // DEC reports the negation of the sum, as 4 uppercase hex digits.
+            const std::uint16_t chk = static_cast<std::uint16_t>(-static_cast<int>(sum));
+            char buf[32];
+            std::snprintf(buf, sizeof buf, "\x1bP%d!~%04X\x1b\\", pid, chk);
+            reply(buf);
         }
         break;
     case 'd': move_cursor_abs(Row{param_or(p, 0, 1) - 1}, cursor_.col); break; // VPA

@@ -316,6 +316,7 @@ void Session::send_key(const KeyEvent &ev) { run(update(Key{ev})); }
 Extent Session::grid_size() const noexcept { return impl_->grid; }
 Pos Session::cursor() const noexcept { return impl_->model.screen.cursor(); }
 std::string Session::window_title() const { return impl_->model.title; }
+std::string Session::working_dir() const { return impl_->model.working_dir; }
 std::uint64_t Session::generation() const noexcept { return impl_->model.screen.generation(); }
 int Session::pty_fd() const noexcept { return impl_->pty.fd(); }
 int Session::cell_width() const noexcept { return impl_->cell_w; }
