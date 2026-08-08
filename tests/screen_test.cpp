@@ -1008,6 +1008,19 @@ int main() {
         expect(glyph_at(s, 0, 1) == U' ', "ICH opens a blank at the left margin");
     }
 
+    // --- IME preedit (composition) state -----------------------------------
+    {
+        term::Screen s{Extent{10, 3}};
+        expect(s.preedit().empty(), "preedit starts empty");
+        const std::uint64_t g0 = s.generation();
+        s.set_preedit("n\xcc\x83", 1); // "n" + combining tilde, caret at cell 1
+        expect(s.preedit() == "n\xcc\x83" && s.preedit_cursor() == 1,
+               "set_preedit records the composition string + caret");
+        expect(s.generation() > g0, "set_preedit bumps damage generation");
+        s.set_preedit("", -1); // commit / clear
+        expect(s.preedit().empty(), "empty set_preedit clears the composition");
+    }
+
     if (failures == 0) {
         std::printf("all screen tests passed\n");
         return 0;

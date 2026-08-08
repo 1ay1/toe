@@ -69,6 +69,20 @@ public:
     };
     [[nodiscard]] CursorStyle cursor_style() const noexcept { return cursor_style_; }
 
+    // --- IME preedit (composition) -----------------------------------------
+    // The in-progress composition string shown inline at the cursor before the
+    // host commits it (dead keys, compose sequences, CJK/emoji IME). The host
+    // sets it as it changes and clears it on commit; the renderer overlays it.
+    void set_preedit(std::string utf8, int cursor_cells = -1) {
+        if (preedit_ != utf8 || preedit_cursor_ != cursor_cells) {
+            preedit_ = std::move(utf8);
+            preedit_cursor_ = cursor_cells; // -1 => caret at end of the string
+            touch();
+        }
+    }
+    [[nodiscard]] std::string_view preedit() const noexcept { return preedit_; }
+    [[nodiscard]] int preedit_cursor() const noexcept { return preedit_cursor_; }
+
     // --- DEC line attributes (ESC # 3/4/5/6) -------------------------------
     // Per-row rendition: normal, double-width, or the top/bottom half of a
     // double-height line. The renderer scales the row's glyphs accordingly.
@@ -341,6 +355,8 @@ private:
     bool cursor_shown_{true};
     CursorStyle cursor_style_{};
     char32_t last_char_{0}; // last printed codepoint, for REP (CSI b)
+    std::string preedit_{};       // IME composition string (empty = none)
+    int preedit_cursor_{-1};      // caret position within preedit, in cells
     // Per logical row DEC line attribute (ESC # 3/4/5/6). Sized to rows.
     std::vector<LineAttr> line_attr_{};
     // Kitty keyboard flag stack; back() is active. Never empty (base = 0).

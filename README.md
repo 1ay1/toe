@@ -193,7 +193,9 @@ shaping), curly/coloured underlines, synchronized output, soft reset (DECSTR),
 rectangular area ops (DECFRA/DECERA/DECCARA/DECRARA/DECRQCRA), REP, DEC line
 attributes (double-width/height, DECALN), full device-query
 replies (DA/DSR/XTVERSION/XTGETTCAP/DECRQSS/DECRQM), inline images (sixel +
-kitty graphics) with animation.
+kitty graphics) with animation. IME preedit: a host-drivable composition string
+(`Session::set_preedit`) rendered inline at the cursor; the Wayland backend
+feeds dead-key / Compose sequences (´+e = é) through it.
 
 ## License
 

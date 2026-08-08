@@ -143,6 +143,7 @@ private:
     std::uint64_t images_revision_{0};
     void ensure_image_pipeline();
     void draw_images(const term::Screen &screen, PixelSize px);
+    void draw_preedit(const term::Screen &screen, PixelSize px);
     // Draw kitty Unicode-placeholder cells (U+10EEEE): tile the image whose id
     // is in the cell fg colour across a contiguous block of placeholder cells.
     void draw_placeholders(const term::Screen &screen, PixelSize px);

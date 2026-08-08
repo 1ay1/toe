@@ -50,6 +50,15 @@ struct TextEntered {
     std::string_view utf8;
 };
 
+struct Preedit {
+    // UTF-8 composition (preedit) string the IME is still assembling, shown
+    // inline at the cursor. An empty string clears the preedit (commit/cancel).
+    // `cursor` is the caret's cell offset within the string (-1 = at the end).
+    // Valid only during the sink call, like TextEntered.
+    std::string_view utf8;
+    int cursor = -1;
+};
+
 // --- pointer events (in pixels, top-left origin) ---------------------------
 enum class MouseButton { left, middle, right };
 
@@ -77,8 +86,8 @@ struct FocusChanged {
 
 // A closed sum type: a host's dispatch is an exhaustive std::visit, so a new
 // event kind can't be silently ignored. There is no "empty"/"invalid" event.
-using Event = std::variant<CloseRequested, Resized, KeyPressed, TextEntered, MouseDown, MouseUp,
-                           MouseMove, MouseWheel, FocusChanged>;
+using Event = std::variant<CloseRequested, Resized, KeyPressed, TextEntered, Preedit, MouseDown,
+                           MouseUp, MouseMove, MouseWheel, FocusChanged>;
 
 // The callback shape toe hands to a surface to receive drained events.
 using EventSink = std::function<void(const Event &)>;

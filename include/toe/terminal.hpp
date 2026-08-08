@@ -77,6 +77,10 @@ public:
     void resize(PixelSize px);
     void send_key(const KeyEvent &ev);
     void send_text(std::string_view utf8);
+    // Set the IME composition (preedit) string shown inline at the cursor while
+    // the user is composing; call with an empty string to clear it on commit.
+    // `cursor_cells` is the caret position within the string (-1 = at the end).
+    void set_preedit(std::string_view utf8, int cursor_cells = -1);
 
     // --- The Elm Architecture entry point ----------------------------------
     // The single, pure-ish transition: fold a Msg into the terminal and return

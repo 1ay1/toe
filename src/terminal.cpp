@@ -151,6 +151,9 @@ void Session::resize(PixelSize px) {
 }
 
 void Session::send_text(std::string_view utf8) { (void)impl_->pty.write(utf8); }
+void Session::set_preedit(std::string_view utf8, int cursor_cells) {
+    impl_->model.screen.set_preedit(std::string{utf8}, cursor_cells);
+}
 
 // --- pure input encoding ---------------------------------------------------
 // Key encoding lives in toe/input/keymap.cpp: a zero-allocation, fixed-buffer

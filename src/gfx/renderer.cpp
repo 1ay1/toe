@@ -1161,6 +1161,81 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on, bo
     // Inline images (kitty graphics) draw over the glyph layer.
     if (has_images) draw_images(screen, px);
     if (has_any_image) draw_placeholders(screen, px);
+
+    // IME composition string, overlaid at the cursor on top of everything.
+    if (!screen.preedit().empty()) draw_preedit(screen, px);
+}
+
+// Draw the IME composition string inline at the cursor: a background box, the
+// composing glyphs in the default foreground, and a full underline (the
+// universal "this text isn't committed yet" cue). A separate pass so it never
+// pollutes the row cache and updates independently of the grid.
+void Renderer::draw_preedit(const term::Screen &screen, PixelSize px) {
+    const std::string_view s = screen.preedit();
+    const int cw = atlas_.cell_width();
+    const int ch = atlas_.cell_height();
+    const int ascent = atlas_.ascent();
+    const Pos cur = screen.cursor();
+    const Extent grid = screen.size();
+
+    // Decode UTF-8 into codepoints (minimal, tolerant of malformed input).
+    std::vector<char32_t> cps;
+    for (std::size_t i = 0; i < s.size();) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        char32_t cp = c;
+        int len = 1;
+        if (c >= 0xF0) { cp = c & 0x07; len = 4; }
+        else if (c >= 0xE0) { cp = c & 0x0F; len = 3; }
+        else if (c >= 0xC0) { cp = c & 0x1F; len = 2; }
+        for (int k = 1; k < len && i + static_cast<std::size_t>(k) < s.size(); ++k)
+            cp = (cp << 6) | (static_cast<unsigned char>(s[i + static_cast<std::size_t>(k)]) & 0x3F);
+        cps.push_back(cp);
+        i += static_cast<std::size_t>(len);
+    }
+    if (cps.empty()) return;
+
+    std::vector<Instance> bg, glyphs;
+    const Rgb fg = palette_.default_fg();
+    const Rgb boxbg = palette_.default_bg();
+    int col = cur.col.get();
+    const int row = cur.row.get();
+    const float ry = static_cast<float>(row * ch);
+
+    for (char32_t cp : cps) {
+        // Best-effort double-width for the common CJK/fullwidth blocks.
+        const bool wide = (cp >= 0x1100 && cp <= 0x115F) ||   // Hangul Jamo
+                          (cp >= 0x2E80 && cp <= 0xA4CF) ||   // CJK, Kana, ...
+                          (cp >= 0xAC00 && cp <= 0xD7A3) ||   // Hangul syllables
+                          (cp >= 0xF900 && cp <= 0xFAFF) ||   // CJK compat
+                          (cp >= 0xFF00 && cp <= 0xFF60) ||   // Fullwidth forms
+                          (cp >= 0x1F300 && cp <= 0x1FAFF);   // emoji
+        const int w = wide ? 2 : 1;
+        if (col + w > grid.cols) break; // don't spill past the right edge
+        const float cx = static_cast<float>(col * cw);
+        // Background box behind the composing cells.
+        bg.push_back(rect_inst(cx, ry, static_cast<float>(cw * w), static_cast<float>(ch),
+                               boxbg.r, boxbg.g, boxbg.b, 0));
+        // Underline across the full cell width.
+        const float thick = std::max(1.0f, static_cast<float>(ch) / 12.0f);
+        bg.push_back(rect_inst(cx, ry + static_cast<float>(ch) - thick,
+                               static_cast<float>(cw * w), thick, fg.r, fg.g, fg.b, 0));
+        // The glyph.
+        if (const GlyphInfo *gi = atlas_.glyph(cp); gi && gi->width && gi->height) {
+            const float gx = cx + static_cast<float>(gi->bearing_x);
+            const float gy = static_cast<float>(row * ch + ascent - gi->bearing_y);
+            glyphs.push_back(Instance{gx, gy, static_cast<float>(gi->width),
+                                      static_cast<float>(gi->height), gi->u0, gi->v0, gi->u1,
+                                      gi->v1, fg.r, fg.g, fg.b, 255, /*is_glyph=*/1, 0, 0, 0});
+        }
+        col += w;
+    }
+
+    // Draw the box+underline layer, then the glyphs, via the normal pipeline.
+    std::vector<Instance> all;
+    all.reserve(bg.size() + glyphs.size());
+    all.insert(all.end(), bg.begin(), bg.end());
+    all.insert(all.end(), glyphs.begin(), glyphs.end());
+    flush(all, px);
 }
 
 } // namespace toe::gfx

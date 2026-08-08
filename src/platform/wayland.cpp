@@ -17,6 +17,7 @@
 #include <wayland-client.h>
 #include <wayland-egl.h>
 #include <xkbcommon/xkbcommon.h>
+#include <xkbcommon/xkbcommon-compose.h>
 
 // epoxy must be included before (or instead of) the system EGL/GL headers; it
 // re-exports the EGL and GL symbols itself.
@@ -179,6 +180,8 @@ private:
     xkb_context *xkb_ctx_ = nullptr;
     xkb_keymap *xkb_keymap_ = nullptr;
     xkb_state *xkb_state_ = nullptr;
+    xkb_compose_table *compose_table_ = nullptr; // dead-key / Compose sequences
+    xkb_compose_state *compose_state_ = nullptr;
 
     PixelSize size_{960, 600};
     bool closed_ = false;
@@ -318,6 +321,22 @@ void WaylandSurface::kb_keymap(void *data, wl_keyboard *, uint32_t format, int f
     self->xkb_keymap_ = xkb_keymap_new_from_string(self->xkb_ctx_, map, XKB_KEYMAP_FORMAT_TEXT_V1,
                                                    XKB_KEYMAP_COMPILE_NO_FLAGS);
     self->xkb_state_ = self->xkb_keymap_ ? xkb_state_new(self->xkb_keymap_) : nullptr;
+
+    // Build a Compose table from the user's locale (dead keys, Compose-key
+    // sequences). If the locale has none, compose stays disabled and typing is
+    // unaffected. Rebuilt with each keymap so it tracks the current context.
+    if (self->compose_state_) { xkb_compose_state_unref(self->compose_state_); self->compose_state_ = nullptr; }
+    if (self->compose_table_) { xkb_compose_table_unref(self->compose_table_); self->compose_table_ = nullptr; }
+    const char *locale = ::getenv("LC_ALL");
+    if (!locale || !*locale) locale = ::getenv("LC_CTYPE");
+    if (!locale || !*locale) locale = ::getenv("LANG");
+    if (!locale || !*locale) locale = "C";
+    self->compose_table_ = xkb_compose_table_new_from_locale(
+        self->xkb_ctx_, locale, XKB_COMPOSE_COMPILE_NO_FLAGS);
+    if (self->compose_table_)
+        self->compose_state_ = xkb_compose_state_new(self->compose_table_,
+                                                     XKB_COMPOSE_STATE_NO_FLAGS);
+
     munmap(map, size);
     close(fd);
 }
@@ -345,6 +364,37 @@ void WaylandSurface::emit_key(uint32_t key, KeyEvent::Kind kind) {
                                             XKB_STATE_MODS_EFFECTIVE) > 0;
     mods.shift = xkb_state_mod_name_is_active(xkb_state_, XKB_MOD_NAME_SHIFT,
                                               XKB_STATE_MODS_EFFECTIVE) > 0;
+
+    // Dead keys / Compose sequences: feed the keysym to the compose state on a
+    // real press. While composing, emit an inline Preedit; on completion, emit
+    // the composed text as TextEntered and clear the preedit. This is how a
+    // host without a full IME still gets ´+e = é, Compose+<3 = ❤, etc.
+    if (compose_state_ && kind == KeyEvent::Kind::press && !mods.ctrl && !mods.alt &&
+        sym != XKB_KEY_NoSymbol) {
+        xkb_compose_state_feed(compose_state_, sym);
+        const xkb_compose_status st = xkb_compose_state_get_status(compose_state_);
+        if (st == XKB_COMPOSE_COMPOSING) {
+            // Show a preedit hint (the compose feedback — a small marker, since
+            // xkb gives no intermediate string). Non-empty so the caret shows.
+            (*sink_)(Event{Preedit{std::string_view{"\xc2\xa8"}, -1}}); // ¨ combining hint
+            return;
+        }
+        if (st == XKB_COMPOSE_COMPOSED) {
+            char cbuf[16] = {0};
+            const int cn = xkb_compose_state_get_utf8(compose_state_, cbuf, sizeof cbuf);
+            xkb_compose_state_reset(compose_state_);
+            (*sink_)(Event{Preedit{std::string_view{}, -1}}); // clear the hint
+            if (cn > 0)
+                (*sink_)(Event{TextEntered{std::string_view{cbuf, static_cast<size_t>(cn)}}});
+            return;
+        }
+        if (st == XKB_COMPOSE_CANCELLED) {
+            xkb_compose_state_reset(compose_state_);
+            (*sink_)(Event{Preedit{std::string_view{}, -1}}); // clear the hint
+            return;
+        }
+        // XKB_COMPOSE_NOTHING: fall through to normal handling.
+    }
 
     auto special = [&](SpecialKey sk) {
         KeyEvent ev;
@@ -592,6 +642,8 @@ WaylandSurface::~WaylandSurface() {
     if (data_device_) wl_data_device_destroy(data_device_);
     if (data_mgr_) wl_data_device_manager_destroy(data_mgr_);
     if (xkb_state_) xkb_state_unref(xkb_state_);
+    if (compose_state_) xkb_compose_state_unref(compose_state_);
+    if (compose_table_) xkb_compose_table_unref(compose_table_);
     if (xkb_keymap_) xkb_keymap_unref(xkb_keymap_);
     if (xkb_ctx_) xkb_context_unref(xkb_ctx_);
     if (keyboard_) wl_keyboard_destroy(keyboard_);
