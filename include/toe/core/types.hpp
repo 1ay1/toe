@@ -9,6 +9,7 @@
 #define TOE_CORE_TYPES_HPP
 
 #include <compare>
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -75,6 +76,28 @@ struct PixelSize {
     std::int32_t w{0};
     std::int32_t h{0};
     constexpr auto operator<=>(const PixelSize &) const = default;
+};
+
+// A rectangle of the surface that changed this frame, in pixels (top-left
+// origin). The host passes it to the compositor so only that region is
+// recomposited (wl_surface.damage), cutting present latency and GPU work.
+// `empty()` means nothing changed; `full(px)` means the whole surface.
+struct DamageRect {
+    std::int32_t x{0}, y{0}, w{0}, h{0};
+    [[nodiscard]] constexpr bool empty() const noexcept { return w <= 0 || h <= 0; }
+    [[nodiscard]] static constexpr DamageRect full(PixelSize p) noexcept {
+        return {0, 0, p.w, p.h};
+    }
+    // Grow this rect to also cover `o` (union). Empty rects are the identity.
+    constexpr DamageRect &merge(const DamageRect &o) noexcept {
+        if (o.empty()) return *this;
+        if (empty()) { *this = o; return *this; }
+        const std::int32_t x0 = std::min(x, o.x), y0 = std::min(y, o.y);
+        const std::int32_t x1 = std::max(x + w, o.x + o.w), y1 = std::max(y + h, o.y + o.h);
+        x = x0; y = y0; w = x1 - x0; h = y1 - y0;
+        return *this;
+    }
+    constexpr auto operator<=>(const DamageRect &) const = default;
 };
 
 // --- color -----------------------------------------------------------------

@@ -102,9 +102,11 @@ struct Session::Impl {
     // and shows progressive output no matter how fast the app writes.
     bool more_pending = false;
     bool drain() {
-        // ~2 MiB/frame: plenty to keep throughput high, small enough that a
-        // flood still yields to input + a redraw at well over 60 fps.
-        constexpr std::size_t kBudget = 2u * 1024 * 1024;
+        // ~512 KiB/frame: still saturates throughput (a flood needs only a few
+        // frames to catch up) but yields to input + a redraw much sooner than a
+        // multi-MiB gulp would, keeping keystroke latency low even under a
+        // `yes`/`cat /dev/urandom` flood.
+        constexpr std::size_t kBudget = 512u * 1024;
         std::array<char, 16384> buf{};
         std::size_t consumed = 0;
         more_pending = false;
@@ -135,10 +137,10 @@ Session::Session(Session &&) noexcept = default;
 Session &Session::operator=(Session &&) noexcept = default;
 Session::~Session() = default;
 
-void Session::render(gfx::RenderContext &rc, PixelSize px, bool cursor_on, bool blink_on) {
+DamageRect Session::render(gfx::RenderContext &rc, PixelSize px, bool cursor_on, bool blink_on) {
     // Honor the host-chosen destination framebuffer from the capability token.
     glBindFramebuffer(GL_FRAMEBUFFER, rc.target().id);
-    impl_->renderer.draw(impl_->model.screen, px, cursor_on, blink_on);
+    return impl_->renderer.draw(impl_->model.screen, px, cursor_on, blink_on);
 }
 
 void Session::resize(PixelSize px) {

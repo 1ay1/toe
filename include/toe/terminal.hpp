@@ -72,8 +72,11 @@ public:
     // toe/gfx/render_target.hpp): render is now impossible to call without it,
     // and the host chooses the destination FBO. `cursor_on` lets the host drive
     // cursor blink from a wall-clock phase; pass true for a steady cursor.
-    void render(gfx::RenderContext &rc, PixelSize px, bool cursor_on = true,
-                bool blink_on = true);
+    // Draw the current grid into `rc`'s target framebuffer. Returns the region
+    // that changed (in pixels) so the host can damage only that area on the
+    // compositor; empty() means nothing was redrawn (skip the present).
+    DamageRect render(gfx::RenderContext &rc, PixelSize px, bool cursor_on = true,
+                      bool blink_on = true);
     void resize(PixelSize px);
     void send_key(const KeyEvent &ev);
     void send_text(std::string_view utf8);

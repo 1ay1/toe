@@ -139,6 +139,13 @@ concept RepeatingSurface = Surface<S> && requires(const S cs) {
     { cs.repeat_fd() } -> std::convertible_to<int>;
 };
 
+// A surface that can present only a changed sub-rectangle (partial damage),
+// so the compositor recomposites less. Falls back to a full swap() otherwise.
+template <typename S>
+concept DamageableSurface = Surface<S> && requires(S s, DamageRect d) {
+    { s.swap_damaged(d) } -> std::same_as<void>;
+};
+
 // A surface that buffers outgoing protocol and must flush before blocking.
 template <typename S>
 concept FlushableSurface = Surface<S> && requires(S s) {
@@ -173,6 +180,14 @@ inline void flush(S &s) {
     if constexpr (FlushableSurface<S>) s.flush();
 }
 
+// Present, damaging only `d` if the surface supports partial damage; otherwise
+// a full swap(). Empty damage still presents (the caller decides whether to).
+template <Surface S>
+inline void present(S &s, DamageRect d) {
+    if constexpr (DamageableSurface<S>) s.swap_damaged(d);
+    else s.swap();
+}
+
 // ===========================================================================
 // AnySurface — optional type-erased adapter for hosts that want RUNTIME
 // polymorphism (e.g. choose the backend at runtime, store surfaces in a
@@ -197,6 +212,7 @@ public:
         : self_{std::make_unique<PtrModel<S>>(std::move(p))} {}
 
     void swap() { self_->swap(); }
+    void swap_damaged(DamageRect d) { self_->swap_damaged(d); }
     [[nodiscard]] PixelSize pixel_size() const { return self_->pixel_size(); }
     void poll_events(const EventSink &sink) { self_->poll_events(sink); }
     [[nodiscard]] int event_fd() const { return self_->event_fd(); }
@@ -211,6 +227,7 @@ private:
     struct Concept {
         virtual ~Concept() = default;
         virtual void swap() = 0;
+        virtual void swap_damaged(DamageRect) = 0;
         virtual PixelSize pixel_size() const = 0;
         virtual void poll_events(const EventSink &) = 0;
         virtual int event_fd() const = 0;
@@ -225,6 +242,7 @@ private:
     struct Model final : Concept {
         explicit Model(S s) : s_{std::move(s)} {}
         void swap() override { s_.swap(); }
+        void swap_damaged(DamageRect d) override { platform::present(s_, d); }
         PixelSize pixel_size() const override { return s_.pixel_size(); }
         void poll_events(const EventSink &sink) override { s_.poll_events(sink); }
         int event_fd() const override { return s_.event_fd(); }
@@ -240,6 +258,7 @@ private:
     struct PtrModel final : Concept {
         explicit PtrModel(std::unique_ptr<S> p) : p_{std::move(p)} {}
         void swap() override { p_->swap(); }
+        void swap_damaged(DamageRect d) override { platform::present(*p_, d); }
         PixelSize pixel_size() const override { return p_->pixel_size(); }
         void poll_events(const EventSink &sink) override { p_->poll_events(sink); }
         int event_fd() const override { return p_->event_fd(); }

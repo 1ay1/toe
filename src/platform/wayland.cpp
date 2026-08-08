@@ -47,6 +47,7 @@ public:
     ~WaylandSurface();
 
     void swap();
+    void swap_damaged(DamageRect d); // present, damaging only the changed region
     [[nodiscard]] PixelSize pixel_size() const { return size_; }
     [[nodiscard]] int event_fd() const { return wl_display_get_fd(display_); }
     [[nodiscard]] int repeat_fd() const { return repeat_fd_; }
@@ -666,7 +667,13 @@ Result<void> WaylandSurface::init_egl() {
     if (!eglMakeCurrent(egl_display_, egl_surface_, egl_surface_, egl_context_)) {
         return fail("egl: eglMakeCurrent failed");
     }
-    eglSwapInterval(egl_display_, 1);
+    // Swap interval 0: never let eglSwapBuffers block on the compositor's frame
+    // callback. The host paces itself (its poll() loop + damage gate), and a
+    // blocking swap here stalls Wayland dispatch between frames — under a
+    // throttling compositor (e.g. Hyprland) that starves xdg ping/pong and gets
+    // the window flagged "not responding". We present as soon as the frame is
+    // ready and rely on the loop's own timing, like foot/kitty do.
+    eglSwapInterval(egl_display_, 0);
     return {};
 }
 
@@ -704,7 +711,17 @@ WaylandSurface::~WaylandSurface() {
     if (display_) wl_display_disconnect(display_);
 }
 
-void WaylandSurface::swap() {
+void WaylandSurface::swap() { swap_damaged(DamageRect::full(size_)); }
+
+void WaylandSurface::swap_damaged(DamageRect d) {
+    // Tell the compositor which buffer region changed so it recomposites only
+    // that rectangle (VTE-style partial damage) instead of the whole surface.
+    // eglSwapBuffers issues its own wl_surface.damage for the full area unless
+    // we mark buffer damage first via the EGL_KHR_swap_buffers_with_damage path;
+    // libwayland-egl forwards our wl_surface_damage_buffer with the swap.
+    if (surface_ && !d.empty()) {
+        wl_surface_damage_buffer(surface_, d.x, d.y, d.w, d.h);
+    }
     eglSwapBuffers(egl_display_, egl_surface_);
 }
 

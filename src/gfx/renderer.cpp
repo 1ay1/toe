@@ -972,7 +972,7 @@ void Renderer::draw_placeholders(const term::Screen &screen, PixelSize px) {
     glBindVertexArray(0);
 }
 
-void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on, bool blink_on) {
+DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on, bool blink_on) {
     // Apply any dynamic-colour edits (OSC 4/104/10/11/12/110-112) the model has
     // recorded since the last frame, then invalidate the row cache if the
     // palette actually moved (every resolved colour may have changed).
@@ -1060,6 +1060,7 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on, bo
     // history, token 0) or a selection is active (selection isn't part of the
     // cell epoch), which are the rare interactive cases.
     bool any_row_dirty = false;
+    int dirty_top = INT32_MAX, dirty_bot = -1; // pixel-row damage bounds
     const bool cursor_block =
         screen.cursor_style().shape == term::Screen::CursorShape::block;
     for (int r = 0; r < grid.rows; ++r) {
@@ -1098,8 +1099,13 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on, bo
         // bits at the top are preserved.
         key ^= (static_cast<std::uint64_t>(la) * 0x9E3779B1u) & 0x00000000FFFFFFFFULL;
 
-        any_row_dirty |= build_row(screen, r, key, row_has_cursor, cursor_block, cur_col, abs_row,
-                                   any_selection, blink_on, la);
+        const bool row_rebuilt = build_row(screen, r, key, row_has_cursor, cursor_block, cur_col,
+                                            abs_row, any_selection, blink_on, la);
+        if (row_rebuilt) {
+            any_row_dirty = true;
+            dirty_top = std::min(dirty_top, r * cache_ch_);
+            dirty_bot = std::max(dirty_bot, (r + 1) * cache_ch_);
+        }
     }
 
 
@@ -1150,7 +1156,7 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on, bo
     if (!any_row_dirty && !has_any_image && redraw_from_cache(px)) {
         // Nothing changed: the GPU buffers already hold this exact frame. We
         // replayed the recorded draws with zero uploads / fences / memcpy.
-        return;
+        return {}; // empty damage: the host can skip the commit entirely
     }
 
     // Dirty frame: re-stage both batches (this also re-records the draw calls).
@@ -1164,6 +1170,14 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on, bo
 
     // IME composition string, overlaid at the cursor on top of everything.
     if (!screen.preedit().empty()) draw_preedit(screen, px);
+
+    // Report damage. Images/preedit/palette changes are hard to bound tightly,
+    // so those force full-surface damage; a pure text change damages only the
+    // rebuilt rows (spanning the full width).
+    if (has_any_image || !screen.preedit().empty() || dirty_bot < 0) {
+        return DamageRect::full(px);
+    }
+    return DamageRect{0, dirty_top, px.w, dirty_bot - dirty_top};
 }
 
 // Draw the IME composition string inline at the cursor: a background box, the
