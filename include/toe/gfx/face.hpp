@@ -42,15 +42,16 @@
 
 namespace toe::gfx {
 
-// A rasterized coverage bitmap for one glyph: 8-bit alpha, tightly packed
-// (row-major, `width` bytes per row), plus its placement relative to the pen
-// origin and the horizontal advance. `pixels` is empty for a blank glyph
-// (e.g. space) — a valid, non-error result with width==height==0.
+// A rasterized bitmap for one glyph. Usually 8-bit ALPHA coverage (tint it with
+// the cell's fg colour), but for a COLOUR glyph (emoji from a CBDT/CBLC/COLR/
+// sbix font) it is RGBA8 premultiplied-alpha pixels to be drawn as-is. `pixels`
+// is empty for a blank glyph (e.g. space) — a valid, non-error result.
 struct GlyphBitmap {
-    std::vector<std::uint8_t> pixels; // width*height alpha, or empty if blank
+    std::vector<std::uint8_t> pixels; // width*height * (is_color?4:1) bytes, or empty if blank
     int width = 0, height = 0;        // bitmap dimensions in device pixels
     int bearing_x = 0, bearing_y = 0; // pen origin -> bitmap top-left (y up)
     int advance = 0;                  // horizontal advance in device pixels
+    bool is_color = false;            // pixels are RGBA8 (true) vs A8 coverage (false)
 };
 
 // Vertical metrics of a face at its chosen pixel size, in device pixels.
@@ -89,22 +90,34 @@ public:
 
     // Rasterize a glyph selected BY INDEX (used for shaped/ligature glyphs and
     // by the codepoint path once the index is known). Never returns an error;
-    // a blank glyph yields an empty-pixels GlyphBitmap.
+    // a blank glyph yields an empty-pixels GlyphBitmap. For a COLOUR face the
+    // result is RGBA8 (is_color=true), scaled to fit the target pixel height.
     [[nodiscard]] GlyphBitmap rasterize(std::uint32_t glyph_index) const;
+
+    // True if this face renders COLOUR glyphs (CBDT/CBLC emoji). Such a face may
+    // have no stb outline handle at all — stb rejects colour-bitmap fonts — so
+    // its glyph_index() and rasterize() go through the colour backend instead.
+    [[nodiscard]] bool is_color() const noexcept { return color_ != nullptr; }
 
     // The raw handle, for the (in-tree) shaper that needs GSUB tables. Typed as
     // const void* so callers outside face.cpp don't depend on stb; face.cpp and
     // the shaper reinterpret it. Kept minimal — prefer the methods above.
     [[nodiscard]] std::span<const std::uint8_t> bytes() const noexcept { return data_; }
 
+    // Opaque pimpl types (defined in face_internal.hpp). Public only so the
+    // face_*.cpp TUs can name them; callers never see their definitions.
+    struct Handle;       // wraps stbtt_fontinfo
+    struct ColorBackend; // CBDT/CBLC colour-emoji decoder
+
 private:
     Face() = default;
 
-    struct Handle;                          // opaque: wraps stbtt_fontinfo
-    std::unique_ptr<Handle> h_;             // typed pimpl (no void*)
+    std::unique_ptr<Handle> h_;             // null for a colour-only face
+    std::unique_ptr<ColorBackend> color_;   // non-null for a colour (emoji) face
     std::vector<std::uint8_t> data_;        // owned blob; stb points into it
     FaceMetrics metrics_{};
     float scale_ = 0.0f;
+    int pixel_height_ = 0;                   // target height (for colour glyph scaling)
 };
 
 // An ordered chain of faces: the primary defines the cell + metrics; subsequent

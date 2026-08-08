@@ -8,17 +8,20 @@
 #include <cmath>
 #include <fstream>
 
-#include "stb/stb_truetype.h"
-
 #include "toe/gfx/font_discovery.hpp"
+
+#include "face_internal.hpp" // complete Handle + ColorBackend (includes stb)
 
 namespace toe::gfx {
 
-// The opaque handle Face pimpl-owns: a real stbtt_fontinfo, so no void*.
-struct Face::Handle {
-    stbtt_fontinfo info{};
-};
+// Colour (CBDT/CBLC emoji) hooks, implemented in face_color.cpp.
+std::unique_ptr<Face::ColorBackend> try_load_color_face(const std::vector<std::uint8_t> &blob);
+void color_metrics(const Face::ColorBackend &cb, FaceMetrics &m);
+std::uint32_t color_glyph_index(const Face::ColorBackend &cb, char32_t cp);
+GlyphBitmap color_rasterize(const Face::ColorBackend &cb, std::uint32_t gid, int target_px);
 
+// Face's special members: Handle + ColorBackend are complete here (via
+// face_internal.hpp), so unique_ptr destruction/move-assign is well-formed.
 Face::Face(Face &&) noexcept = default;
 Face &Face::operator=(Face &&) noexcept = default;
 Face::~Face() = default;
@@ -29,6 +32,20 @@ std::optional<Face> Face::load(std::vector<std::uint8_t> bytes, int pixel_height
     auto h = std::make_unique<Handle>();
     const int offset = stbtt_GetFontOffsetForIndex(bytes.data(), 0);
     if (offset < 0 || !stbtt_InitFont(&h->info, bytes.data(), offset)) {
+        // stb rejects colour-bitmap fonts (CBDT/CBLC emoji). Try the colour
+        // backend before giving up — this is what makes Noto Color Emoji load.
+        if (auto cb = try_load_color_face(bytes)) {
+            Face f;
+            f.data_ = std::move(bytes);
+            f.pixel_height_ = pixel_height;
+            // rebuild the backend over the now-owned blob (its reader pointed
+            // into the moved-from vector).
+            f.color_ = try_load_color_face(f.data_);
+            if (f.color_) {
+                color_metrics(*f.color_, f.metrics_);
+                return f;
+            }
+        }
         return std::nullopt;
     }
 
@@ -38,6 +55,7 @@ std::optional<Face> Face::load(std::vector<std::uint8_t> bytes, int pixel_height
     // our now-owned copy so it stays valid for the Face's whole life.
     h->info.data = f.data_.data();
     f.h_ = std::move(h);
+    f.pixel_height_ = pixel_height;
     f.scale_ = stbtt_ScaleForPixelHeight(&f.h_->info, static_cast<float>(pixel_height));
 
     int asc = 0, desc = 0, gap = 0;
@@ -56,12 +74,14 @@ std::optional<Face> Face::load(std::vector<std::uint8_t> bytes, int pixel_height
 }
 
 std::uint32_t Face::glyph_index(char32_t cp) const noexcept {
+    if (color_) return color_glyph_index(*color_, cp);
     if (!h_) return 0;
     return static_cast<std::uint32_t>(stbtt_FindGlyphIndex(&h_->info, static_cast<int>(cp)));
 }
 
 GlyphBitmap Face::rasterize(std::uint32_t glyph_index) const {
     GlyphBitmap out;
+    if (color_) return color_rasterize(*color_, glyph_index, pixel_height_);
     if (!h_) return out;
 
     int adv = 0, lsb = 0;

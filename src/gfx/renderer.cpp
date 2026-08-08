@@ -77,6 +77,14 @@ float sd_round_box(vec2 p, vec2 half_ext, float r) {
 void main() {
     if (vIsGlyph > 0.5) {
         float a = texture(uAtlas, vUV).r;
+        // Gamma-correct the coverage. stb hands us LINEAR coverage, but the
+        // framebuffer is sRGB and the blend runs in gamma space — blending
+        // linear coverage there makes antialiased edges too dark, so thin stems
+        // lose weight and coloured text looks muddy/washed. Reshaping the
+        // coverage with an exponent < 1 restores perceptual stroke weight
+        // ("stem darkening"), giving crisp, properly-weighted text without an
+        // sRGB framebuffer or a two-pass linear blend. 1/1.55 ≈ kitty's default.
+        a = pow(a, 1.0 / 1.55);
         FragColor = vec4(vColor, a);
     } else {
         if (vRadius > 0.0) {
