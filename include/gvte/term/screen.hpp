@@ -140,6 +140,7 @@ private:
     [[nodiscard]] Cell &at(Row r, Col c);
     [[nodiscard]] const Cell &at(Row r, Col c) const;
     [[nodiscard]] std::size_t index(Row r, Col c) const noexcept;
+    void reset_row_map(); // set row_of_ to identity
 
     // --- primitive operations the Actions decompose into ---
     void put(char32_t cp);           // write glyph at cursor, advance
@@ -209,7 +210,13 @@ private:
     }
 
     Extent size_{};
-    std::vector<Cell> cells_{}; // row-major, size_.area() cells (the live grid)
+    std::vector<Cell> cells_{}; // physical cell store, size_.area() cells
+    // Logical-to-physical row map. cells_ holds the live grid's rows in some
+    // physical order; row_of_[r] is the physical row backing logical row r.
+    // Scrolling rotates this map (O(rows) index shuffle) instead of moving
+    // O(rows*cols) cells — a `cols`x speedup on the flood/scroll hot path. Each
+    // physical row is still contiguous, so row() hands out a valid span.
+    std::vector<std::uint32_t> row_of_{};
     Pos cursor_{};
     Pen pen_{};
     bool wrap_pending_{false};   // DEC-style deferred wrap at right margin
@@ -242,6 +249,7 @@ private:
 
     // Saved primary-screen state while the alternate screen is active.
     std::vector<Cell> saved_primary_{};
+    std::vector<std::uint32_t> saved_primary_row_of_{};
     Pos saved_primary_cursor_{};
 
     // Tab stops: one flag per column (default every 8th).

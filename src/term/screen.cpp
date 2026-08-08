@@ -22,6 +22,7 @@ int param_raw(std::span<const int> p, std::size_t i, int def) {
 Screen::Screen(Extent size) : size_{size}, cells_(size.area()) {
     scroll_top_ = 0;
     scroll_bottom_ = size_.rows - 1;
+    reset_row_map();
     row_epoch_.assign(static_cast<std::size_t>(std::max(size_.rows, 0)), 0);
     tab_stops_.assign(static_cast<std::size_t>(std::max(size_.cols, 1)), false);
     for (std::int32_t c = 0; c < size_.cols; c += 8) {
@@ -29,8 +30,17 @@ Screen::Screen(Extent size) : size_{size}, cells_(size.area()) {
     }
 }
 
+// Reset the logical->physical row map to the identity (row r lives at physical
+// row r). Called after any op that repacks cells_ into logical order.
+void Screen::reset_row_map() {
+    row_of_.resize(static_cast<std::size_t>(std::max(size_.rows, 0)));
+    for (std::int32_t r = 0; r < size_.rows; ++r)
+        row_of_[static_cast<std::size_t>(r)] = static_cast<std::uint32_t>(r);
+}
+
 std::size_t Screen::index(Row r, Col c) const noexcept {
-    return static_cast<std::size_t>(r.get()) * static_cast<std::size_t>(size_.cols) +
+    return static_cast<std::size_t>(row_of_[static_cast<std::size_t>(r.get())]) *
+               static_cast<std::size_t>(size_.cols) +
            static_cast<std::size_t>(c.get());
 }
 
@@ -102,6 +112,8 @@ void Screen::resize(Extent size) {
     }
     cells_ = std::move(next);
     size_ = size;
+    // `next` was written in logical row order, so the map is now the identity.
+    reset_row_map();
     // A resize resets the scroll region to the full screen (xterm behavior).
     scroll_top_ = 0;
     scroll_bottom_ = size_.rows - 1;
@@ -330,34 +342,53 @@ void Screen::clear_tab_stop(int mode) {
 // Scroll the region [scroll_top_, scroll_bottom_] up by n rows. Rows leaving
 // the top of a FULL-SCREEN region (top==0) are pushed to scrollback history;
 // within a restricted region they're simply discarded (VTE/xterm semantics).
+// Scroll the region up by n rows (SU / index at bottom). Rows that leave the
+// TOP of a full-screen scroll go into the scrollback (primary buffer only).
 void Screen::scroll_up(std::int32_t n) {
     const std::int32_t region = scroll_bottom_ - scroll_top_ + 1;
     n = std::clamp(n, 0, region);
     if (n == 0) return;
-    const std::size_t stride = static_cast<std::size_t>(size_.cols);
     const bool full_screen = (scroll_top_ == 0 && scroll_bottom_ == size_.rows - 1);
 
     // Lines that scroll off the top of a FULL-screen scroll go into the
     // scrollback — but ONLY on the primary buffer. The alternate screen (htop,
     // vim, less, …) has no scrollback: it repaints by scrolling, so pushing its
-    // lines to history would flood the scrollback with the app's frames and
-    // leave them behind after it exits.
+    // lines to history would flood the scrollback with the app's frames.
     if (full_screen && !on_alt_) {
+        const std::size_t cols = static_cast<std::size_t>(size_.cols);
         for (std::int32_t i = 0; i < n; ++i) {
-            const std::size_t off = stride * static_cast<std::size_t>(i);
-            history_.emplace_back(cells_.begin() + static_cast<std::ptrdiff_t>(off),
-                                  cells_.begin() + static_cast<std::ptrdiff_t>(off + stride));
+            const std::size_t base = index(Row{i}, Col{0});
+            const auto begin = cells_.begin() + static_cast<std::ptrdiff_t>(base);
+            const auto end = begin + static_cast<std::ptrdiff_t>(cols);
+            if (history_.size() >= max_history_) {
+                // At capacity: recycle the oldest row's allocation into the new
+                // entry instead of free-then-alloc — the scrollback becomes a
+                // true ring buffer with zero per-line heap traffic.
+                std::vector<Cell> recycled = std::move(history_.front());
+                history_.pop_front();
+                recycled.assign(begin, end);
+                history_.push_back(std::move(recycled));
+            } else {
+                history_.emplace_back(begin, end);
+            }
         }
-        while (history_.size() > max_history_) history_.pop_front();
     }
 
-    const auto top = cells_.begin() + static_cast<std::ptrdiff_t>(
-                                          stride * static_cast<std::size_t>(scroll_top_));
-    const auto bot = cells_.begin() + static_cast<std::ptrdiff_t>(
-                                          stride * static_cast<std::size_t>(scroll_bottom_ + 1));
-    std::move(top + static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)), bot, top);
-    std::fill(bot - static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)), bot,
-              blank_cell());
+    // Rotate the row map: the top n logical rows move to the bottom of the
+    // region (their physical storage is reused for the freshly-blanked lines).
+    // This is an O(region) index shuffle rather than an O(region*cols) memmove.
+    auto first = row_of_.begin() + scroll_top_;
+    auto last = row_of_.begin() + scroll_bottom_ + 1;
+    std::rotate(first, first + n, last);
+
+    // Blank the physical rows now occupying the bottom n logical rows (BCE).
+    for (std::int32_t r = scroll_bottom_ - n + 1; r <= scroll_bottom_; ++r) {
+        const std::size_t base = index(Row{r}, Col{0});
+        std::fill(cells_.begin() + static_cast<std::ptrdiff_t>(base),
+                  cells_.begin() +
+                      static_cast<std::ptrdiff_t>(base + static_cast<std::size_t>(size_.cols)),
+                  blank_cell());
+    }
     stamp_all();
     touch();
 }
@@ -367,15 +398,17 @@ void Screen::scroll_down(std::int32_t n) {
     const std::int32_t region = scroll_bottom_ - scroll_top_ + 1;
     n = std::clamp(n, 0, region);
     if (n == 0) return;
-    const std::size_t stride = static_cast<std::size_t>(size_.cols);
-    const auto top = cells_.begin() + static_cast<std::ptrdiff_t>(
-                                          stride * static_cast<std::size_t>(scroll_top_));
-    const auto bot = cells_.begin() + static_cast<std::ptrdiff_t>(
-                                          stride * static_cast<std::size_t>(scroll_bottom_ + 1));
-    std::move_backward(top, bot - static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)),
-                       bot);
-    std::fill(top, top + static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)),
-              blank_cell());
+    // Rotate the row map the other way: bottom n rows wrap to the top.
+    auto first = row_of_.begin() + scroll_top_;
+    auto last = row_of_.begin() + scroll_bottom_ + 1;
+    std::rotate(first, last - n, last);
+    for (std::int32_t r = scroll_top_; r < scroll_top_ + n; ++r) {
+        const std::size_t base = index(Row{r}, Col{0});
+        std::fill(cells_.begin() + static_cast<std::ptrdiff_t>(base),
+                  cells_.begin() +
+                      static_cast<std::ptrdiff_t>(base + static_cast<std::size_t>(size_.cols)),
+                  blank_cell());
+    }
     stamp_all();
     touch();
 }
@@ -385,15 +418,18 @@ void Screen::insert_lines(std::int32_t n) {
     if (cursor_.row.get() < scroll_top_ || cursor_.row.get() > scroll_bottom_) return;
     n = std::clamp(n, 0, scroll_bottom_ - cursor_.row.get() + 1);
     if (n == 0) return;
-    const std::size_t stride = static_cast<std::size_t>(size_.cols);
-    const auto cur = cells_.begin() + static_cast<std::ptrdiff_t>(
-                                          stride * static_cast<std::size_t>(cursor_.row.get()));
-    const auto bot = cells_.begin() + static_cast<std::ptrdiff_t>(
-                                          stride * static_cast<std::size_t>(scroll_bottom_ + 1));
-    std::move_backward(cur, bot - static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)),
-                       bot);
-    std::fill(cur, cur + static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)),
-              blank_cell());
+    // Rotate the row map so rows [cursor, bottom-n] shift DOWN by n; the bottom
+    // n rows fall off and are reused for the freshly-blanked inserted lines.
+    auto first = row_of_.begin() + cursor_.row.get();
+    auto last = row_of_.begin() + scroll_bottom_ + 1;
+    std::rotate(first, last - n, last);
+    for (std::int32_t r = cursor_.row.get(); r < cursor_.row.get() + n; ++r) {
+        const std::size_t base = index(Row{r}, Col{0});
+        std::fill(cells_.begin() + static_cast<std::ptrdiff_t>(base),
+                  cells_.begin() +
+                      static_cast<std::ptrdiff_t>(base + static_cast<std::size_t>(size_.cols)),
+                  blank_cell());
+    }
     cursor_.col = Col{0};
     stamp_all();
     touch();
@@ -403,14 +439,18 @@ void Screen::delete_lines(std::int32_t n) {
     if (cursor_.row.get() < scroll_top_ || cursor_.row.get() > scroll_bottom_) return;
     n = std::clamp(n, 0, scroll_bottom_ - cursor_.row.get() + 1);
     if (n == 0) return;
-    const std::size_t stride = static_cast<std::size_t>(size_.cols);
-    const auto cur = cells_.begin() + static_cast<std::ptrdiff_t>(
-                                          stride * static_cast<std::size_t>(cursor_.row.get()));
-    const auto bot = cells_.begin() + static_cast<std::ptrdiff_t>(
-                                          stride * static_cast<std::size_t>(scroll_bottom_ + 1));
-    std::move(cur + static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)), bot, cur);
-    std::fill(bot - static_cast<std::ptrdiff_t>(stride * static_cast<std::size_t>(n)), bot,
-              blank_cell());
+    // Rotate so rows [cursor+n, bottom] shift UP by n; the vacated bottom n
+    // rows are reused for the blanks.
+    auto first = row_of_.begin() + cursor_.row.get();
+    auto last = row_of_.begin() + scroll_bottom_ + 1;
+    std::rotate(first, first + n, last);
+    for (std::int32_t r = scroll_bottom_ - n + 1; r <= scroll_bottom_; ++r) {
+        const std::size_t base = index(Row{r}, Col{0});
+        std::fill(cells_.begin() + static_cast<std::ptrdiff_t>(base),
+                  cells_.begin() +
+                      static_cast<std::ptrdiff_t>(base + static_cast<std::size_t>(size_.cols)),
+                  blank_cell());
+    }
     cursor_.col = Col{0};
     stamp_all();
     touch();
@@ -529,8 +569,10 @@ void Screen::set_private_mode(int mode, bool set) {
 void Screen::enter_alt_screen() {
     if (on_alt_) return;
     saved_primary_ = cells_;             // stash the primary buffer
+    saved_primary_row_of_ = row_of_;     // and its row map
     saved_primary_cursor_ = cursor_;
     std::fill(cells_.begin(), cells_.end(), Cell{}); // alt screen starts blank
+    reset_row_map();                     // fresh identity mapping
     cursor_ = Pos{};
     scroll_offset_ = 0;                  // alt screen has no scrollback
     scroll_top_ = 0;
@@ -544,9 +586,12 @@ void Screen::leave_alt_screen() {
     if (!on_alt_) return;
     if (saved_primary_.size() == cells_.size()) {
         cells_ = saved_primary_;         // restore the primary buffer
+        if (saved_primary_row_of_.size() == row_of_.size())
+            row_of_ = saved_primary_row_of_; // and its row map
     }
     cursor_ = saved_primary_cursor_;
     saved_primary_.clear();
+    saved_primary_row_of_.clear();
     on_alt_ = false;
     clamp_cursor();
     stamp_all();
@@ -593,6 +638,7 @@ void Screen::erase_in_display(int mode) {
     case 2: // entire screen
     case 3:
         std::fill(cells_.begin(), cells_.end(), blank_cell());
+        reset_row_map();
         stamp_all();
         break;
     default: break;
@@ -771,6 +817,7 @@ void Screen::esc(const vt::EscDispatch &d) {
         switch (d.final) {
         case 'c': // RIS — reset to initial state.
             std::fill(cells_.begin(), cells_.end(), Cell{});
+            reset_row_map();
             cursor_ = Pos{};
             pen_ = Pen{};
             wrap_pending_ = false;
