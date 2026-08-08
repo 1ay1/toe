@@ -544,6 +544,26 @@ int main() {
         }
     }
 
+    // OSC 8 hyperlinks: glyphs written while a link is open carry its URI,
+    // reachable via link_at(). Closing the link (empty URI) stops stamping.
+    {
+        term::Screen s{Extent{20, 2}};
+        s.set_hyperlink("id=1", "https://example.com");
+        feed(s, "link");
+        s.set_hyperlink({}, {}); // close
+        feed(s, "X");
+        expect(s.link_at(0, 0) == "https://example.com", "cell under an open link carries its URI");
+        expect(s.link_at(0, 3) == "https://example.com", "whole link run is clickable");
+        expect(s.link_at(0, 4).empty(), "text after the link has no URI");
+        expect(s.link_at(1, 0).empty(), "unlinked cell returns empty");
+        // Re-opening the SAME uri reuses the id (a link split across writes
+        // stays one region).
+        s.set_hyperlink("id=2", "https://a.test");
+        feed(s, "\r\nAB");
+        expect(s.link_at(1, 0) == "https://a.test" && s.link_at(1, 1) == "https://a.test",
+               "second link stamps its own URI");
+    }
+
     if (failures == 0) {
         std::printf("all screen tests passed\n");
         return 0;

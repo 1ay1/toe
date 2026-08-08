@@ -64,6 +64,16 @@ void handle_osc(Model &m, std::string_view d, Cmds &out) {
         out.emplace_back(colour_reply(11, m.cfg.default_bg));
     } else if (d.starts_with("10;?")) {
         out.emplace_back(colour_reply(10, m.cfg.default_fg));
+    } else if (d.starts_with("8;")) {
+        // OSC 8 hyperlink: 8 ; params ; URI. `params` may hold id=... An empty
+        // URI (or the whole thing being just "8;;") closes the current link.
+        const std::string_view rest = d.substr(2);
+        const auto semi = rest.find(';');
+        if (semi != std::string_view::npos) {
+            m.screen.set_hyperlink(rest.substr(0, semi), rest.substr(semi + 1));
+        } else {
+            m.screen.set_hyperlink({}, {}); // malformed -> close
+        }
     }
 }
 

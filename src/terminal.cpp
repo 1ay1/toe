@@ -225,6 +225,10 @@ void Session::select_clear() { impl_->model.screen.selection_clear(); }
 bool Session::has_selection() const noexcept { return impl_->model.screen.has_selection(); }
 std::string Session::selected_text() const { return impl_->model.screen.selected_text(); }
 
+std::string_view Session::link_at(int vrow, int col) const noexcept {
+    return impl_->model.screen.link_at(vrow, col);
+}
+
 // --- mouse reporting -------------------------------------------------------
 bool Session::wants_mouse() const noexcept {
     return impl_->model.screen.mouse_mode() != term::Screen::MouseMode::off;

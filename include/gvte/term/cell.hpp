@@ -99,6 +99,9 @@ struct Cell {
     // Display width: 1 = normal, 2 = lead cell of a double-width (CJK/emoji)
     // glyph, 0 = the trailing spacer cell it occupies (renderer skips it).
     std::uint8_t width{1};
+    // OSC 8 hyperlink id (0 = none). Indexes into the Screen's link table; kept
+    // small so it fits the cell's existing padding — Cell stays 24 bytes.
+    std::uint16_t link{0};
 
     [[nodiscard]] constexpr bool blank() const noexcept {
         return cp == U' ' && pen == Pen{};

@@ -102,6 +102,10 @@ public:
     [[nodiscard]] bool has_selection() const noexcept;
     [[nodiscard]] std::string selected_text() const;
 
+    // The OSC 8 hyperlink URI under a viewport cell, or empty if none. The host
+    // opens it (browser / xdg-open) on click.
+    [[nodiscard]] std::string_view link_at(int vrow, int col) const noexcept;
+
     // --- mouse reporting ---------------------------------------------------
     // True when the running app has requested mouse tracking (?1000/1002/1003).
     // While true, the host should forward pointer events to the app via

@@ -208,16 +208,16 @@ void Screen::put(char32_t cp) {
             line_feed();
         } else {
             // No room and no wrap: overwrite in place as a single cell.
-            at(cursor_.row, cursor_.col) = Cell{cp, pen_, 1};
+            at(cursor_.row, cursor_.col) = Cell{cp, pen_, 1, cur_link_};
             touch();
             return;
         }
     }
 
-    at(cursor_.row, cursor_.col) = Cell{cp, pen_, static_cast<std::uint8_t>(w)};
+    at(cursor_.row, cursor_.col) = Cell{cp, pen_, static_cast<std::uint8_t>(w), cur_link_};
     if (w == 2) {
         // The second half is a spacer the renderer skips.
-        at(cursor_.row, cursor_.col + 1) = Cell{U' ', pen_, 0};
+        at(cursor_.row, cursor_.col + 1) = Cell{U' ', pen_, 0, cur_link_};
     }
 
     const int advance = w;
@@ -271,6 +271,39 @@ char32_t Screen::map_charset(char32_t cp) const noexcept {
         0x00A3,          0x00B7,
     };
     return kDec[cp - 0x5F];
+}
+
+// OSC 8 open/close. `params` is the (possibly empty) id= section, `uri` the
+// target. An empty uri closes the current link. We intern each URI into links_
+// and stamp cur_link_ onto subsequent put()s. To keep hovering a whole link
+// working, a repeated open with the same key/uri reuses the same id.
+void Screen::set_hyperlink(std::string_view params, std::string_view uri) {
+    if (uri.empty()) {
+        cur_link_ = 0;
+        cur_link_key_.clear();
+        return;
+    }
+    // Reuse the current id if the same link is re-opened (id= param or exact
+    // URI match), so a link split across writes stays one clickable region.
+    if (cur_link_ != 0 &&
+        ((!params.empty() && params == cur_link_key_) ||
+         (cur_link_ - 1u < links_.size() && links_[cur_link_ - 1u] == uri))) {
+        return;
+    }
+    if (links_.size() >= 0xFFFE) {
+        links_.clear(); // pathological: reset the table rather than overflow u16
+    }
+    links_.emplace_back(uri);
+    cur_link_ = static_cast<std::uint16_t>(links_.size()); // id = index+1
+    cur_link_key_.assign(params);
+}
+
+std::string_view Screen::link_at(std::int32_t vrow, std::int32_t col) const noexcept {
+    if (vrow < 0 || vrow >= size_.rows || col < 0 || col >= size_.cols) return {};
+    const auto cells = row(Row{vrow});
+    const std::uint16_t id = cells[static_cast<std::size_t>(col)].link;
+    if (id == 0 || id - 1u >= links_.size()) return {};
+    return links_[id - 1u];
 }
 
 void Screen::line_feed() {

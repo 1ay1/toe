@@ -252,9 +252,26 @@ private:
     std::vector<std::uint32_t> saved_primary_row_of_{};
     Pos saved_primary_cursor_{};
 
+    // OSC 8 hyperlinks. cur_link_ is the id stamped onto glyphs written while a
+    // link is open; 0 = none. links_ interns the URIs (links_[id-1]); an id
+    // never repeats a URI within a run so hovering/clicking a whole link works.
+    std::uint16_t cur_link_{0};
+    std::string cur_link_key_{};              // the OSC 8 id= param, for coalescing
+    std::vector<std::string> links_{};        // id-1 -> URI
+
     // Tab stops: one flag per column (default every 8th).
     std::vector<bool> tab_stops_{};
 
+public:
+    // OSC 8 hyperlink open/close (called by the OSC handler). params = the id=
+    // section, uri = target; an empty uri closes the current link.
+    void set_hyperlink(std::string_view params, std::string_view uri);
+
+    // The OSC 8 URI under a viewport cell, or empty if none. The host opens it
+    // on click.
+    [[nodiscard]] std::string_view link_at(std::int32_t vrow, std::int32_t col) const noexcept;
+
+private:
     // Character-set state (VT100 line-drawing). G0/G1 each hold ASCII or the
     // DEC Special Graphics set; SI (^O) selects G0, SO (^N) selects G1. When
     // the active set is DecGraphics, ASCII 0x5F..0x7E are mapped to the box-
