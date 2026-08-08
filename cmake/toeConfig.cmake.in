@@ -3,52 +3,25 @@
 #
 # toeConfig.cmake — find_package(toe) entry point.
 #
-# Components:
-#   Core      the terminal engine + Surface contract          (toe::core)
-#   Platform  optional Linux Wayland/X11 backends             (toe::platform)
-#
-# A consumer that brings its own window asks for Core only and never pulls in
-# the windowing dependencies.
+# toe exports a single target: toe::core — the terminal ENGINE (VT parse, screen
+# model, GL renderer). It has no window-system dependency; the host brings its
+# own window and drives toe::Terminal.
 
 include(CMakeFindDependencyMacro)
 
-# toe's private link deps are recorded on the exported targets as
-# PkgConfig::* imported targets. A consumer's project must recreate those
-# imported targets (via pkg-config) before the target file is included,
-# otherwise the import fails. These are all PRIVATE — no header of them leaks.
+# toe's private link deps are recorded on the exported target as PkgConfig::*
+# imported targets. A consumer must recreate those before the target file is
+# included. Both are PRIVATE — no header of them leaks.
 find_dependency(PkgConfig)
-pkg_check_modules(PNG        REQUIRED IMPORTED_TARGET libpng)
-pkg_check_modules(EPOXY      REQUIRED IMPORTED_TARGET epoxy)
-
-if("Platform" IN_LIST toe_FIND_COMPONENTS)
-  pkg_check_modules(EGL     REQUIRED IMPORTED_TARGET egl)
-  pkg_check_modules(WAYLAND REQUIRED IMPORTED_TARGET wayland-client wayland-egl wayland-cursor)
-  pkg_check_modules(XKB     REQUIRED IMPORTED_TARGET xkbcommon)
-  pkg_check_modules(X11     REQUIRED IMPORTED_TARGET x11 x11-xcb xcb xkbcommon-x11)
-endif()
+pkg_check_modules(PNG   REQUIRED IMPORTED_TARGET libpng)
+pkg_check_modules(EPOXY REQUIRED IMPORTED_TARGET epoxy)
 
 include("${CMAKE_CURRENT_LIST_DIR}/toeTargets.cmake")
-
-# Report component availability purely from which targets got imported.
-set(_toe_known_components Core Platform)
-foreach(_comp IN LISTS toe_FIND_COMPONENTS)
-  if(NOT _comp IN_LIST _toe_known_components)
-    set(toe_FOUND FALSE)
-    set(toe_NOT_FOUND_MESSAGE "toe: unknown component '${_comp}'")
-    return()
-  endif()
-endforeach()
 
 if(TARGET toe::core)
   set(toe_Core_FOUND TRUE)
 else()
   set(toe_Core_FOUND FALSE)
-endif()
-
-if(TARGET toe::platform)
-  set(toe_Platform_FOUND TRUE)
-else()
-  set(toe_Platform_FOUND FALSE)
 endif()
 
 check_required_components(toe)

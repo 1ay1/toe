@@ -2,12 +2,11 @@
 #
 # Install + export rules: make toe consumable via find_package(toe).
 #
-#   find_package(toe CONFIG REQUIRED COMPONENTS Core)            # core only
-#   find_package(toe CONFIG REQUIRED COMPONENTS Core Platform)   # + backends
-#   target_link_libraries(app PRIVATE toe::core [toe::platform])
+#   find_package(toe CONFIG REQUIRED)
+#   target_link_libraries(app PRIVATE toe::core)
 #
-# Platform is a COMPONENT: a consumer that brought its own window requires only
-# Core and never drags in the Linux windowing stack.
+# toe exports a single target, toe::core — the engine. The window system lives
+# in the host (e.g. hand), never in toe.
 
 include(CMakePackageConfigHelpers)
 
@@ -26,14 +25,6 @@ install(TARGETS toe-core
         ARCHIVE  DESTINATION "${CMAKE_INSTALL_LIBDIR}"
         RUNTIME  DESTINATION "${CMAKE_INSTALL_BINDIR}")
 
-if(TOE_BUILD_PLATFORM)
-  list(APPEND _toe_targets toe-platform)
-  install(TARGETS toe-platform
-          EXPORT toeTargets
-          LIBRARY  DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-          ARCHIVE  DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-          RUNTIME  DESTINATION "${CMAKE_INSTALL_BINDIR}")
-endif()
 
 # Export the target set (namespaced toe::) for the build & install trees.
 install(EXPORT toeTargets

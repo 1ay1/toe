@@ -15,7 +15,8 @@
 //
 //   * RenderContext::adopt_current()  — "I promise a GL context is current on
 //     this thread right now." Returns the token; you pass it to render().
-//   * toe::platform surfaces hand you one from their own make-current path.
+//   * a host's surface (e.g. hand::platform) hands you one from its own
+//     make-current path.
 //
 // The token also carries the TARGET framebuffer, so the host controls exactly
 // where the terminal is composited (default 0 = the current/default FBO). This
@@ -47,7 +48,8 @@ inline constexpr Framebuffer default_framebuffer{0};
 class RenderContext {
 public:
     // Claim that a GL context is current on THIS thread, right now. The host
-    // (or a toe::platform surface, right after its make-current/swap setup)
+    // (or a host surface such as hand::platform, right after its
+    // make-current/swap setup)
     // makes this claim; toe trusts it — that is the whole point of a
     // capability token. Optionally names the destination framebuffer.
     [[nodiscard]] static RenderContext adopt_current(
