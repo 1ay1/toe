@@ -1075,10 +1075,16 @@ void Screen::enter_alt_screen() {
     // Snapshot the primary visible grid (rows*cols) + its wrapped flags. The
     // primary scrollback stays live in the ring untouched; the alt screen just
     // masks the visible grid and adds no scrollback of its own.
+    //
+    // altstorm hammers 150k enter/leave cycles: allocating + zero-filling this
+    // buffer per enter (and freeing it per leave) dominated the wall time.
+    // resize() REUSES the capacity across cycles, and since the loop below
+    // memcpy's over every cell, no fill is needed — so a steady-state cycle does
+    // zero heap traffic.
     const std::size_t ncells = static_cast<std::size_t>(size_.rows) *
                                static_cast<std::size_t>(size_.cols);
-    saved_primary_.assign(ncells, Cell{});
-    saved_primary_wrapped_.assign(static_cast<std::size_t>(std::max(size_.rows, 0)), false);
+    saved_primary_.resize(ncells);
+    saved_primary_wrapped_.resize(static_cast<std::size_t>(std::max(size_.rows, 0)));
     for (std::int32_t r = 0; r < size_.rows; ++r) {
         std::memcpy(saved_primary_.data() + static_cast<std::size_t>(r) *
                                                  static_cast<std::size_t>(size_.cols),
@@ -1119,8 +1125,9 @@ void Screen::leave_alt_screen() {
         }
     }
     cursor_ = saved_primary_cursor_;
-    saved_primary_.clear();
-    saved_primary_wrapped_.clear();
+    // Keep the snapshot buffers allocated (capacity reused next enter); just
+    // mark the alt screen inactive. Clearing them would free + realloc every
+    // cycle — the altstorm hot path.
     on_alt_ = false;
     clamp_cursor();
     stamp_all();
