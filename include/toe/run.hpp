@@ -43,6 +43,7 @@ inline constexpr int kEchoWaitMs = 3;    // local shells echo in µs; this is a 
 inline constexpr int kIdlePollMs = 250;  // keeps cursor blink crisp when nothing else wakes us
 inline constexpr int kMinAnimMs = 16;    // don't spin faster than ~60fps on animations
 inline constexpr int kFloodPresentMs = 33; // ~30Hz present cap while flooding
+inline constexpr int kStreamWaitMs = 4;    // ride inter-burst gaps without dropping to idle poll
 inline constexpr int kCoalesceWaitMs = 2;  // brief refill window to coalesce a bursty stream
 inline constexpr int kCoalesceRounds = 8;  // cap the coalesce so render/input never starve
 
@@ -104,11 +105,13 @@ template <App A>
         //     a bursty producer's writes merge into one drain. Throughput is
         //     PTY/model-bound, not event-loop-bound.
         bool child_gone = false;
+        bool pumped = false; // did we drain any child output this turn?
         {
             // Non-blocking probe, then drain while the PTY stays readable.
             Readiness rr = toe::wait_readable(surf, session.pty_fd(), WaitDeadline::nanos(0));
             int coalesce_budget = kCoalesceRounds;
             while (rr.pty) {
+                pumped = true;
                 if (!session.pump_output()) { child_gone = true; break; }
                 if (session.output_pending()) break;   // hit the byte budget: yield
                 if (--coalesce_budget <= 0) break;     // yield to render/input
@@ -140,8 +143,16 @@ template <App A>
             last_title = std::move(t);
         }
 
-        const bool flood = session.output_pending();
-        const bool rate_ok = !flood || (now.value - last_present_ms) >= kFloodPresentMs;
+        // A stream is "active" if we drained ANY child output this turn, not
+        // just when a drain overflowed the byte budget. A workload like altstorm
+        // (150k tiny alt-screen toggles) fully drains each turn — output_pending
+        // stays false — yet bumps the generation on every toggle. Gating the
+        // present cap on output_pending alone would then render+present per
+        // toggle (300k compositor roundtrips). `pumped` catches it: while the
+        // child produces output at all, cap presents to ~kFloodPresentMs and
+        // don't drop to the idle poll — loop straight back to keep draining.
+        const bool streaming = pumped || session.output_pending();
+        const bool rate_ok = !streaming || (now.value - last_present_ms) >= kFloodPresentMs;
         if ((child_gone || drawn != key) && rate_ok) {
             glViewport(0, 0, px.w, px.h);
             auto rc = toe::gfx::RenderContext::adopt_current();
@@ -152,15 +163,23 @@ template <App A>
         }
 
         // 5. Sleep until real work arrives — child output, a window event, or
-        //    the blink/animation timer — instead of busy-spinning. EXCEPT
-        //    under a flood: if output is still queued we loop straight back to
-        //    drain it, having just rendered an intermediate frame.
+        //    the blink/animation timer — instead of busy-spinning. EXCEPT while
+        //    streaming: more output is on its way, so loop straight back to
+        //    drain it (a present may have been rate-capped above) without paying
+        //    an idle poll-wait + compositor roundtrip per chunk.
         toe::flush(surf);
-        if (!session.output_pending()) {
+        if (!streaming) {
             // The App's readiness wait covers the PTY, the window and (if any) the
             // key-repeat timer; toe passes only the PTY fd. Idle deadline paces
             // the cursor blink / inline-image animation.
             toe::wait_readable(surf, session.pty_fd(), idle_deadline(session, now));
+        } else if (!session.output_pending()) {
+            // Streaming but the PTY is momentarily dry (a micro-gap between the
+            // producer's writes). Don't busy-spin re-probing: block briefly on
+            // the PTY so the next burst resumes the tight loop immediately,
+            // while still yielding the core. A real end-of-stream just falls
+            // through to the idle wait next turn (pumped will be false).
+            toe::wait_readable(surf, session.pty_fd(), WaitDeadline::millis(kStreamWaitMs));
         }
     }
     return 0;

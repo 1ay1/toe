@@ -1093,12 +1093,14 @@ void Screen::enter_alt_screen() {
         saved_primary_wrapped_[static_cast<std::size_t>(r)] = ring_.view_wrapped(r);
     }
     saved_primary_cursor_ = cursor_;
-    // Blank the visible grid for the alt screen.
+    // Blank the visible grid for the alt screen. Use the ring's prefix-blank
+    // (clears only up to each row's high-water column, not the full width) — alt
+    // frames are typically near-empty, so this is far cheaper than a full
+    // rows*cols write, which matters when a workload toggles the alt screen
+    // hundreds of thousands of times (altstorm).
     for (std::int32_t r = 0; r < size_.rows; ++r) {
-        Cell *dst = ring_.view_row(r);
-        for (std::int32_t c = 0; c < size_.cols; ++c) dst[c] = Cell{};
+        ring_.blank_view_row(r);
         ring_.set_view_wrapped(r, false);
-        ring_.mark_view_full(r);
     }
     cursor_ = Pos{};
     scroll_offset_ = 0;                  // alt screen has no scrollback
