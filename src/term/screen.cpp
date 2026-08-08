@@ -1566,13 +1566,14 @@ void Screen::esc(const vt::EscDispatch &d) {
     if (d.intermediates.empty()) {
         switch (d.final) {
         case 'c': // RIS — reset to initial state.
-            for (std::int32_t r = 0; r < size_.rows; ++r) {
-                Cell *dst = ring_.view_row(r);
-                for (std::int32_t c = 0; c < size_.cols; ++c) dst[c] = Cell{};
-                ring_.set_view_wrapped(r, false);
-                ring_.mark_view_full(r);
-            }
-            ring_.clear_scrollback();
+            // Fully reset the ring: reset() reallocates/refills the arena with
+            // blank cells, so NO stale content survives. The old path only
+            // cleared the visible grid + forgot the scrollback pointers
+            // (clear_scrollback), leaving previously-written cells physically in
+            // the recycled scrollback slots — which a later scroll flood would
+            // expose with the ring's prefix-blank fast paths (garbage coloured
+            // rows from an earlier screenful).
+            ring_.reset(size_.rows, size_.cols, max_history_, Cell{});
             scroll_offset_ = 0;
             cursor_ = Pos{};
             pen_ = Pen{};

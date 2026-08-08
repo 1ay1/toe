@@ -454,6 +454,35 @@ int main() {
         }
     }
 
+    // RIS (ESC c) must fully reset the ring, including scrollback slots, so no
+    // previously-written cell survives physically in a recycled slot. Regression
+    // for coloured garbage rows appearing under a scroll flood that recycled
+    // slots left dirty by an earlier BCE-coloured screenful (evictchurn after a
+    // coloured fixture): RIS used to only clear the visible grid + forget the
+    // scrollback pointers, leaving the arena cells intact.
+    {
+        auto blue_cells = [](term::Screen &s) {
+            int n = 0;
+            for (std::int32_t r = 0; r < 24; ++r) {
+                auto row = s.row(Row{r});
+                for (std::int32_t c = 0; c < 80; ++c)
+                    if (!std::holds_alternative<term::DefaultColor>(row[c].pen.bg)) ++n;
+            }
+            return n;
+        };
+        term::Screen s{Extent{80, 24}};
+        // Fill well past the scrollback cap with wide blue-bg (BCE) lines.
+        feed(s, "\x1b[44m");
+        for (int i = 0; i < 15000; ++i)
+            feed(s, "COLORED wide line xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n");
+        feed(s, "\x1b[0m");
+        feed(s, "\x1b" "c"); // RIS
+        expect(blue_cells(s) == 0, "RIS clears the visible grid of stale bg");
+        // A long monochrome scroll flood must NOT resurrect the old bg colour.
+        for (int i = 0; i < 40000; ++i) feed(s, "0000|====|\n");
+        expect(blue_cells(s) == 0, "RIS + scroll flood leaves no stale coloured cells");
+    }
+
     // The alternate screen has NO scrollback: a full-screen app (htop, vim)
     // repaints by scrolling, and those lines must never leak into history —
     // otherwise the app's frames are left behind after it exits.
