@@ -79,6 +79,7 @@ private:
     std::vector<RowCache> rows_{};
     bool blink_on_{true};   // last blink phase the cache was built against
     bool blink_flip_{false}; // true for the frame where the blink phase flipped
+    std::uint16_t hover_link_{0}; // last hovered OSC-8 link id the cache saw
     // Geometry the cache was built against; a change invalidates everything.
     int cache_cols_{-1}, cache_rows_{-1}, cache_cw_{0}, cache_ch_{0}, cache_ascent_{0};
     // Build (or reuse) one row's instances into rows_[r]. Returns true if the

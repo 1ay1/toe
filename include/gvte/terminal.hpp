@@ -106,6 +106,10 @@ public:
     // opens it (browser / xdg-open) on click.
     [[nodiscard]] std::string_view link_at(int vrow, int col) const noexcept;
 
+    // Set the hover cell for OSC 8 link highlighting; pass (-1,-1) to clear.
+    // Returns true if the hovered link changed (host should redraw).
+    bool set_hover(int vrow, int col) noexcept;
+
     // --- mouse reporting ---------------------------------------------------
     // True when the running app has requested mouse tracking (?1000/1002/1003).
     // While true, the host should forward pointer events to the app via

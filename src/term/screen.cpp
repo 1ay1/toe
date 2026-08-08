@@ -306,6 +306,17 @@ std::string_view Screen::link_at(std::int32_t vrow, std::int32_t col) const noex
     return links_[id - 1u];
 }
 
+bool Screen::set_hover(std::int32_t vrow, std::int32_t col) noexcept {
+    std::uint16_t id = 0;
+    if (vrow >= 0 && vrow < size_.rows && col >= 0 && col < size_.cols) {
+        id = row(Row{vrow})[static_cast<std::size_t>(col)].link;
+    }
+    if (id == hover_link_) return false;
+    hover_link_ = id;
+    touch(); // the hovered link's underline appears/moves — needs a redraw
+    return true;
+}
+
 void Screen::line_feed() {
     wrap_pending_ = false;
     if (cursor_.row.get() == scroll_bottom_) {

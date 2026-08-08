@@ -519,7 +519,10 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
         const bool has_ul = term::has(at, term::Attr::Underline);
         const bool has_st = term::has(at, term::Attr::Strike);
         const bool has_ol = term::has(at, term::Attr::Overline);
-        if (has_ul || has_st || has_ol) {
+        // A hovered OSC 8 link gets a single underline so it reads as clickable,
+        // even if the text itself wasn't underlined.
+        const bool hovered = hover_link_ != 0 && cell.link == hover_link_;
+        if (has_ul || has_st || has_ol || hovered) {
             Rgb dc = on_cursor ? palette_.resolve(cell.pen.bg, /*is_fg=*/false)
                                : palette_.resolve(reverse ? cell.pen.bg : cell.pen.fg, !reverse);
             if (term::has(at, term::Attr::Faint)) {
@@ -575,6 +578,10 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
                     bar(ulc, uy, 0, fcw);
                     break;
                 }
+            } else if (hovered) {
+                // Hover underline (link not otherwise underlined): a plain
+                // single line in the text colour.
+                bar(dc, static_cast<float>(ascent) + thick, 0, fcw);
             }
             if (has_st) bar(dc, static_cast<float>(ascent) * 0.62f, 0, fcw); // strike ~mid-x-height
             if (has_ol) bar(dc, 0.0f, 0, fcw);                               // overline at cell top
@@ -678,6 +685,14 @@ void Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on, bo
     const bool blink_flipped = (blink_on != blink_on_);
     blink_on_ = blink_on;
     blink_flip_ = blink_flipped;
+
+    // A hover-link change (pointer moved onto/off an OSC 8 link) toggles the
+    // hover underline. It's a rare, coarse event, so invalidate the whole row
+    // cache once rather than track which rows hold the link.
+    if (screen.hover_link() != hover_link_) {
+        hover_link_ = screen.hover_link();
+        for (auto &rc : rows_) rc.valid = false;
+    }
 
     // Rebuild only the rows whose fingerprint changed; the rest keep their
     // shadow instances untouched. We reassemble the flat draw buffers only when

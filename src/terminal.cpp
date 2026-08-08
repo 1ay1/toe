@@ -231,6 +231,10 @@ std::string_view Session::link_at(int vrow, int col) const noexcept {
     return impl_->model.screen.link_at(vrow, col);
 }
 
+bool Session::set_hover(int vrow, int col) noexcept {
+    return impl_->model.screen.set_hover(vrow, col);
+}
+
 // --- mouse reporting -------------------------------------------------------
 bool Session::wants_mouse() const noexcept {
     return impl_->model.screen.mouse_mode() != term::Screen::MouseMode::off;

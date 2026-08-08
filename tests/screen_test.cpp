@@ -562,6 +562,13 @@ int main() {
         feed(s, "\r\nAB");
         expect(s.link_at(1, 0) == "https://a.test" && s.link_at(1, 1) == "https://a.test",
                "second link stamps its own URI");
+        // Hover tracking: moving onto a link cell reports a change; moving off
+        // reports a change; staying on the same link reports none.
+        expect(s.set_hover(0, 0), "hovering a link cell registers a change");
+        expect(s.hover_link() != 0, "a link id is active while hovered");
+        expect(!s.set_hover(0, 1), "staying within the same link: no change");
+        expect(s.set_hover(0, 4), "moving off the link registers a change");
+        expect(s.hover_link() == 0, "no link hovered off the link run");
     }
 
     if (failures == 0) {

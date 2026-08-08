@@ -258,6 +258,7 @@ private:
     std::uint16_t cur_link_{0};
     std::string cur_link_key_{};              // the OSC 8 id= param, for coalescing
     std::vector<std::string> links_{};        // id-1 -> URI
+    std::uint16_t hover_link_{0};             // link id under the pointer, 0=none
 
     // Tab stops: one flag per column (default every 8th).
     std::vector<bool> tab_stops_{};
@@ -270,6 +271,12 @@ public:
     // The OSC 8 URI under a viewport cell, or empty if none. The host opens it
     // on click.
     [[nodiscard]] std::string_view link_at(std::int32_t vrow, std::int32_t col) const noexcept;
+
+    // Highlight (hover-underline) the link under a viewport cell so it reads as
+    // clickable. Pass (-1,-1) to clear. Returns true if the hovered link id
+    // changed (the host uses that to trigger a redraw).
+    bool set_hover(std::int32_t vrow, std::int32_t col) noexcept;
+    [[nodiscard]] std::uint16_t hover_link() const noexcept { return hover_link_; }
 
 private:
     // Character-set state (VT100 line-drawing). G0/G1 each hold ASCII or the
