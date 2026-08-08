@@ -22,6 +22,7 @@
 #include "toe/core/types.hpp"
 #include "toe/term/graphics.hpp"
 #include "toe/term/cell.hpp"
+#include "toe/term/rowring.hpp"
 #include "toe/vt/parser.hpp"
 
 namespace toe::term {
@@ -44,7 +45,7 @@ public:
     // --- scrollback --------------------------------------------------------
     // How many history rows exist above the live view.
     [[nodiscard]] std::int32_t history_rows() const noexcept {
-        return static_cast<std::int32_t>(history_.size());
+        return static_cast<std::int32_t>(ring_.scrollback());
     }
     // Current scroll position: 0 = live (bottom), up to history_rows().
     [[nodiscard]] std::int32_t scroll_offset() const noexcept { return scroll_offset_; }
@@ -224,7 +225,7 @@ private:
     [[nodiscard]] Cell &at(Row r, Col c);
     [[nodiscard]] const Cell &at(Row r, Col c) const;
     [[nodiscard]] std::size_t index(Row r, Col c) const noexcept;
-    void reset_row_map(); // set row_of_ to identity
+    [[nodiscard]] Cell *cell_ptr(Row r, Col c) noexcept; // ring row pointer for bulk writes
 
     // --- primitive operations the Actions decompose into ---
     void put(char32_t cp);
@@ -323,17 +324,11 @@ private:
     }
 
     Extent size_{};
-    std::vector<Cell> cells_{}; // physical cell store, size_.area() cells
-    // A row of blank cells, kept sized to size_.cols, for fast bulk-blank via
-    // memcpy in the scroll hot path (avoids per-cell fill construction).
-    std::vector<Cell> blank_row_{};
-    mutable std::vector<Cell> scratch_row_{}; // pad-buffer for trimmed history reads
-    // Logical-to-physical row map. cells_ holds the live grid's rows in some
-    // physical order; row_of_[r] is the physical row backing logical row r.
-    // Scrolling rotates this map (O(rows) index shuffle) instead of moving
-    // O(rows*cols) cells — a `cols`x speedup on the flood/scroll hot path. Each
-    // physical row is still contiguous, so row() hands out a valid span.
-    std::vector<std::uint32_t> row_of_{};
+    // Unified zero-copy row ring: the live grid AND scrollback share one arena
+    // (see toe/term/rowring.hpp). A full-screen scroll is O(1) index work — no
+    // row copy — because the scrolled-off row is already in the ring.
+    RowRing ring_{};
+    mutable std::vector<Cell> scratch_row_{}; // scratch for padded reads if needed
     Pos cursor_{};
     Pen pen_{};
     bool wrap_pending_{false};   // DEC-style deferred wrap at right margin
@@ -383,9 +378,10 @@ private:
     bool mouse_sgr_{false};
     MouseMode mouse_mode_{MouseMode::off};
 
-    // Saved primary-screen state while the alternate screen is active.
+    // Saved primary-screen visible grid while the alternate screen is active.
+    // (Scrollback stays live in the ring; alt screen only masks the grid.)
     std::vector<Cell> saved_primary_{};
-    std::vector<std::uint32_t> saved_primary_row_of_{};
+    std::vector<bool> saved_primary_wrapped_{};
     Pos saved_primary_cursor_{};
 
     // OSC 8 hyperlinks. cur_link_ is the id stamped onto glyphs written while a
@@ -462,14 +458,7 @@ private:
     // Fetch the cell at an absolute row/col (history or live), or nullptr.
     [[nodiscard]] const Cell *cell_at_abs(std::int64_t abs_row, std::int32_t col) const noexcept;
 
-    // Scrollback: completed lines that scrolled off the top, newest at back.
-    std::deque<std::vector<Cell>> history_{};
-    // Parallel to history_: true if that line wrapped into the next (soft wrap,
-    // no newline) rather than ending at a real line break. Drives reflow.
-    std::deque<bool> hist_wrapped_{};
-    // Parallel to the LIVE grid's logical rows: soft-wrap flag per row.
-    std::vector<bool> live_wrapped_{};
-    bool any_wrapped_ = false;   // fast-skip flag: any live_wrapped_ true?
+    // (scrollback + soft-wrap flags now live in ring_)
     bool any_line_attr_ = false; // fast-skip flag: any non-normal line_attr_?
     std::int32_t scroll_offset_{0};                 // rows scrolled into history
     std::size_t max_history_{10000};                // ring-buffer cap
@@ -478,16 +467,13 @@ private:
     // resize changes the column count. Preserves logical lines + the cursor.
     void reflow(Extent old_size, Extent new_size);
 
-    // Soft-wrap flag helpers for the live grid (indexed by logical row).
+    // Soft-wrap flag helpers for the live grid (indexed by visible row). These
+    // route straight to the ring so wrapped flags travel with the row on scroll.
     void set_wrapped(std::int32_t row, bool w) noexcept {
-        if (row >= 0 && row < static_cast<std::int32_t>(live_wrapped_.size())) {
-            live_wrapped_[static_cast<std::size_t>(row)] = w;
-            if (w) any_wrapped_ = true;
-        }
+        if (row >= 0 && row < size_.rows) ring_.set_view_wrapped(row, w);
     }
     [[nodiscard]] bool wrapped_at(std::int32_t row) const noexcept {
-        return row >= 0 && row < static_cast<std::int32_t>(live_wrapped_.size()) &&
-               live_wrapped_[static_cast<std::size_t>(row)];
+        return row >= 0 && row < size_.rows && ring_.view_wrapped(row);
     }
 };
 

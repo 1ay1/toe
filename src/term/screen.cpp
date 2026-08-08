@@ -21,16 +21,14 @@ int param_raw(std::span<const int> p, std::size_t i, int def) {
 }
 } // namespace
 
-Screen::Screen(Extent size) : size_{size}, cells_(size.area()) {
+Screen::Screen(Extent size) : size_{size} {
     scroll_top_ = 0;
     scroll_bottom_ = size_.rows - 1;
     scroll_left_ = 0;
     scroll_right_ = size_.cols - 1;
     lr_margins_ = false;
-    live_wrapped_.assign(static_cast<std::size_t>(std::max(size_.rows, 0)), false);
+    ring_.reset(size_.rows, size_.cols, max_history_, Cell{});
     line_attr_.assign(static_cast<std::size_t>(std::max(size_.rows, 0)), LineAttr::normal);
-    blank_row_.assign(static_cast<std::size_t>(std::max(size_.cols, 0)), blank_cell());
-    reset_row_map();
     row_epoch_.assign(static_cast<std::size_t>(std::max(size_.rows, 0)), 0);
     tab_stops_.assign(static_cast<std::size_t>(std::max(size_.cols, 1)), false);
     for (std::int32_t c = 0; c < size_.cols; c += 8) {
@@ -38,69 +36,56 @@ Screen::Screen(Extent size) : size_{size}, cells_(size.area()) {
     }
 }
 
-// Reset the logical->physical row map to the identity (row r lives at physical
-// row r). Called after any op that repacks cells_ into logical order.
-void Screen::reset_row_map() {
-    row_of_.resize(static_cast<std::size_t>(std::max(size_.rows, 0)));
-    for (std::int32_t r = 0; r < size_.rows; ++r)
-        row_of_[static_cast<std::size_t>(r)] = static_cast<std::uint32_t>(r);
-}
-
 std::size_t Screen::index(Row r, Col c) const noexcept {
-    return static_cast<std::size_t>(row_of_[static_cast<std::size_t>(r.get())]) *
+    // Offset into the ring arena for the visible row r. Used by bulk ops.
+    return static_cast<std::size_t>(ring_.slot_of(ring_.view_base() +
+                                                 static_cast<std::size_t>(r.get()))) *
                static_cast<std::size_t>(size_.cols) +
            static_cast<std::size_t>(c.get());
+}
+
+// Pointer to the first cell of visible row r at column c — the bulk-write path
+// (put_ascii_run / put) writes contiguous cells through this.
+Cell *Screen::cell_ptr(Row r, Col c) noexcept {
+    return ring_.view_row(r.get()) + c.get();
 }
 
 Cell &Screen::at(Row r, Col c) {
     assert(r.get() >= 0 && r.get() < size_.rows);
     assert(c.get() >= 0 && c.get() < size_.cols);
-    // Non-const access is the write funnel: stamp the row's damage epoch so the
-    // renderer knows it changed. (Over-stamping on the rare non-const read is
-    // harmless — it only costs one extra row rebuild.)
     stamp(r.get());
-    return cells_[index(r, c)];
+    ring_.note_used(r.get(), c.get() + 1); // this cell may be written through the ref
+    return ring_.view_row(r.get())[c.get()];
 }
 
 const Cell &Screen::at(Row r, Col c) const {
     assert(r.get() >= 0 && r.get() < size_.rows);
     assert(c.get() >= 0 && c.get() < size_.cols);
-    return cells_[index(r, c)];
+    return ring_.view_row(r.get())[c.get()];
 }
 
 std::span<const Cell> Screen::row(Row r) const {
-    // Viewport row r (0 = top of visible area). When scrolled back by
-    // scroll_offset_ rows, the first scroll_offset_ viewport rows are drawn
-    // from history; the remainder from the top of the live grid.
-    const std::int32_t vr = r.get();
-    if (scroll_offset_ > 0) {
-        // Index into history: the visible window starts scroll_offset_ rows
-        // above the live grid's top.
-        const std::int32_t hist_start =
-            static_cast<std::int32_t>(history_.size()) - scroll_offset_;
-        const std::int32_t hist_index = hist_start + vr;
-        if (hist_index >= 0 && hist_index < static_cast<std::int32_t>(history_.size())) {
-            const auto &hrow = history_[static_cast<std::size_t>(hist_index)];
-            const std::size_t cols = static_cast<std::size_t>(size_.cols);
-            if (hrow.size() >= cols)
-                return std::span<const Cell>{hrow.data(), cols};
-            // Trimmed scrollback line: pad to full width in a scratch buffer.
-            // (Only hit when the user scrolls back, never on the flood path.)
-            scratch_row_.assign(cols, blank_cell());
-            std::memcpy(scratch_row_.data(), hrow.data(), hrow.size() * sizeof(Cell));
-            return std::span<const Cell>{scratch_row_.data(), cols};
-        }
-        // Past the end of history -> into the live grid.
-        const std::int32_t live_row = hist_index - static_cast<std::int32_t>(history_.size());
-        const std::size_t base = index(Row{live_row}, Col{0});
-        return std::span<const Cell>{cells_.data() + base, static_cast<std::size_t>(size_.cols)};
+    // Viewport row r (0 = top of visible area). When scrolled back, the top
+    // scroll_offset_ viewport rows come from scrollback (earlier absolute rows),
+    // the rest from the live grid — all in the same ring, so it's one lookup.
+    const std::size_t abs = ring_.view_base() +
+                            static_cast<std::size_t>(r.get()) -
+                            static_cast<std::size_t>(scroll_offset_);
+    // `abs` can dip below 0 if scrolled past the top; clamp to blank.
+    const std::int64_t sabs = static_cast<std::int64_t>(ring_.view_base()) +
+                              r.get() - scroll_offset_;
+    if (sabs < 0 || static_cast<std::size_t>(sabs) >= ring_.total()) {
+        scratch_row_.assign(static_cast<std::size_t>(size_.cols), blank_cell());
+        return std::span<const Cell>{scratch_row_.data(),
+                                     static_cast<std::size_t>(size_.cols)};
     }
-    const std::size_t base = index(r, Col{0});
-    return std::span<const Cell>{cells_.data() + base, static_cast<std::size_t>(size_.cols)};
+    return std::span<const Cell>{ring_.abs_row(static_cast<std::size_t>(sabs)),
+                                 static_cast<std::size_t>(size_.cols)};
+    (void)abs;
 }
 
 void Screen::scroll(std::int32_t delta) {
-    const std::int32_t max = static_cast<std::int32_t>(history_.size());
+    const std::int32_t max = static_cast<std::int32_t>(ring_.scrollback());
     scroll_offset_ = std::clamp(scroll_offset_ + delta, 0, max);
     touch();
 }
@@ -127,20 +112,10 @@ void Screen::resize(Extent size) {
     if (do_reflow) {
         reflow(old_size, size);
     } else {
-        std::vector<Cell> next(size.area());
-        const std::int32_t copy_rows = std::min(size.rows, size_.rows);
-        const std::int32_t copy_cols = std::min(size.cols, size_.cols);
-        for (std::int32_t r = 0; r < copy_rows; ++r) {
-            for (std::int32_t c = 0; c < copy_cols; ++c) {
-                next[static_cast<std::size_t>(r) * static_cast<std::size_t>(size.cols) +
-                     static_cast<std::size_t>(c)] = at(Row{r}, Col{c});
-            }
-        }
-        cells_ = std::move(next);
+        // No rewrap: keep the visible grid + scrollback, crop/pad to the new
+        // geometry. On the alt screen there is no scrollback to preserve.
+        ring_.resize_keep(size.rows, size.cols, on_alt_ ? 0 : max_history_, blank_cell());
         size_ = size;
-        // `next` was written in logical row order, so the map is now the identity.
-        reset_row_map();
-        live_wrapped_.assign(static_cast<std::size_t>(std::max(size_.rows, 0)), false);
     }
 
     // A resize resets the scroll region to the full screen (xterm behavior).
@@ -157,7 +132,7 @@ void Screen::resize(Extent size) {
     clamp_cursor();
     row_epoch_.assign(static_cast<std::size_t>(std::max(size_.rows, 0)), 0);
     line_attr_.assign(static_cast<std::size_t>(std::max(size_.rows, 0)), LineAttr::normal);
-    blank_row_.assign(static_cast<std::size_t>(std::max(size_.cols, 0)), blank_cell());
+    any_line_attr_ = false;
     stamp_all();
     touch();
 }
@@ -183,13 +158,18 @@ void Screen::reflow(Extent old_size, Extent new_size) {
     };
 
     // 1. Gather logical lines from history, joining soft-wrapped runs.
+    //    History now lives in the ring: absolute rows [0, scrollback()) are the
+    //    scrollback lines above the live view, oldest first.
     std::vector<LogLine> logical;
     {
+        const std::size_t hist = ring_.scrollback();
         std::vector<Cell> cur;
         bool have = false;
-        for (std::size_t i = 0; i < history_.size(); ++i) {
-            const bool wrapped = i < hist_wrapped_.size() && hist_wrapped_[i];
-            auto piece = trimmed(history_[i], wrapped);
+        for (std::size_t i = 0; i < hist; ++i) {
+            const Cell *rowp = ring_.abs_row(i);
+            const bool wrapped = ring_.wrapped_abs(i);
+            auto piece = trimmed(std::span<const Cell>(rowp,
+                                    static_cast<std::size_t>(old_size.cols)), wrapped);
             cur.insert(cur.end(), piece.begin(), piece.end());
             have = true;
             if (!wrapped) { logical.push_back({std::move(cur), false}); cur.clear(); have = false; }
@@ -263,32 +243,48 @@ void Screen::reflow(Extent old_size, Extent new_size) {
         new_cursor_col = 0;
     }
 
-    // 4. Split into scrollback (all but the last `rows` lines) + live grid.
+    // 4. Split into scrollback (all but the last `rows` lines) + live grid,
+    //    then rebuild the ring from scratch: reset gives us `nrows` blank live
+    //    rows and no scrollback; we scroll_up_one to prepend each scrollback
+    //    line (O(1) each), then paint the live grid rows in place.
     const std::int32_t nrows = new_size.rows;
     const std::int32_t total = static_cast<std::int32_t>(rows.size());
     const std::int32_t live_count = std::min(total, nrows);
     const std::int32_t live_first = total - live_count;
 
-    history_.clear();
-    hist_wrapped_.clear();
-    for (std::int32_t i = 0; i < live_first; ++i) {
-        history_.push_back(std::move(rows[static_cast<std::size_t>(i)]));
-        hist_wrapped_.push_back(rows_wrapped[static_cast<std::size_t>(i)]);
-    }
-    while (history_.size() > max_history_) { history_.pop_front(); hist_wrapped_.pop_front(); }
-
-    cells_.assign(static_cast<std::size_t>(new_size.area()), Cell{});
-    live_wrapped_.assign(static_cast<std::size_t>(std::max(nrows, 0)), false);
-    for (std::int32_t r = 0; r < live_count; ++r) {
-        const auto &src = rows[static_cast<std::size_t>(live_first + r)];
-        for (std::int32_t c = 0; c < ncols; ++c)
-            cells_[static_cast<std::size_t>(r) * static_cast<std::size_t>(ncols) +
-                   static_cast<std::size_t>(c)] = src[static_cast<std::size_t>(c)];
-        live_wrapped_[static_cast<std::size_t>(r)] = rows_wrapped[static_cast<std::size_t>(live_first + r)];
-    }
-
     size_ = new_size;
-    reset_row_map();
+    ring_.reset(nrows, ncols, max_history_, Cell{});
+
+    // Scrollback lines: cap to max_history_, oldest dropped first.
+    std::int32_t sb_first = 0;
+    if (static_cast<std::size_t>(live_first) > max_history_)
+        sb_first = live_first - static_cast<std::int32_t>(max_history_);
+    for (std::int32_t i = sb_first; i < live_first; ++i) {
+        // Push the current top row into scrollback, opening a blank bottom row,
+        // then write this scrollback line into what is now the top visible row
+        // and immediately scroll it up so it lands in history.
+        Cell *dst = ring_.view_row(0);
+        const auto &src = rows[static_cast<std::size_t>(i)];
+        for (std::int32_t c = 0; c < ncols; ++c) dst[c] = src[static_cast<std::size_t>(c)];
+        ring_.mark_view_full(0);
+        ring_.set_view_wrapped(0, rows_wrapped[static_cast<std::size_t>(i)]);
+        ring_.scroll_up_one(true, Cell{});
+    }
+
+    // Live grid: paint directly into the visible rows.
+    for (std::int32_t r = 0; r < nrows; ++r) {
+        Cell *dst = ring_.view_row(r);
+        ring_.mark_view_full(r);
+        if (r < live_count) {
+            const auto &src = rows[static_cast<std::size_t>(live_first + r)];
+            for (std::int32_t c = 0; c < ncols; ++c) dst[c] = src[static_cast<std::size_t>(c)];
+            ring_.set_view_wrapped(r, rows_wrapped[static_cast<std::size_t>(live_first + r)]);
+        } else {
+            for (std::int32_t c = 0; c < ncols; ++c) dst[c] = Cell{};
+            ring_.set_view_wrapped(r, false);
+        }
+    }
+
     scroll_offset_ = 0;
     // Cursor: map into the live region (clamp if it scrolled into history).
     cursor_.row = Row{std::clamp(new_cursor_row - live_first, 0, std::max(nrows - 1, 0))};
@@ -399,10 +395,11 @@ void Screen::put_ascii_run(std::string_view ascii) {
         const std::size_t take = std::min(room, n - i);
         if (take > 0) {
             stamp(r);
-            const std::size_t base = index(cursor_.row, Col{col});
+            Cell *base = cell_ptr(cursor_.row, Col{col});
             for (std::size_t k = 0; k < take; ++k) {
-                cells_[base + k] = Cell{static_cast<char32_t>(ascii[i + k]), pen_, 1, cur_link_};
+                base[k] = Cell{static_cast<char32_t>(ascii[i + k]), pen_, 1, cur_link_};
             }
+            ring_.note_used(r, col + static_cast<std::int32_t>(take));
             last_char_ = static_cast<char32_t>(ascii[i + take - 1]);
             i += take;
             cursor_.col = Col{col + static_cast<std::int32_t>(take)};
@@ -425,7 +422,8 @@ void Screen::put(char32_t cp) {
             // Room to write and advance without wrapping.
             const std::int32_t r = cursor_.row.get();
             stamp(r);
-            cells_[index(cursor_.row, cursor_.col)] = Cell{cp, pen_, 1, cur_link_};
+            *cell_ptr(cursor_.row, cursor_.col) = Cell{cp, pen_, 1, cur_link_};
+            ring_.note_used(r, col + 1);
             last_char_ = cp;
             cursor_.col = Col{col + 1};
             ++generation_;
@@ -651,8 +649,7 @@ void Screen::scroll_up(std::int32_t n) {
     if (n == 0) return;
 
     // Left/right margins active: scroll only the columns [left, right] within
-    // the region, cell by cell (the whole-row map rotation can't express a
-    // horizontal sub-range). No scrollback in this mode (DEC semantics).
+    // the region, cell by cell. No scrollback in this mode (DEC semantics).
     if (lr_margins_ && (scroll_left_ > 0 || scroll_right_ < size_.cols - 1)) {
         const std::int32_t l = scroll_left_, r = scroll_right_;
         for (std::int32_t row = scroll_top_; row <= scroll_bottom_ - n; ++row)
@@ -667,80 +664,41 @@ void Screen::scroll_up(std::int32_t n) {
 
     const bool full_screen = (scroll_top_ == 0 && scroll_bottom_ == size_.rows - 1);
 
-    // Lines that scroll off the top of a FULL-screen scroll go into the
-    // scrollback — but ONLY on the primary buffer. The alternate screen (htop,
-    // vim, less, …) has no scrollback: it repaints by scrolling, so pushing its
-    // lines to history would flood the scrollback with the app's frames.
-    if (full_screen && !on_alt_) {
-        const std::size_t cols = static_cast<std::size_t>(size_.cols);
-        for (std::int32_t i = 0; i < n; ++i) {
-            const std::size_t base = index(Row{i}, Col{0});
-            const Cell *rowp = cells_.data() + base;
-            // Trim trailing blanks. Scan backwards comparing raw bytes against a
-            // known blank Cell (memcmp on trivially-copyable Cells beats the
-            // per-cell blank() which does a std::variant colour compare).
-            std::size_t used = cols;
-            const Cell blank = blank_cell();
-            while (used > 0 && std::memcmp(&rowp[used - 1], &blank, sizeof(Cell)) == 0) --used;
-            const bool w = wrapped_at(i);
-            if (history_.size() >= max_history_) {
-                std::vector<Cell> recycled = std::move(history_.front());
-                history_.pop_front();
-                if (!hist_wrapped_.empty()) hist_wrapped_.pop_front();
-                recycled.resize(used);
-                if (used) std::memcpy(recycled.data(), rowp, used * sizeof(Cell));
-                history_.push_back(std::move(recycled));
-            } else {
-                std::vector<Cell> line(used);
-                if (used) std::memcpy(line.data(), rowp, used * sizeof(Cell));
-                history_.push_back(std::move(line));
-            }
-            hist_wrapped_.push_back(w);
+    if (full_screen) {
+        // THE zero-copy path. Each scrolled line's storage stays put in the
+        // ring: the top visible row simply becomes the newest scrollback line
+        // (primary buffer), or is recycled (alt screen), and the view slides
+        // down by one — no row is copied. Only the new bottom row is blanked.
+        const Cell blank = blank_cell();
+        const bool keep = !on_alt_;
+        for (std::int32_t i = 0; i < n; ++i) ring_.scroll_up_one(keep, blank);
+        // Wrapped flags travel with the row storage inside the ring. line_attr_
+        // tracks the VISIBLE grid by logical row, so it shifts up with content.
+        if (any_line_attr_ && static_cast<std::int32_t>(line_attr_.size()) == size_.rows) {
+            for (std::int32_t r = 0; r + n < size_.rows; ++r)
+                line_attr_[static_cast<std::size_t>(r)] =
+                    line_attr_[static_cast<std::size_t>(r + n)];
+            for (std::int32_t r = std::max(0, size_.rows - n); r < size_.rows; ++r)
+                line_attr_[static_cast<std::size_t>(r)] = LineAttr::normal;
         }
+        stamp_all();
+        touch();
+        return;
     }
 
-    // Rotate the row map: the top n logical rows move to the bottom of the
-    // region (their physical storage is reused for the freshly-blanked lines).
-    // This is an O(region) index shuffle rather than an O(region*cols) memmove.
-    auto first = row_of_.begin() + scroll_top_;
-    auto last = row_of_.begin() + scroll_bottom_ + 1;
-    std::rotate(first, first + n, last);
-
-    // Shift the live soft-wrap flags up by n within the region; blank the last n.
-    // Skipped entirely when no row is soft-wrapped (the common flood case) —
-    // any_wrapped_ tracks whether live_wrapped_ has a true anywhere.
-    if (any_wrapped_ && scroll_top_ == 0 && scroll_bottom_ == size_.rows - 1 &&
-        static_cast<std::int32_t>(live_wrapped_.size()) == size_.rows) {
-        for (std::int32_t r = 0; r + n < size_.rows; ++r)
-            live_wrapped_[static_cast<std::size_t>(r)] =
-                live_wrapped_[static_cast<std::size_t>(r + n)];
-        for (std::int32_t r = std::max(0, size_.rows - n); r < size_.rows; ++r)
-            live_wrapped_[static_cast<std::size_t>(r)] = false;
-    }
-    // Line attributes follow their rows up the screen (blank the new bottom n).
-    // Skipped when no row has a DEC line attribute (the common case).
-    if (any_line_attr_ && scroll_top_ == 0 && scroll_bottom_ == size_.rows - 1 &&
-        static_cast<std::int32_t>(line_attr_.size()) == size_.rows) {
-        for (std::int32_t r = 0; r + n < size_.rows; ++r)
-            line_attr_[static_cast<std::size_t>(r)] = line_attr_[static_cast<std::size_t>(r + n)];
-        for (std::int32_t r = std::max(0, size_.rows - n); r < size_.rows; ++r)
-            line_attr_[static_cast<std::size_t>(r)] = LineAttr::normal;
-    }
-    // The blank fill obeys BCE: erased cells take the current pen's background.
-    // Keep blank_row_ in sync with the active bg/reverse so the fast memcpy is
-    // correct; rebuild only when they change (cheap compare, not per-cell fill).
-    {
-        const term::Color bg = pen_.bg;
-        const term::Attr rev = pen_.attr & Attr::Reverse;
-        if (blank_row_.empty() || static_cast<std::int32_t>(blank_row_.size()) != size_.cols ||
-            blank_row_[0].pen.bg != bg || (blank_row_[0].pen.attr & Attr::Reverse) != rev) {
-            blank_row_.assign(static_cast<std::size_t>(std::max(size_.cols, 0)), blank_cell());
-        }
-    }
-    for (std::int32_t r = scroll_bottom_ - n + 1; r <= scroll_bottom_; ++r) {
-        const std::size_t base = index(Row{r}, Col{0});
-        std::memcpy(cells_.data() + base, blank_row_.data(),
+    // Restricted vertical region (top/bottom margins): scroll rows within the
+    // region by cell copy. No scrollback (DEC: only a full-screen scroll feeds
+    // scrollback). This is the rare case, so a straightforward copy is fine.
+    const Cell blank = blank_cell();
+    for (std::int32_t row = scroll_top_; row <= scroll_bottom_ - n; ++row) {
+        std::memcpy(ring_.view_row(row), ring_.view_row(row + n),
                     static_cast<std::size_t>(size_.cols) * sizeof(Cell));
+        ring_.mark_view_full(row);
+    }
+    for (std::int32_t row = scroll_bottom_ - n + 1; row <= scroll_bottom_; ++row) {
+        Cell *dst = ring_.view_row(row);
+        for (std::int32_t c = 0; c < size_.cols; ++c) dst[c] = blank;
+        ring_.mark_view_full(row);
     }
     stamp_all();
     touch();
@@ -765,17 +723,11 @@ void Screen::scroll_down(std::int32_t n) {
         return;
     }
 
-    // Rotate the row map the other way: bottom n rows wrap to the top.
-    auto first = row_of_.begin() + scroll_top_;
-    auto last = row_of_.begin() + scroll_bottom_ + 1;
-    std::rotate(first, last - n, last);
-    for (std::int32_t r = scroll_top_; r < scroll_top_ + n; ++r) {
-        const std::size_t base = index(Row{r}, Col{0});
-        std::fill(cells_.begin() + static_cast<std::ptrdiff_t>(base),
-                  cells_.begin() +
-                      static_cast<std::ptrdiff_t>(base + static_cast<std::size_t>(size_.cols)),
-                  blank_cell());
-    }
+    // Rotate the region the other way: bottom n rows wrap to the top, top n
+    // rows are blanked.
+    ring_.rotate_view_down(scroll_top_, scroll_bottom_, n);
+    for (std::int32_t r = scroll_top_; r < scroll_top_ + n; ++r)
+        ring_.blank_view_row(r, blank_cell());
     stamp_all();
     touch();
 }
@@ -785,18 +737,11 @@ void Screen::insert_lines(std::int32_t n) {
     if (cursor_.row.get() < scroll_top_ || cursor_.row.get() > scroll_bottom_) return;
     n = std::clamp(n, 0, scroll_bottom_ - cursor_.row.get() + 1);
     if (n == 0) return;
-    // Rotate the row map so rows [cursor, bottom-n] shift DOWN by n; the bottom
-    // n rows fall off and are reused for the freshly-blanked inserted lines.
-    auto first = row_of_.begin() + cursor_.row.get();
-    auto last = row_of_.begin() + scroll_bottom_ + 1;
-    std::rotate(first, last - n, last);
-    for (std::int32_t r = cursor_.row.get(); r < cursor_.row.get() + n; ++r) {
-        const std::size_t base = index(Row{r}, Col{0});
-        std::fill(cells_.begin() + static_cast<std::ptrdiff_t>(base),
-                  cells_.begin() +
-                      static_cast<std::ptrdiff_t>(base + static_cast<std::size_t>(size_.cols)),
-                  blank_cell());
-    }
+    // Rows [cursor, bottom-n] shift DOWN by n; the freshly-vacated top n rows
+    // of the [cursor,bottom] sub-region are blanked.
+    ring_.rotate_view_down(cursor_.row.get(), scroll_bottom_, n);
+    for (std::int32_t r = cursor_.row.get(); r < cursor_.row.get() + n; ++r)
+        ring_.blank_view_row(r, blank_cell());
     cursor_.col = Col{0};
     stamp_all();
     touch();
@@ -806,18 +751,10 @@ void Screen::delete_lines(std::int32_t n) {
     if (cursor_.row.get() < scroll_top_ || cursor_.row.get() > scroll_bottom_) return;
     n = std::clamp(n, 0, scroll_bottom_ - cursor_.row.get() + 1);
     if (n == 0) return;
-    // Rotate so rows [cursor+n, bottom] shift UP by n; the vacated bottom n
-    // rows are reused for the blanks.
-    auto first = row_of_.begin() + cursor_.row.get();
-    auto last = row_of_.begin() + scroll_bottom_ + 1;
-    std::rotate(first, first + n, last);
-    for (std::int32_t r = scroll_bottom_ - n + 1; r <= scroll_bottom_; ++r) {
-        const std::size_t base = index(Row{r}, Col{0});
-        std::fill(cells_.begin() + static_cast<std::ptrdiff_t>(base),
-                  cells_.begin() +
-                      static_cast<std::ptrdiff_t>(base + static_cast<std::size_t>(size_.cols)),
-                  blank_cell());
-    }
+    // Rows [cursor+n, bottom] shift UP by n; the vacated bottom n rows blank.
+    ring_.rotate_view_up(cursor_.row.get(), scroll_bottom_, n);
+    for (std::int32_t r = scroll_bottom_ - n + 1; r <= scroll_bottom_; ++r)
+        ring_.blank_view_row(r, blank_cell());
     cursor_.col = Col{0};
     stamp_all();
     touch();
@@ -1135,11 +1072,28 @@ void Screen::change_rect_attrs(int top, int left, int bottom, int right,
 
 void Screen::enter_alt_screen() {
     if (on_alt_) return;
-    saved_primary_ = cells_;             // stash the primary buffer
-    saved_primary_row_of_ = row_of_;     // and its row map
+    // Snapshot the primary visible grid (rows*cols) + its wrapped flags. The
+    // primary scrollback stays live in the ring untouched; the alt screen just
+    // masks the visible grid and adds no scrollback of its own.
+    const std::size_t ncells = static_cast<std::size_t>(size_.rows) *
+                               static_cast<std::size_t>(size_.cols);
+    saved_primary_.assign(ncells, Cell{});
+    saved_primary_wrapped_.assign(static_cast<std::size_t>(std::max(size_.rows, 0)), false);
+    for (std::int32_t r = 0; r < size_.rows; ++r) {
+        std::memcpy(saved_primary_.data() + static_cast<std::size_t>(r) *
+                                                 static_cast<std::size_t>(size_.cols),
+                    ring_.view_row(r),
+                    static_cast<std::size_t>(size_.cols) * sizeof(Cell));
+        saved_primary_wrapped_[static_cast<std::size_t>(r)] = ring_.view_wrapped(r);
+    }
     saved_primary_cursor_ = cursor_;
-    std::fill(cells_.begin(), cells_.end(), Cell{}); // alt screen starts blank
-    reset_row_map();                     // fresh identity mapping
+    // Blank the visible grid for the alt screen.
+    for (std::int32_t r = 0; r < size_.rows; ++r) {
+        Cell *dst = ring_.view_row(r);
+        for (std::int32_t c = 0; c < size_.cols; ++c) dst[c] = Cell{};
+        ring_.set_view_wrapped(r, false);
+        ring_.mark_view_full(r);
+    }
     cursor_ = Pos{};
     scroll_offset_ = 0;                  // alt screen has no scrollback
     scroll_top_ = 0;
@@ -1151,14 +1105,22 @@ void Screen::enter_alt_screen() {
 
 void Screen::leave_alt_screen() {
     if (!on_alt_) return;
-    if (saved_primary_.size() == cells_.size()) {
-        cells_ = saved_primary_;         // restore the primary buffer
-        if (saved_primary_row_of_.size() == row_of_.size())
-            row_of_ = saved_primary_row_of_; // and its row map
+    const std::size_t ncells = static_cast<std::size_t>(size_.rows) *
+                               static_cast<std::size_t>(size_.cols);
+    if (saved_primary_.size() == ncells) {
+        for (std::int32_t r = 0; r < size_.rows; ++r) {
+            std::memcpy(ring_.view_row(r),
+                        saved_primary_.data() + static_cast<std::size_t>(r) *
+                                                    static_cast<std::size_t>(size_.cols),
+                        static_cast<std::size_t>(size_.cols) * sizeof(Cell));
+            ring_.mark_view_full(r);
+            if (r < static_cast<std::int32_t>(saved_primary_wrapped_.size()))
+                ring_.set_view_wrapped(r, saved_primary_wrapped_[static_cast<std::size_t>(r)]);
+        }
     }
     cursor_ = saved_primary_cursor_;
     saved_primary_.clear();
-    saved_primary_row_of_.clear();
+    saved_primary_wrapped_.clear();
     on_alt_ = false;
     clamp_cursor();
     stamp_all();
@@ -1205,9 +1167,10 @@ void Screen::erase_in_display(int mode) {
         break;
     case 2: // entire screen
     case 3:
-        std::fill(cells_.begin(), cells_.end(), blank_cell());
-        reset_row_map();
-        std::fill(live_wrapped_.begin(), live_wrapped_.end(), false);
+        for (std::int32_t r = 0; r < size_.rows; ++r) {
+            ring_.blank_view_row(r, blank_cell());
+            ring_.set_view_wrapped(r, false);
+        }
         graphics_.clear(); // clearing the screen removes inline images too
         stamp_all();
         break;
@@ -1585,8 +1548,14 @@ void Screen::esc(const vt::EscDispatch &d) {
     if (d.intermediates.empty()) {
         switch (d.final) {
         case 'c': // RIS — reset to initial state.
-            std::fill(cells_.begin(), cells_.end(), Cell{});
-            reset_row_map();
+            for (std::int32_t r = 0; r < size_.rows; ++r) {
+                Cell *dst = ring_.view_row(r);
+                for (std::int32_t c = 0; c < size_.cols; ++c) dst[c] = Cell{};
+                ring_.set_view_wrapped(r, false);
+                ring_.mark_view_full(r);
+            }
+            ring_.clear_scrollback();
+            scroll_offset_ = 0;
             cursor_ = Pos{};
             pen_ = Pen{};
             wrap_pending_ = false;
@@ -1796,27 +1765,14 @@ void Screen::apply_sgr(std::span<const int> params, std::span<const std::uint8_t
 
 std::int64_t Screen::viewport_to_abs(std::int32_t vrow) const noexcept {
     // The visible window's top is scroll_offset_ rows above the live grid top.
-    const std::int64_t live_top = static_cast<std::int64_t>(history_.size());
+    const std::int64_t live_top = static_cast<std::int64_t>(ring_.scrollback());
     return live_top - scroll_offset_ + vrow;
 }
 
 const Cell *Screen::cell_at_abs(std::int64_t abs_row, std::int32_t col) const noexcept {
     if (col < 0 || col >= size_.cols) return nullptr;
-    const std::int64_t hist = static_cast<std::int64_t>(history_.size());
-    if (abs_row < 0) return nullptr;
-    if (abs_row < hist) {
-        const auto &line = history_[static_cast<std::size_t>(abs_row)];
-        // Trimmed scrollback rows are shorter than the width; cols past the end
-        // are blank. Return a shared blank cell for those.
-        if (static_cast<std::size_t>(col) >= line.size()) {
-            static const Cell kBlank{};
-            return &kBlank;
-        }
-        return &line[static_cast<std::size_t>(col)];
-    }
-    const std::int64_t live = abs_row - hist;
-    if (live >= size_.rows) return nullptr;
-    return &cells_[index(Row{static_cast<std::int32_t>(live)}, Col{col})];
+    if (abs_row < 0 || static_cast<std::size_t>(abs_row) >= ring_.total()) return nullptr;
+    return ring_.abs_row(static_cast<std::size_t>(abs_row)) + col;
 }
 
 void Screen::selection_begin(AbsPos p, SelectMode mode) {
