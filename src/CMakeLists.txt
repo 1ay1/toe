@@ -23,6 +23,7 @@ pkg_check_modules(EPOXY      REQUIRED IMPORTED_TARGET epoxy)
 add_library(toe
   terminal.cpp
   pty/pty.cpp
+  pty/child.cpp
   gfx/font.cpp
   gfx/stb_impl.cpp
   gfx/shader.cpp

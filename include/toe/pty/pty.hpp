@@ -1,48 +1,90 @@
 // SPDX-License-Identifier: LGPL-2.0-or-later
 //
-// PTY: spawn a child shell attached to a pseudo-terminal and shuttle bytes.
-// The master fd is non-blocking so the render loop can poll it without ever
-// stalling on a read.
+// Pty — a child shell on a pseudo-terminal, with a TYPE-THEORETIC read channel.
+//
+// Two ideas make this fast and correct-by-construction:
+//
+// 1. READ AS A SUM TYPE. A raw read() conflates three outcomes in one int:
+//    n>0 (data), n==0/EAGAIN (nothing now), n<0/EIO (child hung up). The old
+//    API smuggled "child gone" through `!Result` and forced every caller to
+//    remember the convention. `read()` now returns a closed `ReadResult`:
+//
+//        Data{bytes}   — a non-empty span INTO the Pty's own reusable buffer
+//                        (zero-copy: no per-read allocation, no zero-fill);
+//        WouldBlock{}  — the fd is dry right now (EAGAIN);
+//        Hungup{}      — the child closed the pty (EIO/EOF).
+//
+//    std::visit forces the caller to handle the hangup — it can't be forgotten,
+//    and it isn't an error-channel abuse.
+//
+// 2. EXIT AS A POLLABLE FD. The child is a `Child` (child.hpp) backed by a
+//    pidfd, so its exit is a reactor source (exit_fd()) and its reap is
+//    race-free (waitid(P_PIDFD)) — no waitpid() polling per frame.
+//
+// The master fd is non-blocking; ownership of every descriptor is an `Fd`
+// (fd.hpp), never a raw int + bool.
 
 #ifndef TOE_PTY_PTY_HPP
 #define TOE_PTY_PTY_HPP
 
+#include <cstddef>
+#include <optional>
 #include <span>
 #include <string_view>
+#include <variant>
+#include <vector>
 
 #include <sys/types.h>
 
 #include "toe/core/types.hpp"
+#include "toe/pty/child.hpp"
+#include "toe/pty/fd.hpp"
 #include "toe/pty/pty_source.hpp"
 
 namespace toe {
 
+// --- the closed outcome of a read ------------------------------------------
+namespace pty {
+// Bytes are available: a view INTO the Pty's reusable read buffer, valid until
+// the next read()/write() on that Pty. Never empty.
+struct Data {
+    std::span<const char> bytes;
+};
+// Nothing to read right now (EAGAIN). The fd is armed level-triggered, so the
+// reactor will wake us again when more arrives.
+struct WouldBlock {};
+// The child closed the pty (EIO/EOF). The terminal is over; reap via child().
+struct Hungup {};
+} // namespace pty
+
+using ReadResult = std::variant<pty::Data, pty::WouldBlock, pty::Hungup>;
+
 class Pty {
 public:
     // Spawn `argv[0]` (a shell) on a fresh PTY sized to `size` cells.
-    static Result<Pty> spawn(std::span<const char *const> argv, Extent size);
-
+    [[nodiscard]] static Result<Pty> spawn(std::span<const char *const> argv, Extent size);
     // Spawn from a SpawnCommand: honors its TERM value and pre_exec hook.
-    static Result<Pty> spawn(const SpawnCommand &cmd, Extent size);
-
-    // Adopt a PTY master fd the host already owns (SSH, container, replay).
-    // toe never forks. See AdoptFd for ownership semantics.
-    static Result<Pty> adopt(const AdoptFd &src);
+    [[nodiscard]] static Result<Pty> spawn(const SpawnCommand &cmd, Extent size);
+    // Adopt a PTY master fd the host already owns. toe never forks.
+    [[nodiscard]] static Result<Pty> adopt(const AdoptFd &src);
 
     Pty(const Pty &) = delete;
     Pty &operator=(const Pty &) = delete;
-    Pty(Pty &&other) noexcept;
-    Pty &operator=(Pty &&other) noexcept;
-    ~Pty();
+    Pty(Pty &&) noexcept = default;
+    Pty &operator=(Pty &&) noexcept = default;
+    ~Pty() = default;
 
-    // Master fd, for polling in an event loop (e.g. SDL_WaitEventTimeout side
-    // channel or poll()).
-    [[nodiscard]] int fd() const noexcept { return master_; }
-    [[nodiscard]] ::pid_t child() const noexcept { return child_; }
+    // The master fd, for the host's reactor. Borrowed — the Pty owns it.
+    [[nodiscard]] int fd() const noexcept { return master_.get(); }
 
-    // Read available output into `buf`. Returns bytes read; 0 means "nothing
-    // right now" (EAGAIN); an error means the child hung up / real failure.
-    [[nodiscard]] Result<std::size_t> read(std::span<char> buf);
+    // The child handle: its exit_fd() joins the reactor; try_reap() harvests
+    // the ExitCode race-free.
+    [[nodiscard]] Child &child() noexcept { return child_; }
+    [[nodiscard]] const Child &child() const noexcept { return child_; }
+
+    // Read available output. Returns a closed ReadResult (see above). The Data
+    // span aliases an internal buffer that survives until the next read/write.
+    [[nodiscard]] ReadResult read();
 
     // Write user input to the child. Handles partial writes.
     [[nodiscard]] Result<std::size_t> write(std::string_view bytes);
@@ -50,27 +92,21 @@ public:
     // Inform the kernel + child of a new cell grid size (TIOCSWINSZ + SIGWINCH).
     [[nodiscard]] Result<void> resize(Extent size);
 
-    // Set the per-cell pixel size, so the winsize carries ws_xpixel/ws_ypixel
-    // (apps read this via TIOCGWINSZ to size images). Applied on the next
-    // resize(); pass the current grid to push it immediately.
-    void set_cell_pixels(int cw, int ch) noexcept { cell_w_ = cw; cell_h_ = ch; }
-
-    // True once the child process has exited.
-    [[nodiscard]] bool child_exited() const noexcept;
-
-    // Reap the child and return its exit code (128+signal if signalled). Only
-    // meaningful once the child has actually exited.
-    [[nodiscard]] int child_exit_code() noexcept;
+    // Set the per-cell pixel size so the winsize carries ws_xpixel/ws_ypixel.
+    void set_cell_pixels(int cw, int ch) noexcept {
+        cell_w_ = cw;
+        cell_h_ = ch;
+    }
 
 private:
-    Pty() = default;
-    void close_master() noexcept;
+    Pty() : rbuf_(kReadBuf) {}
 
-    int master_{-1};
-    ::pid_t child_{-1};
+    static constexpr std::size_t kReadBuf = 1u << 17; // 128 KiB: big reads, few syscalls
+
+    Fd master_{};       // the PTY master; ownership is the type
+    Child child_{Child::none()};
+    std::vector<char> rbuf_;    // reusable read buffer — allocated ONCE, never zero-filled
     int cell_w_{0}, cell_h_{0}; // for ws_xpixel/ws_ypixel
-    bool owns_fd_{true};       // false when adopting a host-owned fd
-    bool owns_child_{true};    // false when the host manages the child lifetime
 };
 
 } // namespace toe

@@ -5,13 +5,12 @@
 #include <cerrno>
 #include <csignal>
 #include <cstring>
-#include <utility>
+#include <string>
 #include <vector>
 
 #include <fcntl.h>
-#include <pty.h>       // forkpty (glibc / util-linux)
+#include <pty.h> // forkpty (glibc / util-linux)
 #include <sys/ioctl.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 namespace toe {
@@ -90,8 +89,8 @@ Result<Pty> Pty::spawn(const SpawnCommand &cmd, Extent size) {
     }
 
     Pty pty;
-    pty.master_ = master;
-    pty.child_ = pid;
+    pty.master_ = Fd::owned(master);
+    pty.child_ = Child::spawned(pid);
     return pty;
 }
 
@@ -103,64 +102,37 @@ Result<Pty> Pty::adopt(const AdoptFd &src) {
         return std::unexpected(nb.error());
     }
     Pty pty;
-    pty.master_ = src.master_fd;
-    pty.child_ = src.child;
-    pty.owns_fd_ = src.owns_fd;
-    pty.owns_child_ = (src.child >= 0); // only reap children we were told about
+    // Ownership of the master fd is the host's choice, encoded in the Fd type.
+    pty.master_ = src.owns_fd ? Fd::owned(src.master_fd) : Fd::borrowed(src.master_fd);
+    // We observe (but never reap) a host-managed child; if pid < 0, no child.
+    pty.child_ = (src.child >= 0) ? Child::adopted(src.child) : Child::none();
     return pty;
 }
 
-Pty::Pty(Pty &&other) noexcept
-    : master_{other.master_}, child_{other.child_}, cell_w_{other.cell_w_},
-      cell_h_{other.cell_h_}, owns_fd_{other.owns_fd_}, owns_child_{other.owns_child_} {
-    other.master_ = -1;
-    other.child_ = -1;
-}
-
-Pty &Pty::operator=(Pty &&other) noexcept {
-    if (this != &other) {
-        close_master();
-        master_ = std::exchange(other.master_, -1);
-        child_ = std::exchange(other.child_, -1);
-        cell_w_ = other.cell_w_;
-        cell_h_ = other.cell_h_;
-        owns_fd_ = other.owns_fd_;
-        owns_child_ = other.owns_child_;
+ReadResult Pty::read() {
+    for (;;) {
+        const ssize_t n = ::read(master_.get(), rbuf_.data(), rbuf_.size());
+        if (n > 0) {
+            return pty::Data{std::span<const char>{rbuf_.data(), static_cast<std::size_t>(n)}};
+        }
+        if (n == 0) {
+            return pty::Hungup{}; // EOF on the master: child closed the pty
+        }
+        if (errno == EINTR) {
+            continue; // interrupted before any byte; retry
+        }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return pty::WouldBlock{};
+        }
+        // EIO is Linux's way of reporting the child's exit on the master side.
+        return pty::Hungup{};
     }
-    return *this;
-}
-
-Pty::~Pty() { close_master(); }
-
-void Pty::close_master() noexcept {
-    if (master_ >= 0 && owns_fd_) {
-        ::close(master_);
-    }
-    master_ = -1;
-}
-
-Result<std::size_t> Pty::read(std::span<char> buf) {
-    const ssize_t n = ::read(master_, buf.data(), buf.size());
-    if (n > 0) {
-        return static_cast<std::size_t>(n);
-    }
-    if (n == 0) {
-        return fail("pty: child closed the connection");
-    }
-    if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        return static_cast<std::size_t>(0);
-    }
-    if (errno == EIO) {
-        // Linux reports the child's exit as EIO on the master side.
-        return fail("pty: child exited (EIO)");
-    }
-    return fail(std::string{"pty read failed: "} + std::strerror(errno));
 }
 
 Result<std::size_t> Pty::write(std::string_view bytes) {
     std::size_t total = 0;
     while (total < bytes.size()) {
-        const ssize_t n = ::write(master_, bytes.data() + total, bytes.size() - total);
+        const ssize_t n = ::write(master_.get(), bytes.data() + total, bytes.size() - total);
         if (n > 0) {
             total += static_cast<std::size_t>(n);
             continue;
@@ -178,41 +150,10 @@ Result<std::size_t> Pty::write(std::string_view bytes) {
 
 Result<void> Pty::resize(Extent size) {
     winsize ws = to_winsize(size, cell_w_, cell_h_);
-    if (::ioctl(master_, TIOCSWINSZ, &ws) < 0) {
+    if (::ioctl(master_.get(), TIOCSWINSZ, &ws) < 0) {
         return fail(std::string{"ioctl(TIOCSWINSZ) failed: "} + std::strerror(errno));
     }
     return {};
-}
-
-bool Pty::child_exited() const noexcept {
-    if (child_ < 0) {
-        return true;
-    }
-    if (!owns_child_) {
-        return false; // host owns the child; we don't reap or judge it
-    }
-    int status = 0;
-    const ::pid_t r = ::waitpid(child_, &status, WNOHANG);
-    return r == child_ || (r < 0 && errno == ECHILD);
-}
-
-int Pty::child_exit_code() noexcept {
-    if (child_ < 0) {
-        return 0;
-    }
-    int status = 0;
-    const ::pid_t r = ::waitpid(child_, &status, 0); // child is known-dead; reap it
-    child_ = -1;
-    if (r <= 0) {
-        return 0;
-    }
-    if (WIFEXITED(status)) {
-        return WEXITSTATUS(status);
-    }
-    if (WIFSIGNALED(status)) {
-        return 128 + WTERMSIG(status);
-    }
-    return 0;
 }
 
 } // namespace toe

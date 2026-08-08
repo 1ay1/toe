@@ -104,6 +104,7 @@ struct Session::Impl {
     // stays readable, so the loop won't sleep). This keeps the UI responsive
     // and shows progressive output no matter how fast the app writes.
     bool more_pending = false;
+    bool hung_up_ = false; // set once the child closes the pty (Hungup)
     bool drain() {
         // Drain aggressively: a big budget so a flood is consumed in a few
         // gulps (throughput), while still returning periodically so the host
@@ -113,25 +114,36 @@ struct Session::Impl {
         // read loop 40x for one `cat`. 8 MiB keeps a multi-MiB flood to ~1-2
         // yields while a burst of typing (few KiB) still returns immediately.
         constexpr std::size_t kBudget = 8u * 1024 * 1024;
-        std::array<char, 65536> buf{};
         std::size_t consumed = 0;
         more_pending = false;
         for (;;) {
-            auto n = pty.read(std::span<char>{buf});
-            if (!n) {
-                return false; // EIO / EOF -> child gone
-            }
-            if (*n == 0) {
-                return true; // nothing pending right now
-            }
-            Cmds effects = term::feed_output(model, std::string_view{buf.data(), *n});
-            interpret(effects);
-            consumed += *n;
-            if (consumed >= kBudget) {
-                more_pending = true; // yield: let the host render + poll input
-                return true;
-            }
+            // read() hands back a closed sum: Data (zero-copy view into the
+            // Pty's own buffer), WouldBlock (dry now), or Hungup (child gone).
+            // std::visit forces us to handle the hangup — no !Result convention.
+            bool cont = std::visit(
+                [&](auto &&r) -> bool {
+                    using R = std::decay_t<decltype(r)>;
+                    if constexpr (std::is_same_v<R, toe::pty::Data>) {
+                        Cmds effects = term::feed_output(
+                            model, std::string_view{r.bytes.data(), r.bytes.size()});
+                        interpret(effects);
+                        consumed += r.bytes.size();
+                        if (consumed >= kBudget) {
+                            more_pending = true; // yield: let the host render + poll input
+                            return false;
+                        }
+                        return true; // keep draining
+                    } else if constexpr (std::is_same_v<R, toe::pty::WouldBlock>) {
+                        return false; // nothing pending right now
+                    } else { // toe::pty::Hungup
+                        hung_up_ = true;
+                        return false; // child gone
+                    }
+                },
+                pty.read());
+            if (!cont) break;
         }
+        return !hung_up_;
     }
 };
 
@@ -479,8 +491,11 @@ Terminal::Poll Terminal::poll() {
         if (alive) {
             result.running = session;
         } else {
-            const int code = session->impl_->pty.child_exit_code();
-            state_ = Exited{code};
+            // The child closed the pty. Reap it race-free via the pidfd (the
+            // Child falls back to waitpid where pidfd is unavailable).
+            const ExitCode ec =
+                session->impl_->pty.child().try_reap().value_or(ExitCode{0});
+            state_ = Exited{ec.value};
             result.exited = &std::get<Exited>(state_);
         }
     } else {
