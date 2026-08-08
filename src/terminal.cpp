@@ -235,6 +235,14 @@ std::string_view Session::link_at(int vrow, int col) const noexcept {
     return impl_->model.screen.link_at(vrow, col);
 }
 
+bool Session::tick_animations(std::uint64_t now_ms) {
+    return impl_->model.screen.tick_animations(now_ms);
+}
+
+std::uint64_t Session::next_animation_deadline() const noexcept {
+    return impl_->model.screen.next_animation_deadline();
+}
+
 bool Session::set_hover(int vrow, int col) noexcept {
     return impl_->model.screen.set_hover(vrow, col);
 }

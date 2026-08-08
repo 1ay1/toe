@@ -8,6 +8,7 @@
 #include <cstring>
 #include <utility>
 #include <array>
+#include <algorithm>
 
 #include <epoxy/gl.h>
 
@@ -714,13 +715,14 @@ namespace {
 constexpr const char *kImgVert = R"(#version 330 core
 layout(location=0) in vec2 aCorner;   // unit quad 0..1
 layout(location=1) in vec4 aRect;     // x,y,w,h in pixels
+layout(location=2) in vec4 aUVRect;   // u0,v0,u1,v1 (source crop within image)
 uniform vec2 uScreen;
 out vec2 vUV;
 void main() {
     vec2 px = aRect.xy + aCorner * aRect.zw;
     vec2 ndc = vec2(px.x / uScreen.x * 2.0 - 1.0, 1.0 - px.y / uScreen.y * 2.0);
     gl_Position = vec4(ndc, 0.0, 1.0);
-    vUV = aCorner;
+    vUV = mix(aUVRect.xy, aUVRect.zw, aCorner);
 }
 )";
 constexpr const char *kImgFrag = R"(#version 330 core
@@ -749,16 +751,17 @@ void Renderer::ensure_image_pipeline() {
     glBufferData(GL_ARRAY_BUFFER, sizeof(kQuad), kQuad, GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
-    // aRect (loc1) is set per-draw via a uniform-ish path: use a small dynamic
-    // buffer. Simpler: pass the rect as a vertex attribute with divisor so one
-    // instanced draw covers the quad. But we draw images one at a time, so a
-    // per-image glBufferSubData into a rect buffer + non-instanced attr works.
+    // Per-image rect (4 floats) + source-UV rect (4 floats), updated per draw.
     glGenBuffers(1, &image_vbo_rect_);
     glBindBuffer(GL_ARRAY_BUFFER, image_vbo_rect_);
-    glBufferData(GL_ARRAY_BUFFER, 4 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, 8 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
     glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 4 * sizeof(float), nullptr);
-    glVertexAttribDivisor(1, 1); // one rect per instance (we draw 1 instance)
+    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 8 * sizeof(float), nullptr);
+    glVertexAttribDivisor(1, 1);
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, 8 * sizeof(float),
+                          reinterpret_cast<void *>(4 * sizeof(float)));
+    glVertexAttribDivisor(2, 1);
     glBindVertexArray(0);
 }
 
@@ -768,24 +771,29 @@ void Renderer::draw_images(const term::Screen &screen, PixelSize px) {
     ensure_image_pipeline();
     if (!image_prog_.valid()) return;
 
-    // (Re)upload textures when the graphics state changed.
+    // (Re)upload textures when the graphics state changed. New images get a
+    // fresh texture; existing ones are re-uploaded (their pixels may have
+    // changed — an animation frame flip).
     if (g.revision() != images_revision_) {
         images_revision_ = g.revision();
         for (const auto &pl : g.placements()) {
-            if (image_tex_.count(pl.image_id)) continue;
             const term::Image *img = g.image(pl.image_id);
             if (!img || img->rgba.empty()) continue;
-            GLuint tex = 0;
-            glGenTextures(1, &tex);
+            auto found = image_tex_.find(pl.image_id);
+            GLuint tex = found != image_tex_.end() ? found->second : 0;
+            const bool fresh = (tex == 0);
+            if (fresh) glGenTextures(1, &tex);
             glBindTexture(GL_TEXTURE_2D, tex);
             glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, img->width, img->height, 0, GL_RGBA,
                          GL_UNSIGNED_BYTE, img->rgba.data());
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            image_tex_[pl.image_id] = tex;
+            if (fresh) {
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                image_tex_[pl.image_id] = tex;
+            }
         }
     }
 
@@ -793,6 +801,15 @@ void Renderer::draw_images(const term::Screen &screen, PixelSize px) {
     const int ch = atlas_.cell_height();
     const int rows = screen.size().rows;
     const std::int64_t view_top = screen.viewport_to_abs(0);
+
+    // Draw in z-order (lowest first) so stacked images layer correctly. A
+    // stable index sort keeps equal-z placements in insertion order.
+    const auto &pls = g.placements();
+    std::vector<int> order(pls.size());
+    for (std::size_t i = 0; i < order.size(); ++i) order[i] = static_cast<int>(i);
+    std::stable_sort(order.begin(), order.end(),
+                     [&](int a, int b) { return pls[static_cast<std::size_t>(a)].z <
+                                                pls[static_cast<std::size_t>(b)].z; });
 
     glBindVertexArray(image_vao_);
     image_prog_.use();
@@ -802,9 +819,12 @@ void Renderer::draw_images(const term::Screen &screen, PixelSize px) {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    for (const auto &pl : g.placements()) {
+    for (int oi : order) {
+        const term::Placement &pl = pls[static_cast<std::size_t>(oi)];
         auto it = image_tex_.find(pl.image_id);
         if (it == image_tex_.end()) continue;
+        const term::Image *img = g.image(pl.image_id);
+        if (!img) continue;
         // Map the placement's absolute-row anchor into the current viewport.
         const std::int64_t vrow = pl.abs_row - view_top;
         if (vrow + pl.rows <= 0 || vrow >= rows) continue; // fully scrolled away
@@ -812,9 +832,17 @@ void Renderer::draw_images(const term::Screen &screen, PixelSize px) {
         const float y = static_cast<float>(vrow * ch);
         const float w = static_cast<float>(pl.cols * cw);
         const float h = static_cast<float>(pl.rows * ch);
-        const float rect[4] = {x, y, w, h};
+        // Source-crop UVs (x=/y=/w=/h=); whole image when src_w/h are 0.
+        float u0 = 0, v0 = 0, u1 = 1, v1 = 1;
+        if (pl.src_w > 0 && pl.src_h > 0 && img->width > 0 && img->height > 0) {
+            u0 = static_cast<float>(pl.src_x) / static_cast<float>(img->width);
+            v0 = static_cast<float>(pl.src_y) / static_cast<float>(img->height);
+            u1 = static_cast<float>(pl.src_x + pl.src_w) / static_cast<float>(img->width);
+            v1 = static_cast<float>(pl.src_y + pl.src_h) / static_cast<float>(img->height);
+        }
+        const float data[8] = {x, y, w, h, u0, v0, u1, v1};
         glBindBuffer(GL_ARRAY_BUFFER, image_vbo_rect_);
-        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(rect), rect);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
         glBindTexture(GL_TEXTURE_2D, it->second);
         glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, 1);
     }

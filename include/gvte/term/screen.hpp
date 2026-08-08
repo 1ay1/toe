@@ -304,6 +304,14 @@ public:
     [[nodiscard]] const Graphics &graphics() const noexcept { return graphics_; }
     // Cell metrics the graphics layer needs to size placements; set by the host.
     void set_cell_size(int w, int h) noexcept { cell_w_ = w; cell_h_ = h; }
+    // Advance image animations to now_ms; bumps damage on a frame change.
+    bool tick_animations(std::uint64_t now_ms) {
+        if (graphics_.advance_animations(now_ms)) { touch(); return true; }
+        return false;
+    }
+    [[nodiscard]] std::uint64_t next_animation_deadline() const noexcept {
+        return graphics_.next_animation_deadline();
+    }
 
 private:
     // Character-set state (VT100 line-drawing). G0/G1 each hold ASCII or the

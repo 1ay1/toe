@@ -26,9 +26,17 @@ namespace gvte::term {
 struct Image {
     std::uint32_t id{0};
     int width{0}, height{0};             // pixels
-    std::vector<std::uint8_t> rgba;      // width*height*4
-    // Set true once uploaded to a GPU texture (renderer owns the tex handle in
-    // a side table keyed by id); the model just tracks pixels.
+    std::vector<std::uint8_t> rgba;      // width*height*4 (the current/base frame)
+    // Animation: additional frames (kitty a=f). frames[0] mirrors rgba. Each
+    // frame has its own display duration in ms (gap). When frames.size() > 1 the
+    // renderer cycles them; current is the frame index shown now.
+    struct Frame {
+        std::vector<std::uint8_t> rgba;
+        int gap_ms{40};
+    };
+    std::vector<Frame> frames;
+    int current{0};
+    std::uint64_t next_advance_ms{0}; // wall-clock deadline for the next frame
 };
 
 // One on-screen placement of an image.
@@ -75,6 +83,15 @@ public:
     // Drop everything (RIS / resize when we can't remap sensibly).
     void clear();
 
+    // Advance any animated images whose frame gap elapsed at wall-clock now_ms.
+    // Returns true if a frame changed (caller bumps damage + redraws). The
+    // renderer uploads Image::current's pixels.
+    bool advance_animations(std::uint64_t now_ms);
+    // The soonest wall-clock ms any animation needs a frame flip, or 0 if none
+    // are animating — the host uses it to schedule its next wake.
+    [[nodiscard]] std::uint64_t next_animation_deadline() const noexcept;
+    [[nodiscard]] bool has_animations() const noexcept { return animating_; }
+
 private:
     // A transmission in progress across m=1 chunks, keyed by image id.
     struct Pending {
@@ -97,6 +114,10 @@ private:
     std::unordered_map<std::uint32_t, Pending> pending_{}; // in-flight chunked xfers
     std::uint32_t next_auto_id_{0x80000000u};              // for images with no id
     std::uint64_t revision_{0};
+    bool animating_{false};                                // any multi-frame image?
+
+    void handle_frame(std::uint32_t id, int gap_ms, int format, int width, int height,
+                      const std::string &b64, bool &changed);
 };
 
 } // namespace gvte::term

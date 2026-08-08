@@ -664,6 +664,37 @@ int main() {
         expect(s.graphics().placements().empty(), "ED 2 clears inline images");
     }
 
+    // Kitty animation (a=f frames): the current frame advances on a tick.
+    {
+        term::Screen s{Extent{40, 10}};
+        s.set_cell_size(8, 16);
+        auto b64 = [](const std::string &in) {
+            static const char *a =
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            std::string out; unsigned val = 0; int bits = 0;
+            for (unsigned char c : in) { val = (val << 8) | c; bits += 8;
+                while (bits >= 6) { bits -= 6; out += a[(val >> bits) & 0x3F]; } }
+            if (bits) out += a[(val << (6 - bits)) & 0x3F];
+            while (out.size() % 4) out += '='; return out;
+        };
+        auto px = [](int r, int g, int bl) { std::string p;
+            for (int i = 0; i < 4; ++i) { p += char(r); p += char(g); p += char(bl); p += char(255); }
+            return p; };
+        auto apc = [&](std::string ctl, std::string data) {
+            std::string seq = "\x1b_G" + ctl + ";" + data; seq += '\x1b'; seq += '\\';
+            feed(s, seq);
+        };
+        apc("i=5,a=T,f=32,s=2,v=2", b64(px(255, 0, 0)));      // base red, displayed
+        apc("i=5,a=f,f=32,s=2,v=2,r=50", b64(px(0, 255, 0)));  // frame green
+        const auto *img = s.graphics().image(5);
+        expect(img && img->frames.size() == 2, "a=f appends an animation frame");
+        s.tick_animations(0);   // start the clock
+        s.tick_animations(60);  // gap 50ms elapsed -> advance
+        const auto *img2 = s.graphics().image(5);
+        expect(img2 && img2->current == 1 && img2->rgba[1] == 255,
+               "animation advances to the next frame after its gap");
+    }
+
     // Focus reporting (DEC 1004): report_focus() emits CSI I / CSI O only when
     // the app enabled it.
     {

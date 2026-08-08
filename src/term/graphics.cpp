@@ -281,6 +281,7 @@ bool Graphics::handle_apc(std::string_view data, std::int64_t cursor_abs_row,
     int quiet = 0;       // q: 0 verbose, 1 suppress OK, 2 suppress all
     std::uint32_t id = 0, pid = 0;
     int cols = 0, rows = 0, z = 0;
+    int sx = 0, sy = 0, sw = 0, sh = 0; // source crop (x=,y=,w=,h=)
     bool have_action = false;
     {
         std::size_t i = 0;
@@ -304,6 +305,10 @@ bool Graphics::handle_apc(std::string_view data, std::int64_t cursor_abs_row,
             else if (k == "c") cols = to_int(v);
             else if (k == "r") rows = to_int(v);
             else if (k == "z") z = to_int(v);
+            else if (k == "x") sx = to_int(v);
+            else if (k == "y") sy = to_int(v);
+            else if (k == "w") sw = to_int(v);
+            else if (k == "h") sh = to_int(v);
         }
     }
     (void)have_action;
@@ -338,6 +343,7 @@ bool Graphics::handle_apc(std::string_view data, std::int64_t cursor_abs_row,
         pl.z = z;
         pl.cols = cols > 0 ? cols : (cell_w > 0 ? (stored.width + cell_w - 1) / cell_w : 1);
         pl.rows = rows > 0 ? rows : (cell_h > 0 ? (stored.height + cell_h - 1) / cell_h : 1);
+        pl.src_x = sx; pl.src_y = sy; pl.src_w = sw; pl.src_h = sh;
         std::erase_if(placements_, [&](const Placement &e) {
             return e.image_id == pl.image_id && e.placement_id == pl.placement_id;
         });
@@ -345,6 +351,32 @@ bool Graphics::handle_apc(std::string_view data, std::int64_t cursor_abs_row,
         ++revision_;
         respond_ok();
         return true;
+    }
+
+    // Transmit a new animation FRAME for an existing image (a=f). The frame
+    // pixels come in the same formats; gap (r=) is its display duration in ms.
+    if (action == 'f') {
+        if (id == 0) return false;
+        // Reuse the pending buffer for chunked frame data, keyed like transmit.
+        Pending &fp = pending_[id];
+        if (fp.b64.empty()) {
+            fp.format = format;
+            fp.width = width > 0 ? width : (images_.count(id) ? images_[id].width : 0);
+            fp.height = height > 0 ? height : (images_.count(id) ? images_[id].height : 0);
+            fp.id = id;
+            fp.z = z; // repurposed: frame gap in ms (r= is also accepted below)
+        }
+        fp.b64.append(payload);
+        if (fp.b64.size() > (32u << 20)) { pending_.erase(id); return false; }
+        if (more == 0) {
+            // 'r' (rows) is repurposed as the gap in ms for a frame; default 40.
+            const int gap = rows > 0 ? rows : 40;
+            handle_frame(id, gap, fp.format, fp.width, fp.height, fp.b64, changed);
+            pending_.erase(id);
+            respond_ok();
+        }
+        if (changed) ++revision_;
+        return changed;
     }
 
     // Transmit (a=t) or transmit+display (a=T). Both accumulate payload, keyed
@@ -382,41 +414,44 @@ bool Graphics::handle_apc(std::string_view data, std::int64_t cursor_abs_row,
     return changed;
 }
 
+// Decode a transmission payload (base64 + format) into tightly-packed RGBA8.
+// Returns false on malformed data. Shared by transmit and animation frames.
+static bool decode_payload(int format, int width, int height, const std::string &b64,
+                           int &out_w, int &out_h, std::vector<std::uint8_t> &rgba) {
+    std::vector<std::uint8_t> raw = b64_decode(b64);
+    if (format == 100) { // PNG
+        return decode_png(raw.data(), raw.size(), out_w, out_h, rgba);
+    }
+    if (width <= 0 || height <= 0) return false;
+    out_w = width;
+    out_h = height;
+    if (format == 24) { // RGB -> RGBA
+        const std::size_t need = static_cast<std::size_t>(width) *
+                                 static_cast<std::size_t>(height) * 3;
+        if (raw.size() < need) return false;
+        rgba.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4);
+        for (std::size_t i = 0, o = 0; i + 2 < need; i += 3, o += 4) {
+            rgba[o] = raw[i]; rgba[o + 1] = raw[i + 1]; rgba[o + 2] = raw[i + 2]; rgba[o + 3] = 0xFF;
+        }
+        return true;
+    }
+    // 32 = RGBA
+    const std::size_t need = static_cast<std::size_t>(width) *
+                             static_cast<std::size_t>(height) * 4;
+    if (raw.size() < need) return false;
+    rgba.assign(raw.begin(), raw.begin() + static_cast<std::ptrdiff_t>(need));
+    return true;
+}
+
 void Graphics::commit(Pending &p, std::int64_t cursor_abs_row, std::int32_t cursor_col,
                       int cell_w, int cell_h, bool &changed) {
-    std::vector<std::uint8_t> raw = b64_decode(p.b64);
     Image img;
     img.id = p.id;
-
-    if (p.format == 100) { // PNG
-        int w = 0, h = 0;
-        if (!decode_png(raw.data(), raw.size(), w, h, img.rgba)) return;
-        img.width = w;
-        img.height = h;
-    } else if (p.format == 24) { // RGB -> RGBA
-        if (p.width <= 0 || p.height <= 0) return;
-        const std::size_t need = static_cast<std::size_t>(p.width) *
-                                 static_cast<std::size_t>(p.height) * 3;
-        if (raw.size() < need) return;
-        img.width = p.width;
-        img.height = p.height;
-        img.rgba.resize(static_cast<std::size_t>(p.width) * static_cast<std::size_t>(p.height) * 4);
-        for (std::size_t i = 0, o = 0; i + 2 < need; i += 3, o += 4) {
-            img.rgba[o] = raw[i];
-            img.rgba[o + 1] = raw[i + 1];
-            img.rgba[o + 2] = raw[i + 2];
-            img.rgba[o + 3] = 0xFF;
-        }
-    } else { // 32 = RGBA
-        if (p.width <= 0 || p.height <= 0) return;
-        const std::size_t need = static_cast<std::size_t>(p.width) *
-                                 static_cast<std::size_t>(p.height) * 4;
-        if (raw.size() < need) return;
-        img.width = p.width;
-        img.height = p.height;
-        img.rgba.assign(raw.begin(), raw.begin() + static_cast<std::ptrdiff_t>(need));
-    }
+    if (!decode_payload(p.format, p.width, p.height, p.b64, img.width, img.height, img.rgba))
+        return;
     if (img.width <= 0 || img.height <= 0) return;
+    // Seed the animation frame list with the base frame.
+    img.frames.push_back(Image::Frame{img.rgba, 40});
 
     images_[img.id] = std::move(img);
     changed = true;
@@ -470,6 +505,59 @@ void Graphics::do_delete(std::string_view control, bool &changed) {
         if (what == 'A') images_.clear();
     }
     changed = placements_.size() != before;
+}
+
+void Graphics::handle_frame(std::uint32_t id, int gap_ms, int format, int width, int height,
+                            const std::string &b64, bool &changed) {
+    auto it = images_.find(id);
+    if (it == images_.end()) return; // frame for an unknown image
+    Image &img = it->second;
+    std::vector<std::uint8_t> rgba;
+    int w = 0, h = 0;
+    if (!decode_payload(format, width > 0 ? width : img.width, height > 0 ? height : img.height,
+                        b64, w, h, rgba))
+        return;
+    // Frames must match the base image dimensions.
+    if (w != img.width || h != img.height) return;
+    if (img.frames.empty()) img.frames.push_back(Image::Frame{img.rgba, 40});
+    img.frames.push_back(Image::Frame{std::move(rgba), gap_ms > 0 ? gap_ms : 40});
+    animating_ = true;
+    changed = true;
+}
+
+bool Graphics::advance_animations(std::uint64_t now_ms) {
+    if (!animating_) return false;
+    bool any = false;
+    bool still_animating = false;
+    for (auto &[id, img] : images_) {
+        if (img.frames.size() < 2) continue;
+        still_animating = true;
+        if (img.next_advance_ms == 0) {
+            // Start the clock the first time we see this animation.
+            img.next_advance_ms =
+                now_ms + static_cast<std::uint64_t>(img.frames[static_cast<std::size_t>(img.current)].gap_ms);
+            continue;
+        }
+        if (now_ms >= img.next_advance_ms) {
+            img.current = (img.current + 1) % static_cast<int>(img.frames.size());
+            img.rgba = img.frames[static_cast<std::size_t>(img.current)].rgba;
+            img.next_advance_ms =
+                now_ms + static_cast<std::uint64_t>(img.frames[static_cast<std::size_t>(img.current)].gap_ms);
+            any = true;
+        }
+    }
+    animating_ = still_animating;
+    if (any) ++revision_;
+    return any;
+}
+
+std::uint64_t Graphics::next_animation_deadline() const noexcept {
+    std::uint64_t soonest = 0;
+    for (const auto &[id, img] : images_) {
+        if (img.frames.size() < 2 || img.next_advance_ms == 0) continue;
+        if (soonest == 0 || img.next_advance_ms < soonest) soonest = img.next_advance_ms;
+    }
+    return soonest;
 }
 
 } // namespace gvte::term

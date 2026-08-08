@@ -106,6 +106,13 @@ public:
     // opens it (browser / xdg-open) on click.
     [[nodiscard]] std::string_view link_at(int vrow, int col) const noexcept;
 
+    // Advance inline-image animations to wall-clock now_ms; returns true if a
+    // frame changed (the host should redraw). Also drives the damage counter.
+    bool tick_animations(std::uint64_t now_ms);
+    // The soonest wall-clock ms an animation needs its next frame, or 0 if no
+    // animation is active — the host caps its poll wait to this.
+    [[nodiscard]] std::uint64_t next_animation_deadline() const noexcept;
+
     // Set the hover cell for OSC 8 link highlighting; pass (-1,-1) to clear.
     // Returns true if the hovered link changed (host should redraw).
     bool set_hover(int vrow, int col) noexcept;
