@@ -189,6 +189,12 @@ concept App = requires(A a, const A ca, const EventSink &sink, const WindowConfi
     // toe::run<App> calls — the host never news the App itself.
     { A::open(win) };
 
+    // Begin a GPU frame: the host acquires the swapchain drawable and begins a
+    // render pass that CLEARS to (r,g,b) (the terminal's default background).
+    // toe then issues its draws; end_frame() ends the pass and commits.
+    { a.begin_frame(PixelSize{}, std::uint8_t{}, std::uint8_t{}, std::uint8_t{}) };
+    { a.end_frame() };
+
     // Present the back buffer (the host's swap-buffers / present).
     { a.swap() } -> std::same_as<void>;
 

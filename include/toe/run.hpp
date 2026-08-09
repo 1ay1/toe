@@ -27,8 +27,6 @@
 #include <optional>
 #include <string>
 
-#include <epoxy/gl.h>
-
 #include "toe/app.hpp"
 #include "toe/core/blink.hpp"
 #include "toe/core/event_router.hpp"
@@ -81,6 +79,14 @@ template <App A>
     std::string last_title;
     std::optional<RenderKey> drawn;    // key of the last rendered frame
     std::uint64_t last_present_ms = 0; // for the flood frame-rate cap
+
+    // Optionally let the App bind to the live Terminal once (e.g. to install a
+    // live-resize render hook that draws mid-drag, when AppKit's modal resize
+    // loop has the main thread and this loop is blocked). Folds away for hosts
+    // that don't provide it.
+    if constexpr (requires { surf.bind_terminal(term, px); }) {
+        surf.bind_terminal(term, px);
+    }
 
     while (running && !surf.should_close()) {
         // 1. The lifecycle's only transition: Running -> (Running | Exited).
@@ -168,12 +174,17 @@ template <App A>
         // The overlay animates + responds to input every frame, so force a
         // repaint while it's active (the terminal grid may be unchanged).
         if ((child_gone || drawn != key || overlay_on) && rate_ok) {
-            glViewport(0, 0, px.w, px.h);
+            // The host begins the swapchain frame (sokol pass + clear to the
+            // terminal's default background), toe renders the grid + overlay
+            // into it, then the host ends the pass and presents.
+            const toe::Rgb bg = session.default_bg();
+            surf.begin_frame(px, bg.r, bg.g, bg.b);
             auto rc = toe::gfx::RenderContext::adopt_current();
             const toe::DamageRect dmg = session.render(rc, px, blink.cursor_on, blink.text_on);
             if constexpr (OverlayApp<A>) {
                 if (overlay_on) surf.overlay_render(term, px);
             }
+            surf.end_frame();
             toe::present(surf, (overlay_on || dmg.empty()) ? toe::DamageRect::full(px) : dmg);
             drawn = key;
             last_present_ms = now.value;

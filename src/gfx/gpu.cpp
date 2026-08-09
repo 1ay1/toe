@@ -5,6 +5,8 @@
 
 #include "toe/gfx/gpu.hpp"
 
+#include <cstddef>
+
 #include "sokol/sokol_gfx.h"
 
 namespace toe::gfx::gpu {
@@ -25,7 +27,7 @@ std::uint32_t make_image(int w, int h, Fmt fmt, const void *pixels) {
     sg_image img = sg_make_image(&d);
     if (img.id != SG_INVALID_ID && pixels) {
         sg_image_data data = {};
-        data.mip_levels[0] = {pixels, static_cast<std::size_t>(w) * h * bpp(fmt)};
+        data.mip_levels[0] = {pixels, static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * static_cast<std::size_t>(bpp(fmt))};
         sg_update_image(img, &data);
     }
     return img.id;
@@ -35,7 +37,7 @@ void update_image(std::uint32_t image_id, int w, int h, Fmt fmt, const void *pix
     if (!image_id || !pixels) return;
     sg_image img = {image_id};
     sg_image_data data = {};
-    data.mip_levels[0] = {pixels, static_cast<std::size_t>(w) * h * bpp(fmt)};
+    data.mip_levels[0] = {pixels, static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * static_cast<std::size_t>(bpp(fmt))};
     sg_update_image(img, &data);
 }
 

@@ -18,7 +18,35 @@ find_package(PkgConfig REQUIRED)
 # public header names a GL type.
 # ===========================================================================
 pkg_check_modules(PNG        REQUIRED IMPORTED_TARGET libpng)
-pkg_check_modules(EPOXY      REQUIRED IMPORTED_TARGET epoxy)
+
+# --- shader generation: sokol-shdc compiles shaders.glsl -> shaders.glsl.h ----
+# The generated header is committed (so a fresh checkout builds without the
+# tool), but regenerated here when the .glsl changes and the tool is present.
+if(APPLE)
+  set(_shdc "${PROJECT_SOURCE_DIR}/tools/bin/sokol-shdc-osx-arm64")
+  set(_slang "metal_macos")
+else()
+  set(_shdc "${PROJECT_SOURCE_DIR}/tools/bin/sokol-shdc-linux")
+  set(_slang "glsl410")
+endif()
+if(EXISTS "${_shdc}")
+  add_custom_command(
+    OUTPUT  "${CMAKE_CURRENT_SOURCE_DIR}/gfx/shaders.glsl.h"
+    COMMAND "${_shdc}" --input "${CMAKE_CURRENT_SOURCE_DIR}/gfx/shaders.glsl"
+                       --output "${CMAKE_CURRENT_SOURCE_DIR}/gfx/shaders.glsl.h"
+                       --slang "${_slang}"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/gfx/shaders.glsl"
+    COMMENT "sokol-shdc: compiling shaders" VERBATIM)
+endif()
+
+# The single SOKOL_IMPL TU. On Apple it's Objective-C (Metal); on Linux a .c
+# with the GL backend.
+if(APPLE)
+  set(_sokol_impl gfx/sokol_impl.m)
+  set_source_files_properties(gfx/sokol_impl.m PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+else()
+  set(_sokol_impl gfx/sokol_impl.c)
+endif()
 
 add_library(toe
   terminal.cpp
@@ -30,9 +58,11 @@ add_library(toe
   gfx/font_discovery.cpp
   gfx/png.cpp
   gfx/stb_impl.cpp
-  gfx/shader.cpp
   gfx/palette.cpp
   gfx/renderer.cpp
+  gfx/gpu.cpp
+  ${_sokol_impl}
+  "${CMAKE_CURRENT_SOURCE_DIR}/gfx/shaders.glsl.h"
   input/keymap.cpp
   term/screen.cpp
   term/update.cpp
@@ -54,8 +84,23 @@ target_include_directories(toe PUBLIC
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
-# All GL/decoder deps are PRIVATE — implementation detail, not part of the ABI.
-target_link_libraries(toe PRIVATE PkgConfig::PNG PkgConfig::EPOXY)
+# Renderer sources include the sokol header; point them at include/sokol and the
+# generated shader header dir.
+target_include_directories(toe PRIVATE
+  "${PROJECT_SOURCE_DIR}/include/sokol"
+  "${CMAKE_CURRENT_SOURCE_DIR}/gfx")
+
+# PNG stays a private decoder dep. On Apple, sokol's Metal backend needs the
+# Metal + QuartzCore frameworks (the host still owns the CAMetalLayer/device).
+target_link_libraries(toe PRIVATE PkgConfig::PNG)
+if(APPLE)
+  target_link_libraries(toe PRIVATE
+    "-framework Metal" "-framework MetalKit" "-framework QuartzCore" "-framework Foundation")
+else()
+  # Linux: sokol GLCORE needs a GL loader; keep epoxy for that.
+  pkg_check_modules(EPOXY REQUIRED IMPORTED_TARGET epoxy)
+  target_link_libraries(toe PRIVATE PkgConfig::EPOXY)
+endif()
 
 target_compile_features(toe PUBLIC cxx_std_23)
 target_compile_options(toe PRIVATE ${TOE_WARNINGS})

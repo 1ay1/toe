@@ -43,6 +43,10 @@ public:
 
     [[nodiscard]] const FontAtlas &font() const noexcept { return atlas_; }
 
+    // The current default background colour (tracks live OSC 10/11 edits) — the
+    // host clears the swapchain to this at the start of each frame.
+    [[nodiscard]] Rgb default_bg() const noexcept { return palette_.default_bg(); }
+
     // Draw the whole screen into the current framebuffer of size `px`.
     // Draw the frame; returns the region that changed (in pixels) so the host
     // can damage only that area on the compositor. DamageRect::full when the

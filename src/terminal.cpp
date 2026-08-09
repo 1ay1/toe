@@ -7,8 +7,6 @@
 #include "toe/terminal.hpp"
 #include "toe/input/keymap.hpp"
 
-#include <epoxy/gl.h>
-
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -164,18 +162,20 @@ Session &Session::operator=(Session &&) noexcept = default;
 Session::~Session() = default;
 
 DamageRect Session::render(gfx::RenderContext &rc, PixelSize px, bool cursor_on, bool blink_on) {
-    // Honor the host-chosen destination framebuffer from the capability token.
-    glBindFramebuffer(GL_FRAMEBUFFER, rc.target().id);
+    // The host has already begun the swapchain pass (with the clear); we draw
+    // into it. `rc` is just the capability token proving a GPU frame is active.
+    (void)rc;
     return impl_->renderer.draw(impl_->model.screen, px, cursor_on, blink_on);
 }
 
 void Session::render_overlay(gfx::RenderContext &rc, const term::Cell *cells, int cols, int rows,
                              PixelSize px, int ox, int oy) {
-    glBindFramebuffer(GL_FRAMEBUFFER, rc.target().id);
+    (void)rc;
     impl_->renderer.draw_cells(cells, cols, rows, px, ox, oy);
 }
 
 Extent Session::cell_size() const noexcept { return Extent{impl_->cell_w, impl_->cell_h}; }
+Rgb Session::default_bg() const noexcept { return impl_->renderer.default_bg(); }
 
 void Session::resize(PixelSize px) {
     const Extent ng = impl_->renderer.cells_for(px);

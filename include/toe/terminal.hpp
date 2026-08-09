@@ -98,6 +98,9 @@ public:
 
     // The current cell size in pixels (for laying out an overlay in cells).
     [[nodiscard]] Extent cell_size() const noexcept;
+    // The default background colour (tracks live colour edits) — the host clears
+    // the swapchain to this each frame.
+    [[nodiscard]] Rgb default_bg() const noexcept;
     void resize(PixelSize px);
 
     // Runtime font zoom. Rebuilds the glyph atlas + renderer at `px` pixels and
