@@ -84,6 +84,13 @@ public:
     // The rasterizer scale factor mapping font units -> device pixels.
     [[nodiscard]] float scale() const noexcept { return scale_; }
 
+    // The cap-height in DEVICE PIXELS: the height of a capital 'H' outline.
+    // This is the perceptual size anchor used to match fallback faces to the
+    // primary — two fonts at the same pixel_height can have very different cap
+    // heights, which is what makes a raw fallback look too big or too small.
+    // Returns 0 if the face has no 'H' (falls back to ascent at the call site).
+    [[nodiscard]] int cap_height() const noexcept;
+
     // The glyph index for a codepoint, or 0 if this face has no glyph for it
     // (the caller then tries the next face in the stack). O(1)-ish stb lookup.
     [[nodiscard]] std::uint32_t glyph_index(char32_t cp) const noexcept;
@@ -148,7 +155,12 @@ public:
 
     // The pixel height every lazily-discovered fallback face is loaded at, and
     // whether lazy discovery is enabled. Set once after the primary is pushed.
-    void enable_discovery(int pixel_height) noexcept { pixel_height_ = pixel_height; }
+    // Also captures the primary's cap-height so fallbacks can be size-matched to
+    // it (see resolve()).
+    void enable_discovery(int pixel_height) noexcept {
+        pixel_height_ = pixel_height;
+        primary_cap_ = faces_.empty() ? 0 : faces_.front().cap_height();
+    }
 
     [[nodiscard]] bool empty() const noexcept { return faces_.empty(); }
     [[nodiscard]] std::size_t size() const noexcept { return faces_.size(); }
@@ -174,6 +186,7 @@ private:
     std::unique_ptr<class FontDiscovery> discovery_;
     std::vector<std::string> loaded_paths_; // files already in the chain (dedup)
     int pixel_height_ = 0;                   // 0 = discovery disabled
+    int primary_cap_ = 0;                    // primary cap-height (px) for fallback matching
 };
 
 } // namespace toe::gfx

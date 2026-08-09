@@ -79,6 +79,15 @@ std::uint32_t Face::glyph_index(char32_t cp) const noexcept {
     return static_cast<std::uint32_t>(stbtt_FindGlyphIndex(&h_->info, static_cast<int>(cp)));
 }
 
+int Face::cap_height() const noexcept {
+    if (!h_) return metrics_.ascent; // colour-bitmap face: no outlines
+    const int g = stbtt_FindGlyphIndex(&h_->info, 'H');
+    if (g == 0) return metrics_.ascent;
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    if (!stbtt_GetGlyphBox(&h_->info, g, &x0, &y0, &x1, &y1)) return metrics_.ascent;
+    return static_cast<int>(std::lround((y1 - y0) * scale_));
+}
+
 GlyphBitmap Face::rasterize(std::uint32_t glyph_index) const {
     GlyphBitmap out;
     if (color_) return color_rasterize(*color_, glyph_index, pixel_height_);
@@ -154,6 +163,28 @@ FaceStack::Resolved FaceStack::resolve(char32_t cp) {
             if (!path) break; // nothing more on the system covers it
             if (auto face = Face::load(slurp(*path), pixel_height_)) {
                 if (const std::uint32_t gi = face->glyph_index(cp); gi != 0) {
+                    // Size-match the fallback to the primary's cap-height. Two
+                    // fonts at the same pixel_height often have very different
+                    // cap heights, so a raw fallback looks noticeably bigger or
+                    // smaller than the surrounding text. Re-load at an adjusted
+                    // pixel_height so the caps line up. (Colour-bitmap emoji
+                    // faces have no outlines/cap-height and are scaled to the
+                    // cell by the colour rasterizer instead, so skip them.)
+                    if (primary_cap_ > 0 && !face->is_color()) {
+                        const int fc = face->cap_height();
+                        if (fc > 0) {
+                            const int adj = static_cast<int>(
+                                std::lround(static_cast<double>(pixel_height_) * primary_cap_ / fc));
+                            // Only reload when it actually differs and stays sane
+                            // (guard against pathological fonts / rounding).
+                            if (adj > 0 && adj != pixel_height_ &&
+                                adj >= pixel_height_ / 3 && adj <= pixel_height_ * 3) {
+                                if (auto rescaled = Face::load(slurp(*path), adj)) {
+                                    if (rescaled->glyph_index(cp) != 0) face = std::move(rescaled);
+                                }
+                            }
+                        }
+                    }
                     loaded_paths_.push_back(*path);
                     faces_.push_back(std::move(*face));
                     const Face &nf = faces_.back();

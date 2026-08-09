@@ -195,16 +195,43 @@ GlyphBitmap color_rasterize(const Face::ColorBackend &cb, std::uint32_t gid, int
     out.bearing_x = 0;
     out.bearing_y = th;
     out.pixels.assign(static_cast<std::size_t>(tw) * static_cast<std::size_t>(th) * 4, 0);
+    // Area-averaging (box filter) downscale. Emoji strikes are large (often
+    // 109-136px) and we shrink them to the cell (~32px); nearest-neighbour
+    // would throw away ~90% of the pixels and alias badly. Averaging every
+    // source texel that maps into a destination texel gives smooth, crisp
+    // emoji. Colours are averaged in PREMULTIPLIED space so transparent edge
+    // texels don't bleed dark halos into the result.
     for (int y = 0; y < th; ++y) {
-        const int sy = y * h / th;
+        const int sy0 = static_cast<int>(static_cast<long long>(y) * h / th);
+        const int sy1 = std::max(sy0 + 1, static_cast<int>(static_cast<long long>(y + 1) * h / th));
         for (int x = 0; x < tw; ++x) {
-            const int sx = x * w / tw;
-            const std::uint8_t *sp = rgba.data() + (static_cast<std::size_t>(sy) * w + sx) * 4;
-            std::uint8_t *dp = out.pixels.data() + (static_cast<std::size_t>(y) * tw + x) * 4;
-            dp[0] = sp[0];
-            dp[1] = sp[1];
-            dp[2] = sp[2];
-            dp[3] = sp[3];
+            const int sx0 = static_cast<int>(static_cast<long long>(x) * w / tw);
+            const int sx1 = std::max(sx0 + 1, static_cast<int>(static_cast<long long>(x + 1) * w / tw));
+            std::uint32_t ar = 0, ag = 0, ab = 0, aa = 0, cnt = 0;
+            for (int syy = sy0; syy < sy1; ++syy) {
+                const std::uint8_t *row =
+                    rgba.data() + static_cast<std::size_t>(syy) * static_cast<std::size_t>(w) * 4;
+                for (int sxx = sx0; sxx < sx1; ++sxx) {
+                    const std::uint8_t *sp = row + static_cast<std::size_t>(sxx) * 4;
+                    const std::uint32_t a = sp[3];
+                    // Premultiply so translucent texels contribute proportionally.
+                    ar += sp[0] * a;
+                    ag += sp[1] * a;
+                    ab += sp[2] * a;
+                    aa += a;
+                    ++cnt;
+                }
+            }
+            std::uint8_t *dp =
+                out.pixels.data() + (static_cast<std::size_t>(y) * static_cast<std::size_t>(tw) + static_cast<std::size_t>(x)) * 4;
+            if (cnt == 0) { dp[0] = dp[1] = dp[2] = dp[3] = 0; continue; }
+            const std::uint32_t alpha = aa / cnt; // average coverage
+            if (aa == 0) { dp[0] = dp[1] = dp[2] = 0; dp[3] = 0; continue; }
+            // Un-premultiply the averaged colour by the summed alpha.
+            dp[0] = static_cast<std::uint8_t>(ar / aa);
+            dp[1] = static_cast<std::uint8_t>(ag / aa);
+            dp[2] = static_cast<std::uint8_t>(ab / aa);
+            dp[3] = static_cast<std::uint8_t>(alpha);
         }
     }
     return out;
