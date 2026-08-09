@@ -18,6 +18,8 @@
 #include <string>
 #include <string_view>
 #include <variant>
+
+#include "toe/vt/simd_scan.hpp"
 #include <vector>
 
 namespace toe::vt {

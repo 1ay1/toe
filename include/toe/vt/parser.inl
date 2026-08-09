@@ -302,9 +302,9 @@ void Parser::feed(std::span<const char> bytes, Sink &&sink) {
         // full state machine for a single byte, then we resume scanning.
         if (state_ == State::Ground && utf8_remaining_ == 0) {
             const std::uint8_t *run = p;
-            while (p < end && *p >= 0x20 && *p < 0x7F) {
-                ++p;
-            }
+            // SIMD: skip to the first non-printable-ASCII byte in one sweep
+            // (16 bytes/iter on NEON/SSE2) instead of a byte-at-a-time loop.
+            p += printable_ascii_run(p, static_cast<std::size_t>(end - p));
             if (run != p) {
                 // Emit the whole run as one action — the screen writes it in a
                 // tight loop without per-char variant/visit/apply overhead.
