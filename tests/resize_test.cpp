@@ -7,6 +7,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -187,6 +188,95 @@ int main() {
         }
         ck(trim(m.screen.row(Row{0})) == top, "feed_output: view stays on the same line");
         ck(m.screen.scroll_offset() > 0, "feed_output: output does NOT yank to bottom");
+    }
+
+    // ── TORTURE: rapid randomized resizes (drag / SIGWINCH storm) ──────────
+    // The #1 real-world way terminals break under a TUI is a resize race: a
+    // drag fires dozens of arbitrary-size SIGWINCHs while the app is mid-redraw.
+    // We hammer resize() with random sizes, interleaving output, on BOTH the
+    // primary and the alt screen, and after EVERY step assert the screen's
+    // invariants hold (dimensions consistent, cursor in bounds, every row
+    // readable — no OOB) and nothing throws/crashes.
+    {
+        std::mt19937 rng(0xC0FFEE);
+        auto rnd = [&](int lo, int hi) {
+            return lo + static_cast<int>(rng() % static_cast<unsigned>(hi - lo + 1));
+        };
+
+        auto invariants = [&](term::Screen &s, const char *where) {
+            const Extent sz = s.size();
+            bool ok = sz.cols > 0 && sz.rows > 0;
+            const auto cur = s.cursor();
+            ok = ok && cur.row.get() >= 0 && cur.row.get() < sz.rows;
+            ok = ok && cur.col.get() >= 0 && cur.col.get() <= sz.cols;
+            // Every visible row must be addressable (OOB/crash if reflow left
+            // the grid inconsistent). Touch each row's cells.
+            for (int r = 0; r < sz.rows; ++r) { auto row = s.row(Row{r}); (void)row.size(); }
+            if (!ok)
+                std::printf("  torture invariant FAILED at %s (%dx%d)\n", where, sz.cols, sz.rows);
+            return ok;
+        };
+
+        // Primary screen: fill with content, then storm-resize.
+        {
+            term::Screen s = make(80, 24, 200, 40);
+            bool all_ok = true;
+            for (int i = 0; i < 3000; ++i) {
+                // Include extreme aspect ratios (1-col, 1-row) that stress the
+                // reflow/cursor-clamp edge cases hardest.
+                const int c = (i % 40 == 0) ? 1 : rnd(1, 400);
+                const int r = (i % 37 == 0) ? 1 : rnd(1, 200);
+                s.resize(Extent{c, r});
+                if ((i & 7) == 0) {
+                    char b[48];
+                    std::snprintf(b, sizeof b, "burst-%d-\x1b[7mX\x1b[0m\r\n", i);
+                    feed(s, b);
+                }
+                if (!invariants(s, "primary")) { all_ok = false; break; }
+            }
+            ck(all_ok, "primary-screen resize storm keeps all invariants (3000 random resizes)");
+        }
+
+        // Alt screen (vim/tmux/htop): the app owns every cell; crop/pad, no
+        // reflow. Enter alt, paint, then storm-resize with app repaints.
+        {
+            term::Screen s(Extent{80, 24});
+            feed(s, "\x1b[?1049h");
+            for (int r = 0; r < 24; ++r) {
+                char b[64];
+                std::snprintf(b, sizeof b, "\x1b[%d;1H\x1b[44mpane row %02d filler\x1b[0m", r + 1, r);
+                feed(s, b);
+            }
+            bool all_ok = true;
+            for (int i = 0; i < 3000; ++i) {
+                const int c = (i % 40 == 0) ? 1 : rnd(1, 400);
+                const int r = (i % 37 == 0) ? 1 : rnd(1, 200);
+                s.resize(Extent{c, r});
+                if ((i & 3) == 0) {
+                    const Extent sz = s.size();
+                    char b[64];
+                    std::snprintf(b, sizeof b, "\x1b[H\x1b[2J\x1b[1;1Hredraw %dx%d", sz.cols, sz.rows);
+                    feed(s, b);
+                }
+                if (!invariants(s, "alt")) { all_ok = false; break; }
+            }
+            feed(s, "\x1b[?1049l");
+            ck(all_ok, "alt-screen resize storm keeps all invariants (3000 random resizes)");
+            ck(invariants(s, "post-alt-exit"), "leaving alt screen after a storm is consistent");
+        }
+
+        // Round-trip stability: churn the width and confirm marked content is
+        // never lost (it may reflow to a different row, but must still exist).
+        {
+            term::Screen s(Extent{80, 24});
+            feed(s, "STABLE-MARKER-abcdef\r\n");
+            for (int w : {40, 200, 17, 133, 8, 250, 80}) s.resize(Extent{w, 24});
+            auto lines = read_all(s);
+            bool found = false;
+            for (const std::string &l : lines)
+                if (l.find("STABLE-MARKER") != std::string::npos) { found = true; break; }
+            ck(found, "content survives a width-resize round trip (no data loss)");
+        }
     }
 
     std::printf(failures ? "\nresize test: %d FAILURES\n" : "\nresize test: PASS\n", failures);
