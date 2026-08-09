@@ -69,17 +69,18 @@ int main() {
     ck(fills(U'A') == 0, "letter A -> font");
     ck(fills(U' ') == 0, "space -> font");
 
-    // Analytic SDF shapes: rounded corners + Powerline separators resolve to a
-    // shape id (>=1) and are NOT drawn as rect fills (they take the SDF path).
-    ck(cell_sdf(U'\u256D') == kSdfArcTL, "rounded TL -> SDF arc");
-    ck(cell_sdf(U'\u256F') == kSdfArcBR, "rounded BR -> SDF arc");
+    // Analytic SDF shapes: ONLY Powerline separators take the SDF path (they're
+    // diagonal triangles rects can't do). Rounded corners are drawn as rect
+    // fills (like sharp corners) so they connect to neighbours gap-free.
     ck(cell_sdf(U'\uE0B0') == kSdfTriRight, "powerline solid right -> SDF tri");
     ck(cell_sdf(U'\uE0B2') == kSdfTriLeft, "powerline solid left -> SDF tri");
     ck(cell_sdf(U'\uE0B1') == kSdfArrowRight, "powerline chevron right -> SDF");
     ck(cell_sdf(U'A') == kSdfNone, "letter is not an SDF shape");
     ck(cell_sdf(U'\u2500') == kSdfNone, "straight line stays rect fill");
-    // Rounded corners must be SDF-only (no double-draw as rects).
-    ck(fills(U'\u256D') == 0, "rounded corner not in rect path");
+    ck(cell_sdf(U'\u256D') == kSdfNone, "rounded corner is rect, not SDF");
+    // Rounded corners draw as rect corners (2 stubs), like sharp corners.
+    ck(fills(U'\u256D') == 2, "rounded TL -> rect corner");
+    ck(fills(U'\u256F') == 2, "rounded BR -> rect corner");
 
     // Uniform weight sanity: light and heavy strokes are the shared constants.
     ck(kLight < kHeavy, "light thinner than heavy");

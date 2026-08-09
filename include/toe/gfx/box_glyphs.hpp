@@ -116,12 +116,13 @@ inline constexpr float kHeavy = 1.f / 4;
     case U'\u2505': case U'\u2509': { const float s=1.f/6; for(float x=0;x<1;x+=2*s) push(x,hlo,s,T); return n; } // ┅ ┉ heavy
     case U'\u2506': case U'\u250A': { const float s=1.f/6; for(float y=0;y<1;y+=2*s) push(lo,y,t,s); return n; } // ┆ ┊
     case U'\u2507': case U'\u250B': { const float s=1.f/6; for(float y=0;y<1;y+=2*s) push(hlo,y,T,s); return n; } // ┇ ┋ heavy
-    // Light corners.
-    case U'\u250C': Dst(lo,t); Rst(lo,t); return n; // ┌
-    case U'\u2510': Dst(lo,t); Lst(lo,t); return n; // ┐
-    case U'\u2514': Ust(lo,t); Rst(lo,t); return n; // └
-    case U'\u2518': Ust(lo,t); Lst(lo,t); return n; // ┘
-    // (Rounded corners ╭╮╯╰ are drawn as true SDF arcs — see cell_sdf.)
+    // Light corners (rounded ╭╮╯╰ share these — at cell sizes a quarter-arc
+    // and a sharp join are visually near-identical, and rects connect to their
+    // neighbours with zero gaps, which matters far more than the rounding).
+    case U'\u250C': case U'\u256D': Dst(lo,t); Rst(lo,t); return n; // ┌ ╭
+    case U'\u2510': case U'\u256E': Dst(lo,t); Lst(lo,t); return n; // ┐ ╮
+    case U'\u2514': case U'\u2570': Ust(lo,t); Rst(lo,t); return n; // └ ╰
+    case U'\u2518': case U'\u256F': Ust(lo,t); Lst(lo,t); return n; // ┘ ╯
     // Heavy corners.
     case U'\u250F': Dst(hlo,T); Rst(hlo,T); return n; // ┏
     case U'\u2513': Dst(hlo,T); Lst(hlo,T); return n; // ┓
@@ -194,11 +195,9 @@ enum : std::uint8_t {
 // mathematically perfect and crisp at ANY size / zoom with zero atlas memory.
 [[nodiscard]] inline std::uint8_t cell_sdf(char32_t cp) noexcept {
     switch (cp) {
-    case U'\u256D': return kSdfArcTL; // ╭
-    case U'\u256E': return kSdfArcTR; // ╮
-    case U'\u2570': return kSdfArcBL; // ╰
-    case U'\u256F': return kSdfArcBR; // ╯
     // Powerline separators (private-use area, the de-facto standard codepoints).
+    // These NEED the SDF path — they're diagonal triangles that rects can't do,
+    // and they render crisp at any size.
     case U'\uE0B0': return kSdfTriRight;   // solid right
     case U'\uE0B2': return kSdfTriLeft;    // solid left
     case U'\uE0B1': return kSdfArrowRight; // chevron right

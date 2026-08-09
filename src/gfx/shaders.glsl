@@ -81,16 +81,22 @@ float sd_triangle(vec2 p, vec2 a, vec2 b, vec2 c) {
     return -sqrt(d.x) * sign(d.y);
 }
 
-// Signed distance to an ANNULUS quarter arc (a rounded box-drawing corner):
-// the ring of radius `r` and thickness `t`, centred at `ctr`. Only the quadrant
-// facing (sx,sy) is kept, so ╭╮╰╯ are one function with a sign flip.
-float sd_arc(vec2 p, vec2 ctr, float r, float t, vec2 quad) {
+// Signed distance to a segment (thick line) from a to b, half-width hw.
+float sd_seg(vec2 p, vec2 a, vec2 b, float hw) {
+    vec2 pa = p - a, ba = b - a;
+    float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    return length(pa - ba * h) - hw;
+}
+
+// Signed distance to a quarter-ring (arc): the band of radius r ± hw around
+// `ctr`, clipped to the quadrant facing (quad). Endpoints are exactly on the
+// two cell centre-lines; the caller adds straight arms out to the edges.
+float sd_arc(vec2 p, vec2 ctr, float r, float hw, vec2 quad) {
     vec2 d = p - ctr;
-    float ring = abs(length(d) - r) - t * 0.5;   // distance to the ring band
-    // Clip to the facing quadrant with two half-plane cuts (the arms).
-    float cutx = quad.x * d.x;   // keep where d.x has the quadrant's sign
-    float cuty = quad.y * d.y;
-    return max(ring, -min(cutx, cuty));
+    float ring = abs(length(d) - r) - hw;
+    // Keep only the facing quadrant (both arms point back toward the cell).
+    float cut = min(quad.x * d.x, quad.y * d.y);
+    return max(ring, -cut);
 }
 
 // Evaluate the analytic SDF for shape id `sh` at local px `p`. Returns signed
@@ -98,21 +104,49 @@ float sd_arc(vec2 p, vec2 ctr, float r, float t, vec2 quad) {
 // PERFECT and antialiased at ANY cell size / zoom, with no atlas + no memory.
 float sdf_shape(int sh, vec2 p, vec2 hf) {
     float t = min(hf.x, hf.y) * 0.5;              // line/ring thickness
-    if (sh == 1) return sd_triangle(p, vec2(-hf.x,-hf.y), vec2(hf.x,0.0), vec2(-hf.x,hf.y));  //  right-filled
-    if (sh == 2) return sd_triangle(p, vec2(hf.x,-hf.y), vec2(-hf.x,0.0), vec2(hf.x,hf.y));   //  left-filled
-    // Powerline chevron arrows ( ): the triangle minus an inset triangle.
+    if (sh == 1) return sd_triangle(p, vec2(-hf.x,-hf.y), vec2(hf.x,0.0), vec2(-hf.x,hf.y));  // right-filled
+    if (sh == 2) return sd_triangle(p, vec2(hf.x,-hf.y), vec2(-hf.x,0.0), vec2(hf.x,hf.y));   // left-filled
+    // Powerline chevron arrows: the triangle minus an inset triangle.
     if (sh == 3) { float o=t; return max(sd_triangle(p, vec2(-hf.x,-hf.y), vec2(hf.x,0.0), vec2(-hf.x,hf.y)),
                                           -sd_triangle(p, vec2(-hf.x+o,-hf.y+o), vec2(hf.x-o,0.0), vec2(-hf.x+o,hf.y-o))); }
     if (sh == 4) { float o=t; return max(sd_triangle(p, vec2(hf.x,-hf.y), vec2(-hf.x,0.0), vec2(hf.x,hf.y)),
                                           -sd_triangle(p, vec2(hf.x-o,-hf.y+o), vec2(-hf.x+o,0.0), vec2(hf.x-o,hf.y-o))); }
-    // Rounded corners as true quarter arcs. r = half the cell so the arc's
-    // straight arms meet the neighbouring lines exactly at the cell edge.
-    float r = min(hf.x, hf.y);
-    float lw = min(hf.x, hf.y) * 0.25; // line width ~ 1/8 cell (matches kLight)
-    if (sh == 5) return sd_arc(p, vec2( hf.x,  hf.y), r, lw, vec2(-1.0,-1.0)); // ╭ TL
-    if (sh == 6) return sd_arc(p, vec2(-hf.x,  hf.y), r, lw, vec2( 1.0,-1.0)); // ╮ TR
-    if (sh == 7) return sd_arc(p, vec2( hf.x, -hf.y), r, lw, vec2(-1.0, 1.0)); // ╰ BL
-    if (sh == 8) return sd_arc(p, vec2(-hf.x, -hf.y), r, lw, vec2( 1.0, 1.0)); // ╯ BR
+    // Rounded corners: a quarter arc PLUS two straight arms running out to the
+    // cell edges so the corner connects seamlessly to its neighbour lines. The
+    // stroke half-width matches the light box weight (kLight = 1/8 cell).
+    float hw = min(hf.x, hf.y) * (1.0/8.0); // line half-width
+    float r  = min(hf.x, hf.y);             // arc radius = half cell
+    // Cell centre-line endpoints and the two edge endpoints for the arms.
+    // Each corner: centre point on the two mid-lines -> out to the far edges.
+    if (sh == 5) { // ╭ : connects right + down. ctr = bottom-right corner.
+        vec2 c = vec2(hf.x, hf.y);
+        float a = sd_arc(p, c, r, hw, vec2(-1.0,-1.0));
+        // arms: from the arc ends out to the RIGHT edge and the BOTTOM edge.
+        float arm1 = sd_seg(p, vec2(0.0, hf.y - r), vec2(hf.x, hf.y - r), hw); // horizontal to right edge
+        float arm2 = sd_seg(p, vec2(hf.x - r, 0.0), vec2(hf.x - r, hf.y), hw); // vertical to bottom edge
+        return min(a, min(arm1, arm2));
+    }
+    if (sh == 6) { // ╮ : connects left + down. ctr = bottom-left.
+        vec2 c = vec2(-hf.x, hf.y);
+        float a = sd_arc(p, c, r, hw, vec2(1.0,-1.0));
+        float arm1 = sd_seg(p, vec2(-hf.x, hf.y - r), vec2(0.0, hf.y - r), hw); // to left edge
+        float arm2 = sd_seg(p, vec2(-hf.x + r, 0.0), vec2(-hf.x + r, hf.y), hw); // to bottom edge
+        return min(a, min(arm1, arm2));
+    }
+    if (sh == 7) { // ╰ : connects right + up. ctr = top-right.
+        vec2 c = vec2(hf.x, -hf.y);
+        float a = sd_arc(p, c, r, hw, vec2(-1.0,1.0));
+        float arm1 = sd_seg(p, vec2(0.0, -hf.y + r), vec2(hf.x, -hf.y + r), hw); // to right edge
+        float arm2 = sd_seg(p, vec2(hf.x - r, -hf.y), vec2(hf.x - r, 0.0), hw);  // to top edge
+        return min(a, min(arm1, arm2));
+    }
+    if (sh == 8) { // ╯ : connects left + up. ctr = top-left.
+        vec2 c = vec2(-hf.x, -hf.y);
+        float a = sd_arc(p, c, r, hw, vec2(1.0,1.0));
+        float arm1 = sd_seg(p, vec2(-hf.x, -hf.y + r), vec2(0.0, -hf.y + r), hw); // to left edge
+        float arm2 = sd_seg(p, vec2(-hf.x + r, -hf.y), vec2(-hf.x + r, 0.0), hw); // to top edge
+        return min(a, min(arm1, arm2));
+    }
     return 1.0; // unknown shape -> empty
 }
 
