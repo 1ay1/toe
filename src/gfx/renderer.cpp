@@ -225,6 +225,10 @@ void Renderer::ensure_buffers() {
     pd.layout.attrs[ATTR_cell_aRect]    = {1, 0,  SG_VERTEXFORMAT_FLOAT4};
     pd.layout.attrs[ATTR_cell_aUV]      = {1, 16, SG_VERTEXFORMAT_FLOAT4};
     pd.layout.attrs[ATTR_cell_aColor]   = {1, 32, SG_VERTEXFORMAT_UBYTE4N};
+    // is_glyph (0/1/2) and radius (px) are packed as raw u8. UBYTE4N is the only
+    // ubyte format that yields a FLOAT shader attr (UBYTE4 yields int, which the
+    // validation layer rejects against the float `in`), so it normalizes the
+    // byte to [0,1]; the shader multiplies by 255.0 to recover the raw value.
     pd.layout.attrs[ATTR_cell_aIsGlyph] = {1, 36, SG_VERTEXFORMAT_UBYTE4N};
     pd.layout.attrs[ATTR_cell_aRadius]  = {1, 37, SG_VERTEXFORMAT_UBYTE4N};
     pd.primitive_type = SG_PRIMITIVETYPE_TRIANGLE_STRIP;

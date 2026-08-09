@@ -15,8 +15,8 @@ in vec2 aCorner;   // unit quad corner (0..1)
 in vec4 aRect;     // x,y,w,h in pixels
 in vec4 aUV;       // u0,v0,u1,v1
 in vec3 aColor;
-in float aIsGlyph; // 0 rect, 1 alpha glyph, 2 colour glyph
-in float aRadius;  // corner radius in px (rects only)
+in float aIsGlyph; // 0 rect, 1 alpha glyph, 2 colour glyph (u8-normalized, *255 below)
+in float aRadius;  // corner radius in px (rects only) (u8-normalized, *255 below)
 
 out vec2 vUV;
 out vec3 vColor;
@@ -32,10 +32,11 @@ void main() {
     gl_Position = vec4(ndc, 0.0, 1.0);
     vUV = mix(aUV.xy, aUV.zw, aCorner);
     vColor = aColor;
-    vIsGlyph = aIsGlyph;
+    // aIsGlyph / aRadius arrive UBYTE4N-normalized ([0,1]); recover raw u8.
+    vIsGlyph = aIsGlyph * 255.0;
     vHalf = aRect.zw * 0.5;
     vLocal = (aCorner - 0.5) * aRect.zw;
-    vRadius = aRadius;
+    vRadius = aRadius * 255.0;
 }
 @end
 
