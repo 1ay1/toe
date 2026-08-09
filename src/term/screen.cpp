@@ -1226,6 +1226,35 @@ void Screen::leave_alt_screen() {
             if (r < static_cast<std::int32_t>(saved_primary_wrapped_.size()))
                 ring_.set_view_wrapped(r, saved_primary_wrapped_[static_cast<std::size_t>(r)]);
         }
+    } else {
+        // The window was RESIZED while the app owned the alt screen, so the
+        // saved primary grid no longer matches the current dimensions. We can't
+        // memcpy it back verbatim — but we must NOT leave the alt frame on the
+        // primary screen (it would leak into scrollback, e.g. htop/btop's last
+        // frame lingering after exit). Best effort: restore the saved rows that
+        // still fit (top-left aligned) and BLANK the rest, so nothing leaks.
+        const std::int32_t saved_cols =
+            saved_primary_wrapped_.empty()
+                ? 0
+                : static_cast<std::int32_t>(saved_primary_.size() /
+                                            std::max<std::size_t>(1, saved_primary_wrapped_.size()));
+        const std::int32_t saved_rows =
+            static_cast<std::int32_t>(saved_primary_wrapped_.size());
+        const Cell blank = blank_cell();
+        for (std::int32_t r = 0; r < size_.rows; ++r) {
+            ring_.blank_view_row(r, blank);
+            ring_.mark_view_full(r);
+            ring_.set_view_wrapped(r, false);
+            if (r < saved_rows && saved_cols > 0) {
+                const std::int32_t n = std::min(size_.cols, saved_cols);
+                std::memcpy(ring_.view_row(r),
+                            saved_primary_.data() + static_cast<std::size_t>(r) *
+                                                        static_cast<std::size_t>(saved_cols),
+                            static_cast<std::size_t>(n) * sizeof(Cell));
+                ring_.set_view_wrapped(
+                    r, saved_primary_wrapped_[static_cast<std::size_t>(r)] && n == saved_cols);
+            }
+        }
     }
     cursor_ = saved_primary_cursor_;
     // Keep the snapshot buffers allocated (capacity reused next enter); just

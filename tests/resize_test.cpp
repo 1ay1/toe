@@ -265,6 +265,27 @@ int main() {
             ck(invariants(s, "post-alt-exit"), "leaving alt screen after a storm is consistent");
         }
 
+        // Alt-screen exit AFTER a resize must not leak the app's last frame
+        // into the primary screen / scrollback (the htop/btop "dashboard left
+        // behind" bug). Primary content is restored; alt content is gone.
+        {
+            term::Screen s(Extent{20, 5});
+            feed(s, "PROMPT$ ");
+            feed(s, "\x1b[?1049h");                 // enter alt
+            feed(s, "\x1b[HDASHBOARD-FRAME\r\nGRAPH"); // app paints
+            s.resize(Extent{40, 8});                 // window resized mid-run
+            feed(s, "\x1b[?1049l");                 // app exits
+            auto lines = read_all(s);
+            bool leaked = false, restored = false;
+            for (const std::string &l : lines) {
+                if (l.find("DASHBOARD") != std::string::npos || l.find("GRAPH") != std::string::npos)
+                    leaked = true;
+                if (l.find("PROMPT$") != std::string::npos) restored = true;
+            }
+            ck(!leaked, "alt frame does NOT leak into primary after a resize");
+            ck(restored, "primary content restored after alt exit + resize");
+        }
+
         // Round-trip stability: churn the width and confirm marked content is
         // never lost (it may reflow to a different row, but must still exist).
         {
