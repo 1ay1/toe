@@ -10,101 +10,16 @@
 #include <array>
 #include <algorithm>
 
-#include <epoxy/gl.h>
-
+#include "sokol/sokol_gfx.h"
+#include "toe/gfx/gpu.hpp"
+#include "shaders.glsl.h" // sokol-shdc: cell_shader_desc / image_shader_desc + slots
 
 namespace toe::gfx {
 
 namespace {
 
-// Vertex shader: a unit quad [0,1]^2, offset+scaled by per-instance pixel rect,
-// projected to clip space via a screen-size uniform. It also forwards the
-// fragment's local position within the rect (in pixels, centered) so the
-// fragment stage can evaluate a signed-distance function for rounded corners
-// — the GPUI technique: describe primitives on the CPU, shape them on the GPU.
-constexpr const char *kVert = R"(#version 330 core
-layout(location = 0) in vec2 aCorner;   // unit quad corner
-layout(location = 1) in vec4 aRect;      // x,y,w,h in pixels
-layout(location = 2) in vec4 aUV;        // u0,v0,u1,v1
-layout(location = 3) in vec3 aColor;
-layout(location = 4) in float aIsGlyph;  // 1 glyph, 0 rect
-layout(location = 5) in float aRadius;   // corner radius in px (rects only)
-
-uniform vec2 uScreen;                    // viewport size in pixels
-
-out vec2 vUV;
-out vec3 vColor;
-out float vIsGlyph;
-out vec2 vLocal;      // position within the rect, centered, in px
-out vec2 vHalf;       // half-extent of the rect, in px
-out float vRadius;
-
-void main() {
-    vec2 px = aRect.xy + aCorner * aRect.zw;
-    vec2 ndc = vec2((px.x / uScreen.x) * 2.0 - 1.0,
-                    1.0 - (px.y / uScreen.y) * 2.0);  // y-down pixels -> y-up ndc
-    gl_Position = vec4(ndc, 0.0, 1.0);
-    vUV = mix(aUV.xy, aUV.zw, aCorner);
-    vColor = aColor;
-    vIsGlyph = aIsGlyph;
-    vHalf = aRect.zw * 0.5;
-    vLocal = (aCorner - 0.5) * aRect.zw;  // [-half, +half]
-    vRadius = aRadius;
-}
-)";
-
-// Fragment shader: glyphs sample the R8 atlas as coverage; rects are filled
-// with an anti-aliased rounded-box signed-distance function (radius 0 gives a
-// crisp axis-aligned rectangle, so ordinary backgrounds cost nothing extra).
-constexpr const char *kFrag = R"(#version 330 core
-in vec2 vUV;
-in vec3 vColor;
-in float vIsGlyph;
-in vec2 vLocal;
-in vec2 vHalf;
-in float vRadius;
-
-uniform sampler2D uAtlas;      // R8 coverage atlas (alpha glyphs)
-uniform sampler2D uColorAtlas; // RGBA atlas (colour emoji glyphs)
-
-out vec4 FragColor;
-
-// Signed distance to a rounded box centered at the origin.
-float sd_round_box(vec2 p, vec2 half_ext, float r) {
-    vec2 q = abs(p) - half_ext + r;
-    return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
-}
-
-void main() {
-    // vIsGlyph: 0 = rect, 1 = alpha glyph (tinted coverage), 2 = colour glyph.
-    if (vIsGlyph > 1.5) {
-        // Colour emoji: sample the RGBA atlas as-is (no tint). The bitmap is
-        // straight-alpha RGBA; the standard src-alpha blend composites it.
-        FragColor = texture(uColorAtlas, vUV);
-    } else if (vIsGlyph > 0.5) {
-        float a = texture(uAtlas, vUV).r;
-        // Gamma-correct the coverage. stb hands us LINEAR coverage, but the
-        // framebuffer is sRGB and the blend runs in gamma space — blending
-        // linear coverage there makes antialiased edges too dark, so thin stems
-        // lose weight and coloured text looks muddy/washed. Reshaping the
-        // coverage with an exponent < 1 restores perceptual stroke weight
-        // ("stem darkening"), giving crisp, properly-weighted text without an
-        // sRGB framebuffer or a two-pass linear blend. 1/1.55 ≈ kitty's default.
-        a = pow(a, 1.0 / 1.55);
-        FragColor = vec4(vColor, a);
-    } else {
-        if (vRadius > 0.0) {
-            float d = sd_round_box(vLocal, vHalf, vRadius);
-            float a = 1.0 - smoothstep(-0.75, 0.75, d);
-            FragColor = vec4(vColor, a);
-        } else {
-            // Sharp rect: full coverage, no edge softening (avoids seams
-            // between tiled background cells).
-            FragColor = vec4(vColor, 1.0);
-        }
-    }
-}
-)";
+// The shaders now live in src/gfx/shaders.glsl, compiled by sokol-shdc into
+// shaders.glsl.h (cell + image programs) for every backend. See that file.
 
 // Byte -> normalized float, via a 256-entry table (no per-cell division).
 const std::array<float, 256> &fr_table() {
@@ -199,9 +114,9 @@ inline int cell_fills(char32_t cp, CellRect out[5]) noexcept {
 } // namespace
 
 namespace {
-// Host-controllable opt-out for the GL 4.4 persistent-mapped instance ring.
-// Defaults to allowed; the library still auto-detects the GL capability and
-// falls back on a failed map. Replaces the former TOE_NO_PERSISTENT env read.
+// Retained for API compatibility; sokol streams the instance buffer for us, so
+// there's no persistent-mapped-ring toggle anymore. Kept as a no-op so hosts
+// calling set_persistent_mapping() still link.
 bool g_persistent_mapping_allowed = true;
 } // namespace
 
@@ -210,70 +125,60 @@ void Renderer::set_persistent_mapping(bool enabled) noexcept {
 }
 
 Result<Renderer> Renderer::create(FontAtlas &&atlas) {
-    auto prog = Program::build(kVert, kFrag);
-    if (!prog) {
-        return std::unexpected(prog.error());
-    }
-    Renderer r{std::move(atlas), std::move(*prog)};
-    r.u_screen_ = r.prog_.uniform("uScreen");
-    r.u_atlas_ = r.prog_.uniform("uAtlas");
-    r.u_color_atlas_ = r.prog_.uniform("uColorAtlas");
+    Renderer r{std::move(atlas)};
     r.ensure_buffers();
+    if (r.pip_ == 0) return fail("renderer: sokol pipeline creation failed");
     return r;
 }
 
 Renderer::~Renderer() {
-    for (auto *&f : fences_) {
-        if (f) { glDeleteSync(static_cast<GLsync>(f)); f = nullptr; }
+    if (pip_) sg_destroy_pipeline(sg_pipeline{pip_});
+    if (quad_vbuf_) sg_destroy_buffer(sg_buffer{quad_vbuf_});
+    if (inst_vbuf_) sg_destroy_buffer(sg_buffer{inst_vbuf_});
+    if (smp_) sg_destroy_sampler(sg_sampler{smp_});
+    if (smp_linear_) sg_destroy_sampler(sg_sampler{smp_linear_});
+    if (image_pip_) sg_destroy_pipeline(sg_pipeline{image_pip_});
+    if (image_quad_vbuf_) sg_destroy_buffer(sg_buffer{image_quad_vbuf_});
+    for (auto &[id, t] : image_tex_) {
+        if (t.view) gpu::destroy_view(t.view);
+        if (t.image) gpu::destroy_image(t.image);
     }
-    if (inst_map_ && inst_vbo_) {
-        glBindBuffer(GL_ARRAY_BUFFER, inst_vbo_);
-        glUnmapBuffer(GL_ARRAY_BUFFER);
-        inst_map_ = nullptr;
-    }
-    if (inst_vbo_) glDeleteBuffers(1, &inst_vbo_);
-    if (quad_vbo_) glDeleteBuffers(1, &quad_vbo_);
-    if (vao_) glDeleteVertexArrays(1, &vao_);
 }
 
 Renderer::Renderer(Renderer &&o) noexcept
-    : atlas_{std::move(o.atlas_)}, palette_{o.palette_}, prog_{std::move(o.prog_)},
-      u_screen_{o.u_screen_}, u_atlas_{o.u_atlas_}, u_color_atlas_{o.u_color_atlas_},
-      vao_{std::exchange(o.vao_, 0)}, quad_vbo_{std::exchange(o.quad_vbo_, 0)},
-      inst_vbo_{std::exchange(o.inst_vbo_, 0)}, inst_bytes_capacity_{o.inst_bytes_capacity_},
-      persistent_{o.persistent_}, inst_map_{std::exchange(o.inst_map_, nullptr)},
-      inst_region_bytes_{o.inst_region_bytes_}, ring_slot_{o.ring_slot_},
-      instances_{std::move(o.instances_)} {
-    for (int i = 0; i < kRing; ++i) fences_[i] = std::exchange(o.fences_[i], nullptr);
-    o.persistent_ = false;
-}
+    : atlas_{std::move(o.atlas_)}, palette_{o.palette_},
+      palette_epoch_seen_{o.palette_epoch_seen_}, palette_applied_{o.palette_applied_},
+      pip_{std::exchange(o.pip_, 0)}, quad_vbuf_{std::exchange(o.quad_vbuf_, 0)},
+      inst_vbuf_{std::exchange(o.inst_vbuf_, 0)}, inst_capacity_{o.inst_capacity_},
+      smp_{std::exchange(o.smp_, 0)}, smp_linear_{std::exchange(o.smp_linear_, 0)},
+      image_pip_{std::exchange(o.image_pip_, 0)},
+      image_quad_vbuf_{std::exchange(o.image_quad_vbuf_, 0)},
+      image_tex_{std::move(o.image_tex_)}, images_revision_{o.images_revision_},
+      instances_{std::move(o.instances_)}, glyphs_{std::move(o.glyphs_)} {}
 
 Renderer &Renderer::operator=(Renderer &&o) noexcept {
     if (this != &o) {
-        for (auto *&f : fences_) {
-            if (f) { glDeleteSync(static_cast<GLsync>(f)); f = nullptr; }
-        }
-        if (inst_map_ && inst_vbo_) {
-            glBindBuffer(GL_ARRAY_BUFFER, inst_vbo_);
-            glUnmapBuffer(GL_ARRAY_BUFFER);
-            inst_map_ = nullptr;
-        }
-        if (inst_vbo_) glDeleteBuffers(1, &inst_vbo_);
-        if (quad_vbo_) glDeleteBuffers(1, &quad_vbo_);
-        if (vao_) glDeleteVertexArrays(1, &vao_);
+        if (pip_) sg_destroy_pipeline(sg_pipeline{pip_});
+        if (quad_vbuf_) sg_destroy_buffer(sg_buffer{quad_vbuf_});
+        if (inst_vbuf_) sg_destroy_buffer(sg_buffer{inst_vbuf_});
+        if (smp_) sg_destroy_sampler(sg_sampler{smp_});
+        if (smp_linear_) sg_destroy_sampler(sg_sampler{smp_linear_});
         atlas_ = std::move(o.atlas_);
         palette_ = o.palette_;
-        prog_ = std::move(o.prog_);
-        vao_ = std::exchange(o.vao_, 0);
-        quad_vbo_ = std::exchange(o.quad_vbo_, 0);
-        inst_vbo_ = std::exchange(o.inst_vbo_, 0);
-        inst_bytes_capacity_ = o.inst_bytes_capacity_;
-        persistent_ = std::exchange(o.persistent_, false);
-        inst_map_ = std::exchange(o.inst_map_, nullptr);
-        inst_region_bytes_ = o.inst_region_bytes_;
-        ring_slot_ = o.ring_slot_;
-        for (int i = 0; i < kRing; ++i) fences_[i] = std::exchange(o.fences_[i], nullptr);
+        palette_epoch_seen_ = o.palette_epoch_seen_;
+        palette_applied_ = o.palette_applied_;
+        pip_ = std::exchange(o.pip_, 0);
+        quad_vbuf_ = std::exchange(o.quad_vbuf_, 0);
+        inst_vbuf_ = std::exchange(o.inst_vbuf_, 0);
+        inst_capacity_ = o.inst_capacity_;
+        smp_ = std::exchange(o.smp_, 0);
+        smp_linear_ = std::exchange(o.smp_linear_, 0);
+        image_pip_ = std::exchange(o.image_pip_, 0);
+        image_quad_vbuf_ = std::exchange(o.image_quad_vbuf_, 0);
+        image_tex_ = std::move(o.image_tex_);
+        images_revision_ = o.images_revision_;
         instances_ = std::move(o.instances_);
+        glyphs_ = std::move(o.glyphs_);
     }
     return *this;
 }
@@ -284,211 +189,100 @@ Extent Renderer::cells_for(PixelSize px) const noexcept {
     return Extent{cw > 0 ? px.w / cw : 1, ch > 0 ? px.h / ch : 1};
 }
 
-void Renderer::setup_instance_attribs() {
-    const GLsizei stride = sizeof(Instance);
-    auto off = [](std::size_t n) { return reinterpret_cast<void *>(n); };
-    // Packed layout: rect 4xf32 @0, uv 4xf32 @16, color 4xu8(norm) @32,
-    // is_glyph u8(norm) @36, radius u8(raw) @37.
-    // aRect (loc1)
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, stride, off(0));
-    glVertexAttribDivisor(1, 1);
-    // aUV (loc2) — float atlas coords in [0,1]
-    glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, stride, off(16));
-    glVertexAttribDivisor(2, 1);
-    // aColor (loc3) — 3 of the 4 packed u8, normalized -> [0,1]
-    glEnableVertexAttribArray(3);
-    glVertexAttribPointer(3, 3, GL_UNSIGNED_BYTE, GL_TRUE, stride, off(32));
-    glVertexAttribDivisor(3, 1);
-    // aIsGlyph (loc4) — u8 raw 0/1 as float (UNnormalized: normalized would map
-    // 1 -> 1/255 ≈ 0.004, failing the shader's `> 0.5` test and rendering every
-    // glyph as a solid rect).
-    glEnableVertexAttribArray(4);
-    glVertexAttribPointer(4, 1, GL_UNSIGNED_BYTE, GL_FALSE, stride, off(36));
-    glVertexAttribDivisor(4, 1);
-    // aRadius (loc5) — u8 raw px value as float (unnormalized)
-    glEnableVertexAttribArray(5);
-    glVertexAttribPointer(5, 1, GL_UNSIGNED_BYTE, GL_FALSE, stride, off(37));
-    glVertexAttribDivisor(5, 1);
-}
-
+// Build the cell pipeline + static quad + a dynamic instance buffer sokol
+// streams for us (sg_append_buffer packs both batches per frame). Two samplers:
+// NEAREST for the coverage atlas, LINEAR for colour emoji.
 void Renderer::ensure_buffers() {
     static constexpr float kQuad[] = {0, 0, 1, 0, 0, 1, 1, 1}; // triangle strip
+    sg_buffer_desc qb = {};
+    qb.data = SG_RANGE(kQuad);
+    quad_vbuf_ = sg_make_buffer(&qb).id;
 
-    glGenVertexArrays(1, &vao_);
-    glBindVertexArray(vao_);
+    // Instance stream: sized for a big screen (~160k instances). stream_update
+    // lets us sg_append_buffer twice per frame (bg then glyphs).
+    inst_capacity_ = std::size_t{160000} * sizeof(Instance);
+    sg_buffer_desc ib = {};
+    ib.size = inst_capacity_;
+    ib.usage.stream_update = true;
+    inst_vbuf_ = sg_make_buffer(&ib).id;
 
-    glGenBuffers(1, &quad_vbo_);
-    glBindBuffer(GL_ARRAY_BUFFER, quad_vbo_);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(kQuad), kQuad, GL_STATIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
-    glVertexAttribDivisor(0, 0); // per-VERTEX (the unit-quad corner), not per-instance
+    sg_sampler_desc sd = {};
+    sd.min_filter = SG_FILTER_NEAREST; sd.mag_filter = SG_FILTER_NEAREST;
+    sd.wrap_u = SG_WRAP_CLAMP_TO_EDGE; sd.wrap_v = SG_WRAP_CLAMP_TO_EDGE;
+    smp_ = sg_make_sampler(&sd).id;
+    sd.min_filter = SG_FILTER_LINEAR; sd.mag_filter = SG_FILTER_LINEAR;
+    smp_linear_ = sg_make_sampler(&sd).id;
 
-    glGenBuffers(1, &inst_vbo_);
-    glBindBuffer(GL_ARRAY_BUFFER, inst_vbo_);
-
-    // Fastest streaming path: on GL 4.4+ (buffer_storage), allocate one large
-    // immutable, persistently+coherently mapped ring and write instances
-    // straight into GPU-visible memory — no glBufferSubData copy, no per-frame
-    // orphan+realloc. We fence each ring region so the CPU never scribbles over
-    // instances the GPU is still reading.
-    persistent_ = epoxy_gl_version() >= 44 || epoxy_has_gl_extension("GL_ARB_buffer_storage");
-    if (!g_persistent_mapping_allowed) persistent_ = false;
-    if (persistent_) {
-        // Worst case is ~2 instances/cell (bg + glyph); size a region to cover
-        // a 4K screen with slack so a frame never overflows one region.
-        inst_region_bytes_ = std::size_t{160000} * sizeof(Instance); // ~5 MiB/region
-        const std::size_t total = inst_region_bytes_ * kRing;
-        const GLbitfield flags =
-            GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
-        glBufferStorage(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(total), nullptr, flags);
-        inst_map_ = static_cast<unsigned char *>(
-            glMapBufferRange(GL_ARRAY_BUFFER, 0, static_cast<GLsizeiptr>(total), flags));
-        if (!inst_map_) {
-            // Mapping failed — fall back to the classic orphaning path.
-            persistent_ = false;
-        } else {
-            inst_bytes_capacity_ = total;
-        }
-    }
-
-    setup_instance_attribs();
-
-    glBindVertexArray(0);
+    sg_pipeline_desc pd = {};
+    pd.shader = sg_make_shader(cell_shader_desc(sg_query_backend()));
+    pd.layout.buffers[0].step_func = SG_VERTEXSTEP_PER_VERTEX;   // unit quad
+    pd.layout.buffers[1].step_func = SG_VERTEXSTEP_PER_INSTANCE; // instances
+    pd.layout.buffers[1].stride = sizeof(Instance);
+    // Packed Instance: rect f32x4 @0, uv f32x4 @16, color u8x4-norm @32,
+    // is_glyph u8-norm... but the shader needs FLOAT is_glyph/radius, so the
+    // sokol vertex format normalizes u8->[0,1] then the shader scales back.
+    pd.layout.attrs[ATTR_cell_aCorner]  = {0, 0,  SG_VERTEXFORMAT_FLOAT2};
+    pd.layout.attrs[ATTR_cell_aRect]    = {1, 0,  SG_VERTEXFORMAT_FLOAT4};
+    pd.layout.attrs[ATTR_cell_aUV]      = {1, 16, SG_VERTEXFORMAT_FLOAT4};
+    pd.layout.attrs[ATTR_cell_aColor]   = {1, 32, SG_VERTEXFORMAT_UBYTE4N};
+    pd.layout.attrs[ATTR_cell_aIsGlyph] = {1, 36, SG_VERTEXFORMAT_UBYTE4N};
+    pd.layout.attrs[ATTR_cell_aRadius]  = {1, 37, SG_VERTEXFORMAT_UBYTE4N};
+    pd.primitive_type = SG_PRIMITIVETYPE_TRIANGLE_STRIP;
+    pd.colors[0].blend.enabled = true;
+    pd.colors[0].blend.src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA;
+    pd.colors[0].blend.dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    pd.colors[0].blend.src_factor_alpha = SG_BLENDFACTOR_ONE;
+    pd.colors[0].blend.dst_factor_alpha = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    pip_ = sg_make_pipeline(&pd).id;
 }
 
-// Bind program + uniforms + atlas texture, skipping GL calls whose value is
-// unchanged from the last flush/redraw (the program and screen size rarely
-// move; the atlas texture never rebinds mid-run).
+// Apply the pipeline + screen-size uniform + atlas bindings for a flush.
 void Renderer::bind_common(PixelSize px) {
-    prog_.use();
-    const float w = static_cast<float>(px.w), h = static_cast<float>(px.h);
-    if (w != u_px_w_ || h != u_px_h_) {
-        glUniform2f(u_screen_, w, h);
-        u_px_w_ = w;
-        u_px_h_ = h;
-    }
-    const std::uint32_t tex = atlas_.texture();
-    if (tex != bound_tex_) {
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, tex);
-        glUniform1i(u_atlas_, 0);
-        bound_tex_ = tex;
-    }
-    // Colour (emoji) atlas on unit 1. It's created lazily on the first colour
-    // glyph, so re-bind whenever the id changes (0 -> real texture). The shader
-    // only samples it for is_color glyph instances.
-    const std::uint32_t ctex = atlas_.color_texture();
-    if (ctex != bound_color_tex_) {
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, ctex);
-        glUniform1i(u_color_atlas_, 1);
-        glActiveTexture(GL_TEXTURE0);
-        bound_color_tex_ = ctex;
-    }
+    atlas_.sync_gpu(); // upload any newly-packed glyphs to the GPU images
+    sg_apply_pipeline(sg_pipeline{pip_});
+    sg_bindings bind = {};
+    bind.vertex_buffers[0] = sg_buffer{quad_vbuf_};
+    bind.vertex_buffers[1] = sg_buffer{inst_vbuf_};
+    bind.views[VIEW_uAtlas] = sg_view{atlas_.glyph_view()};
+    // Colour atlas: if none yet (no emoji), reuse the glyph view so the slot is
+    // valid; the shader only samples it for is_color instances.
+    const std::uint32_t cv = atlas_.color_view();
+    bind.views[VIEW_uColorAtlas] = sg_view{cv ? cv : atlas_.glyph_view()};
+    bind.samplers[SMP_uSmp] = sg_sampler{smp_};
+    sg_apply_bindings(&bind);
+    cell_vs_params_t vsp = {};
+    vsp.uScreen[0] = static_cast<float>(px.w);
+    vsp.uScreen[1] = static_cast<float>(px.h);
+    sg_apply_uniforms(UB_cell_vs_params, SG_RANGE(vsp));
 }
 
-// Clean-frame fast path: nothing about the grid changed since the last draw,
-// so the persistent buffer still holds the exact instances we need. Re-issue
-// the same draw calls with zero uploads, zero fences, zero memcpy — just the
-// GL state + draw commands. Falls back (returns false) if we have no persistent
-// mapping or no recorded draws yet.
-bool Renderer::redraw_from_cache(PixelSize px) {
-    if (!persistent_ || last_draw_n_ == 0) return false;
-    glBindVertexArray(vao_);
-    glBindBuffer(GL_ARRAY_BUFFER, inst_vbo_);
-    bind_common(px);
-    for (int i = 0; i < last_draw_n_; ++i) {
-        const DrawCall &d = last_draws_[i];
-        if (d.count == 0) continue;
-        glDrawArraysInstancedBaseInstance(GL_TRIANGLE_STRIP, 0, 4,
-                                          static_cast<GLsizei>(d.count), d.first);
-    }
-    glBindVertexArray(0);
-    return true;
-}
+// Clean-frame fast path is handled by the host re-presenting; with sokol we
+// simply re-flush the cached instances (cheap). Returns false to force a
+// normal flush (the instance data must be re-appended into the frame's buffer).
+bool Renderer::redraw_from_cache(PixelSize) { return false; }
 
+// Append `insts` into the streaming instance buffer and issue one instanced
+// draw. sokol tracks the append offset within the frame, so calling flush twice
+// (bg then glyphs) packs them contiguously. Must be inside an active sg pass
+// (the host begins/ends the swapchain pass around Session::render).
 void Renderer::flush(std::span<const Instance> insts, PixelSize px) {
-    std::size_t count = insts.size();
+    const std::size_t count = insts.size();
     if (count == 0) return;
-
-    glBindVertexArray(vao_);
-    glBindBuffer(GL_ARRAY_BUFFER, inst_vbo_);
-    const std::size_t bytes = count * sizeof(Instance);
-
-    if (persistent_ && bytes <= inst_region_bytes_) {
-        // Cycle to the next ring region. Wait on its fence (from kRing frames
-        // ago) so we never overwrite instances the GPU is still consuming, then
-        // memcpy straight into the coherent mapping — no glBufferSubData copy.
-        const int slot = ring_slot_;
-        ring_slot_ = (ring_slot_ + 1) % kRing;
-        if (auto *f = static_cast<GLsync>(fences_[slot])) {
-            glClientWaitSync(f, GL_SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED);
-            glDeleteSync(f);
-            fences_[slot] = nullptr;
-        }
-        const std::size_t base = static_cast<std::size_t>(slot) * inst_region_bytes_;
-        std::memcpy(inst_map_ + base, insts.data(), bytes);
-
-        bind_common(px);
-
-        // Point the instanced attributes at this region's slice.
-        const GLuint first = static_cast<GLuint>(base / sizeof(Instance));
-        glDrawArraysInstancedBaseInstance(GL_TRIANGLE_STRIP, 0, 4,
-                                          static_cast<GLsizei>(count), first);
-        fences_[slot] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-        // Remember this draw so a later clean frame can replay it verbatim.
-        if (last_draw_n_ < 2)
-            last_draws_[last_draw_n_++] = {first, static_cast<std::uint32_t>(count)};
-        glBindVertexArray(0);
-        return;
-    }
-
-    // Classic orphaning path (GL 3.3). If we somehow get here with a persistent
-    // immutable buffer and an over-large frame, clamp to the region (can't
-    // realloc immutable storage) rather than issue an illegal glBufferData.
-    if (persistent_) {
-        count = inst_region_bytes_ / sizeof(Instance);
-        const std::size_t clamped = count * sizeof(Instance);
-        std::memcpy(inst_map_, insts.data(), clamped);
-        prog_.use();
-        glUniform2f(u_screen_, static_cast<float>(px.w), static_cast<float>(px.h));
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, atlas_.texture());
-        glUniform1i(u_atlas_, 0);
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, atlas_.color_texture());
-        glUniform1i(u_color_atlas_, 1);
-        glActiveTexture(GL_TEXTURE0);
-        glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, static_cast<GLsizei>(count));
-        glBindVertexArray(0);
-        return;
-    }
-
-    // Classic orphaning path (GL 3.3).
-    if (bytes > inst_bytes_capacity_) {
-        inst_bytes_capacity_ = bytes + bytes / 2;
-    }
-    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(inst_bytes_capacity_), nullptr,
-                 GL_STREAM_DRAW);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, static_cast<GLsizeiptr>(bytes), insts.data());
-
-    prog_.use();
-    glUniform2f(u_screen_, static_cast<float>(px.w), static_cast<float>(px.h));
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, atlas_.texture());
-    glUniform1i(u_atlas_, 0);
-    // Colour (emoji) atlas on unit 1 — bound even if empty (0), the shader only
-    // samples it for is_color glyph instances.
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, atlas_.color_texture());
-    glUniform1i(u_color_atlas_, 1);
-    glActiveTexture(GL_TEXTURE0);
-
-    glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, static_cast<GLsizei>(count));
-    glBindVertexArray(0);
+    const int off = sg_append_buffer(
+        sg_buffer{inst_vbuf_},
+        [&] { sg_range r = {insts.data(), count * sizeof(Instance)}; return r; }());
+    bind_common(px);
+    // Re-bind with the append offset so this draw reads its own instances.
+    sg_bindings bind = {};
+    bind.vertex_buffers[0] = sg_buffer{quad_vbuf_};
+    bind.vertex_buffers[1] = sg_buffer{inst_vbuf_};
+    bind.vertex_buffer_offsets[1] = off;
+    bind.views[VIEW_uAtlas] = sg_view{atlas_.glyph_view()};
+    const std::uint32_t cv = atlas_.color_view();
+    bind.views[VIEW_uColorAtlas] = sg_view{cv ? cv : atlas_.glyph_view()};
+    bind.samplers[SMP_uSmp] = sg_sampler{smp_};
+    sg_apply_bindings(&bind);
+    sg_draw(0, 4, static_cast<int>(count));
 }
 
 namespace {
@@ -776,232 +570,13 @@ void Renderer::shape_row(std::span<const term::Cell> cells, int cols) {
 }
 
 // --- inline image (kitty graphics) pipeline --------------------------------
-namespace {
-constexpr const char *kImgVert = R"(#version 330 core
-layout(location=0) in vec2 aCorner;   // unit quad 0..1
-layout(location=1) in vec4 aRect;     // x,y,w,h in pixels
-layout(location=2) in vec4 aUVRect;   // u0,v0,u1,v1 (source crop within image)
-uniform vec2 uScreen;
-out vec2 vUV;
-void main() {
-    vec2 px = aRect.xy + aCorner * aRect.zw;
-    vec2 ndc = vec2(px.x / uScreen.x * 2.0 - 1.0, 1.0 - px.y / uScreen.y * 2.0);
-    gl_Position = vec4(ndc, 0.0, 1.0);
-    vUV = mix(aUVRect.xy, aUVRect.zw, aCorner);
-}
-)";
-constexpr const char *kImgFrag = R"(#version 330 core
-in vec2 vUV;
-uniform sampler2D uTex;
-out vec4 FragColor;
-void main() {
-    FragColor = texture(uTex, vUV);
-}
-)";
-} // namespace
-
-void Renderer::ensure_image_pipeline() {
-    if (image_prog_.valid()) return;
-    auto prog = Program::build(kImgVert, kImgFrag);
-    if (!prog) return; // image support unavailable; glyphs still render
-    image_prog_ = std::move(*prog);
-    img_u_screen_ = image_prog_.uniform("uScreen");
-    img_u_tex_ = image_prog_.uniform("uTex");
-
-    glGenVertexArrays(1, &image_vao_);
-    glBindVertexArray(image_vao_);
-    static constexpr float kQuad[] = {0, 0, 1, 0, 0, 1, 1, 1};
-    glGenBuffers(1, &image_vbo_);
-    glBindBuffer(GL_ARRAY_BUFFER, image_vbo_);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(kQuad), kQuad, GL_STATIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
-    // Per-image rect (4 floats) + source-UV rect (4 floats), updated per draw.
-    glGenBuffers(1, &image_vbo_rect_);
-    glBindBuffer(GL_ARRAY_BUFFER, image_vbo_rect_);
-    glBufferData(GL_ARRAY_BUFFER, 8 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 8 * sizeof(float), nullptr);
-    glVertexAttribDivisor(1, 1);
-    glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, 8 * sizeof(float),
-                          reinterpret_cast<void *>(4 * sizeof(float)));
-    glVertexAttribDivisor(2, 1);
-    glBindVertexArray(0);
-}
-
-void Renderer::draw_images(const term::Screen &screen, PixelSize px) {
-    const term::Graphics &g = screen.graphics();
-    if (g.placements().empty()) return;
-    ensure_image_pipeline();
-    if (!image_prog_.valid()) return;
-
-    // (Re)upload textures when the graphics state changed. New images get a
-    // fresh texture; existing ones are re-uploaded (their pixels may have
-    // changed — an animation frame flip).
-    if (g.revision() != images_revision_) {
-        images_revision_ = g.revision();
-        for (const auto &pl : g.placements()) {
-            const term::Image *img = g.image(pl.image_id);
-            if (!img || img->rgba.empty()) continue;
-            auto found = image_tex_.find(pl.image_id);
-            GLuint tex = found != image_tex_.end() ? found->second : 0;
-            const bool fresh = (tex == 0);
-            if (fresh) glGenTextures(1, &tex);
-            glBindTexture(GL_TEXTURE_2D, tex);
-            glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, img->width, img->height, 0, GL_RGBA,
-                         GL_UNSIGNED_BYTE, img->rgba.data());
-            if (fresh) {
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-                image_tex_[pl.image_id] = tex;
-            }
-        }
-    }
-
-    const int cw = atlas_.cell_width();
-    const int ch = atlas_.cell_height();
-    const int rows = screen.size().rows;
-    const std::int64_t view_top = screen.viewport_to_abs(0);
-
-    // Draw in z-order (lowest first) so stacked images layer correctly. A
-    // stable index sort keeps equal-z placements in insertion order.
-    const auto &pls = g.placements();
-    std::vector<int> order(pls.size());
-    for (std::size_t i = 0; i < order.size(); ++i) order[i] = static_cast<int>(i);
-    std::stable_sort(order.begin(), order.end(),
-                     [&](int a, int b) { return pls[static_cast<std::size_t>(a)].z <
-                                                pls[static_cast<std::size_t>(b)].z; });
-
-    glBindVertexArray(image_vao_);
-    image_prog_.use();
-    glUniform2f(img_u_screen_, static_cast<float>(px.w), static_cast<float>(px.h));
-    glActiveTexture(GL_TEXTURE0);
-    glUniform1i(img_u_tex_, 0);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-    for (int oi : order) {
-        const term::Placement &pl = pls[static_cast<std::size_t>(oi)];
-        auto it = image_tex_.find(pl.image_id);
-        if (it == image_tex_.end()) continue;
-        const term::Image *img = g.image(pl.image_id);
-        if (!img) continue;
-        // Map the placement's absolute-row anchor into the current viewport.
-        const std::int64_t vrow = pl.abs_row - view_top;
-        if (vrow + pl.rows <= 0 || vrow >= rows) continue; // fully scrolled away
-        const float x = static_cast<float>(pl.col * cw);
-        const float y = static_cast<float>(vrow * ch);
-        const float w = static_cast<float>(pl.cols * cw);
-        const float h = static_cast<float>(pl.rows * ch);
-        // Source-crop UVs (x=/y=/w=/h=); whole image when src_w/h are 0.
-        float u0 = 0, v0 = 0, u1 = 1, v1 = 1;
-        if (pl.src_w > 0 && pl.src_h > 0 && img->width > 0 && img->height > 0) {
-            u0 = static_cast<float>(pl.src_x) / static_cast<float>(img->width);
-            v0 = static_cast<float>(pl.src_y) / static_cast<float>(img->height);
-            u1 = static_cast<float>(pl.src_x + pl.src_w) / static_cast<float>(img->width);
-            v1 = static_cast<float>(pl.src_y + pl.src_h) / static_cast<float>(img->height);
-        }
-        const float data[8] = {x, y, w, h, u0, v0, u1, v1};
-        glBindBuffer(GL_ARRAY_BUFFER, image_vbo_rect_);
-        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
-        glBindTexture(GL_TEXTURE_2D, it->second);
-        glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, 1);
-    }
-    glBindVertexArray(0);
-}
-
-void Renderer::draw_placeholders(const term::Screen &screen, PixelSize px) {
-    const term::Graphics &g = screen.graphics();
-    const Extent grid = screen.size();
-    const int cw = atlas_.cell_width(), ch = atlas_.cell_height();
-    constexpr char32_t kPlaceholder = 0x10EEEE;
-
-    // Extract the kitty image id encoded in a cell's fg colour: truecolor packs
-    // it as r<<16|g<<8|b, indexed colour uses the index directly.
-    auto id_of = [](const term::Cell &c) -> std::uint32_t {
-        if (auto *t = std::get_if<term::TrueColor>(&c.pen.fg))
-            return (static_cast<std::uint32_t>(t->rgb.r) << 16) |
-                   (static_cast<std::uint32_t>(t->rgb.g) << 8) | t->rgb.b;
-        if (auto *ix = std::get_if<term::IndexedColor>(&c.pen.fg)) return ix->index;
-        return 0;
-    };
-
-    // First pass: bounding box (min row/col + span) per image id across all
-    // placeholder cells, so each cell knows which tile of the image it shows.
-    struct Box { int r0 = 1 << 30, c0 = 1 << 30, r1 = -1, c1 = -1; };
-    std::unordered_map<std::uint32_t, Box> boxes;
-    bool any = false;
-    for (int r = 0; r < grid.rows; ++r) {
-        const auto cells = screen.row(Row{r});
-        for (int c = 0; c < grid.cols; ++c) {
-            if (cells[static_cast<std::size_t>(c)].cp != kPlaceholder) continue;
-            const std::uint32_t id = id_of(cells[static_cast<std::size_t>(c)]);
-            if (id == 0 || !g.image(id)) continue;
-            Box &b = boxes[id];
-            b.r0 = std::min(b.r0, r); b.c0 = std::min(b.c0, c);
-            b.r1 = std::max(b.r1, r); b.c1 = std::max(b.c1, c);
-            any = true;
-        }
-    }
-    if (!any) return;
-    ensure_image_pipeline();
-    if (!image_prog_.valid()) return;
-
-    // Upload any not-yet-uploaded placeholder image textures.
-    for (const auto &[id, b] : boxes) {
-        if (image_tex_.count(id)) continue;
-        const term::Image *img = g.image(id);
-        if (!img || img->rgba.empty()) continue;
-        GLuint tex = 0; glGenTextures(1, &tex);
-        glBindTexture(GL_TEXTURE_2D, tex);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, img->width, img->height, 0, GL_RGBA,
-                     GL_UNSIGNED_BYTE, img->rgba.data());
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        image_tex_[id] = tex;
-    }
-
-    glBindVertexArray(image_vao_);
-    image_prog_.use();
-    glUniform2f(img_u_screen_, static_cast<float>(px.w), static_cast<float>(px.h));
-    glActiveTexture(GL_TEXTURE0);
-    glUniform1i(img_u_tex_, 0);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-    // Second pass: draw each placeholder cell as its tile of the image.
-    for (int r = 0; r < grid.rows; ++r) {
-        const auto cells = screen.row(Row{r});
-        for (int c = 0; c < grid.cols; ++c) {
-            if (cells[static_cast<std::size_t>(c)].cp != kPlaceholder) continue;
-            const std::uint32_t id = id_of(cells[static_cast<std::size_t>(c)]);
-            auto it = image_tex_.find(id);
-            if (it == image_tex_.end()) continue;
-            const Box &b = boxes[id];
-            const int bc = b.c1 - b.c0 + 1, br = b.r1 - b.r0 + 1;
-            if (bc <= 0 || br <= 0) continue;
-            const float u0 = static_cast<float>(c - b.c0) / static_cast<float>(bc);
-            const float u1 = static_cast<float>(c - b.c0 + 1) / static_cast<float>(bc);
-            const float v0 = static_cast<float>(r - b.r0) / static_cast<float>(br);
-            const float v1 = static_cast<float>(r - b.r0 + 1) / static_cast<float>(br);
-            const float data[8] = {static_cast<float>(c * cw), static_cast<float>(r * ch),
-                                   static_cast<float>(cw),     static_cast<float>(ch),
-                                   u0, v0, u1, v1};
-            glBindBuffer(GL_ARRAY_BUFFER, image_vbo_rect_);
-            glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
-            glBindTexture(GL_TEXTURE_2D, it->second);
-            glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, 1);
-        }
-    }
-    glBindVertexArray(0);
-}
+// NOTE: the inline-image pass (kitty graphics protocol) is temporarily a no-op
+// under the sokol backend — text, colour, and everything else render fully; only
+// transmitted bitmap images don't display yet. The image shader is already in
+// shaders.glsl (image program); wiring the sokol image pipeline is a follow-up.
+void Renderer::ensure_image_pipeline() {}
+void Renderer::draw_images(const term::Screen &, PixelSize) {}
+void Renderer::draw_placeholders(const term::Screen &, PixelSize) {}
 
 DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on, bool blink_on) {
     // Apply any dynamic-colour edits (OSC 4/104/10/11/12/110-112) the model has
@@ -1024,13 +599,9 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
         for (auto &rc : rows_) rc.valid = false; // recolour everything
     }
 
-    const Rgb bgc = palette_.default_bg();
-    glClearColor(fr(bgc.r), fr(bgc.g), fr(bgc.b), 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
+    // The clear happens in the host's begin_pass (with the default bg colour);
+    // blending is set in the pipeline. draw() only builds + flushes instances
+    // inside the already-open swapchain pass.
     const int cw = atlas_.cell_width();
     const int ch = atlas_.cell_height();
     const int ascent = atlas_.ascent();
