@@ -173,6 +173,12 @@ private:
     // per never-seen glyph in the rasterize hot path. Grown, never shrunk.
     std::vector<unsigned char> synth_scratch_{};
     int atlas_dim_{0};
+    // Grow the (square) glyph atlas by doubling when it fills, up to this cap,
+    // instead of dropping new glyphs. Cached UVs are normalized, so on grow we
+    // rescale every stored UV by old/new — pixel positions are preserved.
+    static constexpr int kMaxAtlasDim = 4096;
+    bool grow_atlas();
+    const GlyphInfo *cache_blank(std::uint64_t key); // last-resort blank at hard cap
     int pen_x_{0}, pen_y_{0}, shelf_h_{0}; // shelf allocator cursor
 
     // Separate RGBA colour (emoji) atlas, same shadow+image scheme, lazy.

@@ -75,18 +75,11 @@ const GlyphInfo *pack_bitmap(const unsigned char *src, int w, int h, int off_x, 
     info.width = bw;
     info.height = h;
     if (pen_x + bw + 1 > atlas_dim) { pen_x = 1; pen_y += shelf_h + 1; shelf_h = 0; }
-    if (pen_y + h + 1 > atlas_dim) { // atlas full
-        static bool warned = false;
-        if (!warned) {
-            std::fprintf(stderr,
-                         "toe: font atlas full (%dx%d) — new glyphs will render blank; "
-                         "consider a larger atlas or eviction\n",
-                         atlas_dim, atlas_dim);
-            warned = true;
-        }
-        info.width = 0; info.height = 0;
-        auto [it, _] = cache.emplace(key, info);
-        return &it->second;
+    if (pen_y + h + 1 > atlas_dim) {
+        // Atlas full. Signal the caller (rasterize) to grow the atlas and retry;
+        // returning nullptr keeps NOTHING cached for this key so the retry is
+        // clean. Only at the hard size cap does the caller fall back to blank.
+        return nullptr;
     }
     // Blit the synthesized coverage into the CPU shadow at the shelf position.
     // The renderer uploads the shadow to the sg_image once per frame if dirty.
@@ -249,6 +242,48 @@ void FontAtlas::destroy() noexcept {
 
 // Upload any pending CPU-shadow changes to the GPU images (lazy-create them).
 // Called by the renderer once per frame before it binds the atlas.
+// Double the square glyph atlas when it fills, up to kMaxAtlasDim, instead of
+// dropping new glyphs. Glyph *pixel* positions are preserved (old shadow rows
+// are copied to the top of the new, taller buffer), so we only need to rescale
+// the NORMALIZED UVs already cached in fast_/cache_ by old/new. Returns false
+// only at the hard cap (then the caller blanks that one glyph, as before).
+bool FontAtlas::grow_atlas() {
+    if (atlas_dim_ >= kMaxAtlasDim) return false;
+    const int old_dim = atlas_dim_;
+    const int new_dim = old_dim * 2;
+
+    // New shadow, old content copied row-by-row into the top-left.
+    std::vector<std::uint8_t> ns(static_cast<std::size_t>(new_dim) * new_dim, 0);
+    for (int y = 0; y < old_dim; ++y) {
+        std::memcpy(ns.data() + static_cast<std::size_t>(y) * new_dim,
+                    shadow_.data() + static_cast<std::size_t>(y) * old_dim,
+                    static_cast<std::size_t>(old_dim));
+    }
+    shadow_ = std::move(ns);
+    atlas_dim_ = new_dim;
+
+    // Rescale every cached UV (pixel pos unchanged, divisor doubled).
+    const float s = static_cast<float>(old_dim) / static_cast<float>(new_dim);
+    for (auto &row : fast_) {
+        for (auto &slot : row) {
+            if (slot.state == FastSlot::Ready && !slot.info.is_color) {
+                slot.info.u0 *= s; slot.info.v0 *= s;
+                slot.info.u1 *= s; slot.info.v1 *= s;
+            }
+        }
+    }
+    for (auto &kv : cache_) {
+        GlyphInfo &gi = kv.second;
+        if (!gi.is_color) { gi.u0 *= s; gi.v0 *= s; gi.u1 *= s; gi.v1 *= s; }
+    }
+
+    // The GPU image must be recreated at the new size on the next sync.
+    if (glyph_view_id_) { gpu::destroy_view(glyph_view_id_); glyph_view_id_ = 0; }
+    if (tex_id_) { gpu::destroy_image(tex_id_); tex_id_ = 0; }
+    atlas_dirty_ = true;
+    return true;
+}
+
 void FontAtlas::sync_gpu() {
     if (atlas_dirty_) {
         if (!tex_id_) {
@@ -306,9 +341,17 @@ const GlyphInfo *FontAtlas::rasterize(char32_t cp, FontStyle style) {
     const FaceStack::Resolved r = stack->resolve(cp);
     const GlyphBitmap g = r.face->rasterize(r.index);
     if (g.is_color) return pack_color(g, key); // emoji -> RGBA atlas
-    return pack_bitmap(g.pixels.empty() ? nullptr : g.pixels.data(), g.width, g.height,
-                       g.bearing_x, g.bearing_y, g.advance, bold, italic, key, cache_, shadow_,
-                       atlas_dirty_, atlas_dim_, pen_x_, pen_y_, shelf_h_, cell_h_, synth_scratch_);
+    const unsigned char *src = g.pixels.empty() ? nullptr : g.pixels.data();
+    for (;;) {
+        if (const GlyphInfo *gi =
+                pack_bitmap(src, g.width, g.height, g.bearing_x, g.bearing_y, g.advance, bold,
+                            italic, key, cache_, shadow_, atlas_dirty_, atlas_dim_, pen_x_, pen_y_,
+                            shelf_h_, cell_h_, synth_scratch_))
+            return gi;
+        // Atlas full: grow (doubles, rescales cached UVs) and retry. At the hard
+        // cap grow_atlas() fails once and we cache a blank so we don't loop.
+        if (!grow_atlas()) return cache_blank(key);
+    }
 }
 
 const GlyphInfo *FontAtlas::rasterize_index(std::uint32_t gindex, FontStyle style) {
@@ -318,9 +361,30 @@ const GlyphInfo *FontAtlas::rasterize_index(std::uint32_t gindex, FontStyle styl
     const std::uint64_t key = (static_cast<std::uint64_t>(style) << 32) | 0x80000000ull | gindex;
 
     const GlyphBitmap g = faces_.primary().rasterize(gindex);
-    return pack_bitmap(g.pixels.empty() ? nullptr : g.pixels.data(), g.width, g.height,
-                       g.bearing_x, g.bearing_y, g.advance, bold, italic, key, cache_, shadow_,
-                       atlas_dirty_, atlas_dim_, pen_x_, pen_y_, shelf_h_, cell_h_, synth_scratch_);
+    const unsigned char *src = g.pixels.empty() ? nullptr : g.pixels.data();
+    for (;;) {
+        if (const GlyphInfo *gi =
+                pack_bitmap(src, g.width, g.height, g.bearing_x, g.bearing_y, g.advance, bold,
+                            italic, key, cache_, shadow_, atlas_dirty_, atlas_dim_, pen_x_, pen_y_,
+                            shelf_h_, cell_h_, synth_scratch_))
+            return gi;
+        if (!grow_atlas()) return cache_blank(key);
+    }
+}
+
+// Cache and return a zero-size (blank) glyph for `key` — the last resort once
+// the atlas has grown to its hard cap and still can't fit. Rare in practice.
+const GlyphInfo *FontAtlas::cache_blank(std::uint64_t key) {
+    static bool warned = false;
+    if (!warned) {
+        std::fprintf(stderr,
+                     "toe: font atlas at max size (%dx%d) — some rare glyphs may render blank\n",
+                     atlas_dim_, atlas_dim_);
+        warned = true;
+    }
+    GlyphInfo info{};
+    auto [it, _] = cache_.emplace(key, info);
+    return &it->second;
 }
 
 void FontAtlas::shape_run(std::span<const char32_t> cps, std::span<std::uint32_t> out) const {
