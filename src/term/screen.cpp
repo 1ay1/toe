@@ -103,23 +103,22 @@ void Screen::resize(Extent size) {
     }
 
     // On the alt screen (vim/tmux/htop own the whole grid) reflow is wrong: the
-    // app redraws on SIGWINCH. Reflow only the primary screen, and only when the
-    // width actually changes (a height-only change needs no rewrap).
+    // app redraws on SIGWINCH and every row — including blank ones — is content
+    // it manages, so we crop/pad in place. The PRIMARY screen always goes
+    // through reflow: it rewraps on a width change AND trims the trailing blank
+    // screen space below the cursor on a height shrink (so a small window
+    // doesn't push the prompt up into scrollback). reflow is O(cells) and fast.
     const Extent old_size = size_;
-    const bool do_reflow = !on_alt_ && size.cols != size_.cols && size_.cols > 0 &&
-                           size_.rows > 0;
+    const bool do_reflow = !on_alt_ && size_.cols > 0 && size_.rows > 0;
 
     if (do_reflow) {
         reflow(old_size, size);
     } else {
-        // No rewrap: keep the visible grid + scrollback, crop/pad to the new
-        // geometry. On the alt screen there is no scrollback to preserve.
-        // Anchor the top-of-viewport to the same ABSOLUTE row so the user's
-        // scroll position doesn't drift when only the height changes. Top abs
-        // row before = old_view_base - scroll_offset_; keep it after.
+        // Alt screen: crop/pad in place, anchoring the top-of-viewport to the
+        // same absolute row so scroll position doesn't drift.
         const std::int64_t old_view_base = static_cast<std::int64_t>(ring_.view_base());
         const std::int64_t top_abs = old_view_base - scroll_offset_;
-        ring_.resize_keep(size.rows, size.cols, on_alt_ ? 0 : max_history_, blank_cell());
+        ring_.resize_keep(size.rows, size.cols, 0, blank_cell());
         if (scroll_offset_ > 0) {
             const std::int64_t new_view_base = static_cast<std::int64_t>(ring_.view_base());
             scroll_offset_ = static_cast<std::int32_t>(std::clamp<std::int64_t>(
@@ -202,9 +201,26 @@ void Screen::reflow(Extent old_size, Extent new_size) {
     std::size_t cursor_line = 0;
     std::int32_t cursor_col_in_line = 0;
     {
+        // The live grid's meaningful content ends at the last non-blank row, or
+        // the cursor row — whichever is lower. Rows below that are just empty
+        // screen space, NOT content: collecting them as logical lines would push
+        // real content (the prompt) up into scrollback and blank the viewport on
+        // a shrink. Find that boundary and only collect up to it.
+        std::int32_t last_meaningful = cur_row;
+        for (std::int32_t r = old_size.rows - 1; r > last_meaningful; --r) {
+            bool blank = true;
+            const Cell *rowp = ring_.view_row(r);
+            for (std::int32_t c = 0; c < old_size.cols; ++c) {
+                if (!rowp[c].blank()) { blank = false; break; }
+            }
+            // A soft-wrapped blank row still continues a line above, so keep it.
+            if (!blank || wrapped_at(r)) { last_meaningful = r; break; }
+        }
+        const std::int32_t live_rows = last_meaningful + 1;
+
         std::uint32_t line_off = static_cast<std::uint32_t>(reflow_cells_.size());
         bool have = false;
-        for (std::int32_t r = 0; r < old_size.rows; ++r) {
+        for (std::int32_t r = 0; r < live_rows; ++r) {
             const bool wrapped = wrapped_at(r);
             if (r == cur_row) {
                 cursor_line = reflow_lines_.size();

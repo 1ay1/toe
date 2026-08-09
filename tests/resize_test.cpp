@@ -128,6 +128,30 @@ int main() {
         ck(s.scroll_offset() == 0, "live view stays live after resize");
     }
 
+    // --- the screenshot bug: content that does NOT fill the grid, cursor mid-
+    //     screen with blank rows below, then SHRINK. The prompt must stay in the
+    //     viewport — trailing blank screen space must not push content into
+    //     scrollback and blank the view.
+    {
+        term::Screen s(Extent{80, 24});
+        feed(s, "Welcome line one\r\n");
+        feed(s, "second line here\r\n");
+        feed(s, "user@host ~> "); // prompt, no newline: cursor mid-screen
+        s.resize(Extent{80, 10}); // shrink height (big -> small)
+        ck(s.history_rows() == 0, "shrink with blank rows: nothing pushed to scrollback");
+        ck(s.scroll_offset() == 0, "shrink with blank rows: view stays live");
+        ck(trim(s.row(Row{2})) == "user@host ~>", "shrink: prompt stays visible at row 2");
+        ck(trim(s.row(Row{0})) == "Welcome line one", "shrink: first line stays visible");
+    }
+    {
+        // Same, but width shrink too (reflow path with trailing blanks).
+        term::Screen s(Extent{80, 24});
+        feed(s, "alpha\r\nbeta\r\ngamma> ");
+        s.resize(Extent{40, 8});
+        ck(s.history_rows() == 0, "width+height shrink: no spurious scrollback");
+        ck(trim(s.row(Row{2})) == "gamma>", "width+height shrink: prompt visible");
+    }
+
     std::printf(failures ? "\nresize test: %d FAILURES\n" : "\nresize test: PASS\n", failures);
     return failures ? 1 : 0;
 }
