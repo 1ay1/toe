@@ -750,6 +750,16 @@ void Screen::scroll_up(std::int32_t n) {
         const Cell blank = blank_cell();
         const bool keep = !on_alt_;
         for (std::int32_t i = 0; i < n; ++i) ring_.scroll_up_one(keep, blank);
+        // If the user is scrolled up reading history, KEEP THEIR VIEW ANCHORED
+        // to the same content: each line pushed into scrollback would otherwise
+        // slide what they're reading up by one row. Bump scroll_offset_ by the
+        // rows added to history (clamped to the cap) so the viewport stays put
+        // instead of creeping. At the live bottom (offset 0) we do nothing, so
+        // normal output still follows the tail.
+        if (keep && scroll_offset_ > 0) {
+            scroll_offset_ = std::min(scroll_offset_ + n,
+                                      static_cast<std::int32_t>(ring_.scrollback()));
+        }
         // Wrapped flags travel with the row storage inside the ring. line_attr_
         // tracks the VISIBLE grid by logical row, so it shifts up with content.
         if (any_line_attr_ && static_cast<std::int32_t>(line_attr_.size()) == size_.rows) {

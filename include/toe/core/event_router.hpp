@@ -203,6 +203,10 @@ private:
     }
 
     void send_to_child(toe::Msg &&m) {
+        // Typing (or pasting) while scrolled up into history snaps the view back
+        // to the live bottom, so you always SEE what you send. Scroll shortcuts
+        // (Shift+PageUp/Down) return before reaching here, so paging still works.
+        s_.scroll_to_bottom();
         s_.run(s_.update(m));
         wrote_input_ = true;
     }

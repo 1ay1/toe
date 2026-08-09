@@ -152,6 +152,21 @@ int main() {
         ck(trim(s.row(Row{2})) == "gamma>", "width+height shrink: prompt visible");
     }
 
+    // --- scrolled-up stability: reading history must not creep or yank when
+    //     new output arrives; typing snaps back to the live bottom.
+    {
+        term::Screen s(Extent{80, 10});
+        for (int i = 0; i < 50; ++i) {
+            char b[32]; std::snprintf(b, sizeof b, "LINE-%03d\r\n", i); feed(s, b);
+        }
+        s.scroll(20);
+        const std::string top = trim(s.row(Row{0}));
+        // A burst of new output while scrolled up.
+        for (int i = 0; i < 5; ++i) feed(s, "NEW-OUTPUT\r\n");
+        ck(trim(s.row(Row{0})) == top, "scrolled-up view does not creep on new output");
+        ck(s.scroll_offset() > 0, "scrolled-up view does not yank to bottom on new output");
+    }
+
     std::printf(failures ? "\nresize test: %d FAILURES\n" : "\nresize test: PASS\n", failures);
     return failures ? 1 : 0;
 }
