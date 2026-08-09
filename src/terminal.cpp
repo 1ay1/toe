@@ -220,6 +220,42 @@ bool Session::set_font_pixel_size(int px, PixelSize surface_px) {
     return true;
 }
 
+void Session::set_default_colors(Rgb fg, Rgb bg) {
+    // Record fg + bg edits the renderer applies next frame (same channel OSC
+    // 10/11 use), and recolor the whole grid.
+    using CE = term::Screen::ColorEdit;
+    impl_->model.screen.edit_color(CE{CE::Target::fg, 0, false, fg});
+    impl_->model.screen.edit_color(CE{CE::Target::bg, 0, false, bg});
+}
+
+bool Session::set_font(std::string_view family_or_file, PixelSize surface_px) {
+    // The host resolves a family name to a concrete file (it knows the OS font
+    // dirs); we take a path directly. An empty/unchanged path is a no-op.
+    std::string path{family_or_file};
+    if (path.empty() || path == impl_->font_path_) return false;
+
+    auto atlas = gfx::FontAtlas::create(path, impl_->font_px_, impl_->font_fallback_,
+                                        impl_->ligatures_);
+    if (!atlas) return false;
+    const int cw = atlas->cell_width();
+    const int ch = atlas->cell_height();
+    auto renderer = gfx::Renderer::create(std::move(*atlas));
+    if (!renderer) return false;
+
+    impl_->renderer = std::move(*renderer);
+    impl_->cell_w = cw;
+    impl_->cell_h = ch;
+    impl_->font_path_ = path;
+    impl_->model.screen.set_cell_size(cw, ch);
+    impl_->pty.set_cell_pixels(cw, ch);
+
+    const Extent ng = impl_->renderer.cells_for(surface_px);
+    impl_->grid = ng;
+    impl_->model.screen.resize(ng);
+    (void)impl_->pty.resize(ng);
+    return true;
+}
+
 void Session::send_text(std::string_view utf8) { (void)impl_->pty.write(utf8); }
 void Session::set_preedit(std::string_view utf8, int cursor_cells) {
     impl_->model.screen.set_preedit(std::string{utf8}, cursor_cells);

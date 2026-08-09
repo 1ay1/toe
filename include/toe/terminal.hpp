@@ -107,6 +107,16 @@ public:
     // false, so a bad size can never break a live terminal.
     bool set_font_pixel_size(int px, PixelSize surface_px);
     [[nodiscard]] int font_pixel_size() const noexcept;
+
+    // Live-apply the default foreground/background colors (like an OSC 10/11
+    // from the app). Takes effect on the next frame; recolors the whole grid.
+    void set_default_colors(Rgb fg, Rgb bg);
+
+    // Live-apply a new font by FAMILY (resolved to a file by the host) or an
+    // explicit file path, rebuilding the atlas + renderer at the current pixel
+    // size and re-flowing to `surface_px`. Requires a current GL context.
+    // Returns true on success; on failure the old font is kept.
+    bool set_font(std::string_view family_or_file, PixelSize surface_px);
     void send_key(const KeyEvent &ev);
     void send_text(std::string_view utf8);
     // Set the IME composition (preedit) string shown inline at the cursor while
