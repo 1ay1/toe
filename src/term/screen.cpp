@@ -748,7 +748,7 @@ void Screen::scroll_up(std::int32_t n) {
                 at(Row{row}, Col{c}) = at(Row{row + n}, Col{c});
         for (std::int32_t row = scroll_bottom_ - n + 1; row <= scroll_bottom_; ++row)
             for (std::int32_t c = l; c <= r; ++c) at(Row{row}, Col{c}) = blank_cell();
-        stamp_all();
+        stamp_range(scroll_top_, scroll_bottom_);
         touch();
         return;
     }
@@ -801,7 +801,7 @@ void Screen::scroll_up(std::int32_t n) {
         for (std::int32_t c = 0; c < size_.cols; ++c) dst[c] = blank;
         ring_.mark_view_full(row);
     }
-    stamp_all();
+    stamp_range(scroll_top_, scroll_bottom_);
     touch();
 }
 
@@ -819,7 +819,7 @@ void Screen::scroll_down(std::int32_t n) {
                 at(Row{row}, Col{c}) = at(Row{row - n}, Col{c});
         for (std::int32_t row = scroll_top_; row < scroll_top_ + n; ++row)
             for (std::int32_t c = l; c <= r; ++c) at(Row{row}, Col{c}) = blank_cell();
-        stamp_all();
+        stamp_range(scroll_top_, scroll_bottom_);
         touch();
         return;
     }
@@ -829,7 +829,7 @@ void Screen::scroll_down(std::int32_t n) {
     ring_.rotate_view_down(scroll_top_, scroll_bottom_, n);
     for (std::int32_t r = scroll_top_; r < scroll_top_ + n; ++r)
         ring_.blank_view_row(r, blank_cell());
-    stamp_all();
+    stamp_range(scroll_top_, scroll_bottom_);
     touch();
 }
 
@@ -844,7 +844,7 @@ void Screen::insert_lines(std::int32_t n) {
     for (std::int32_t r = cursor_.row.get(); r < cursor_.row.get() + n; ++r)
         ring_.blank_view_row(r, blank_cell());
     cursor_.col = Col{0};
-    stamp_all();
+    stamp_range(cursor_.row.get(), scroll_bottom_);
     touch();
 }
 
@@ -857,7 +857,7 @@ void Screen::delete_lines(std::int32_t n) {
     for (std::int32_t r = scroll_bottom_ - n + 1; r <= scroll_bottom_; ++r)
         ring_.blank_view_row(r, blank_cell());
     cursor_.col = Col{0};
-    stamp_all();
+    stamp_range(cursor_.row.get(), scroll_bottom_);
     touch();
 }
 
@@ -1173,36 +1173,14 @@ void Screen::change_rect_attrs(int top, int left, int bottom, int right,
 
 void Screen::enter_alt_screen() {
     if (on_alt_) return;
-    // Snapshot the primary visible grid (rows*cols) + its wrapped flags. The
-    // primary scrollback stays live in the ring untouched; the alt screen just
-    // masks the visible grid and adds no scrollback of its own.
-    //
-    // altstorm hammers 150k enter/leave cycles: allocating + zero-filling this
-    // buffer per enter (and freeing it per leave) dominated the wall time.
-    // resize() REUSES the capacity across cycles, and since the loop below
-    // memcpy's over every cell, no fill is needed — so a steady-state cycle does
-    // zero heap traffic.
-    const std::size_t ncells = static_cast<std::size_t>(size_.rows) *
-                               static_cast<std::size_t>(size_.cols);
-    saved_primary_.resize(ncells);
-    saved_primary_wrapped_.resize(static_cast<std::size_t>(std::max(size_.rows, 0)));
-    for (std::int32_t r = 0; r < size_.rows; ++r) {
-        std::memcpy(saved_primary_.data() + static_cast<std::size_t>(r) *
-                                                 static_cast<std::size_t>(size_.cols),
-                    ring_.view_row(r),
-                    static_cast<std::size_t>(size_.cols) * sizeof(Cell));
-        saved_primary_wrapped_[static_cast<std::size_t>(r)] = ring_.view_wrapped(r);
-    }
+    // O(1) buffer swap: move the primary (grid + scrollback) into alt_ring_ and
+    // bring in a blank alt buffer — no per-cell copy. std::swap on RowRing is a
+    // handful of vector swaps. The primary is preserved intact for leave().
     saved_primary_cursor_ = cursor_;
-    // Blank the visible grid for the alt screen. Use the ring's prefix-blank
-    // (clears only up to each row's high-water column, not the full width) — alt
-    // frames are typically near-empty, so this is far cheaper than a full
-    // rows*cols write, which matters when a workload toggles the alt screen
-    // hundreds of thousands of times (altstorm).
-    for (std::int32_t r = 0; r < size_.rows; ++r) {
-        ring_.blank_view_row(r);
-        ring_.set_view_wrapped(r, false);
-    }
+    std::swap(ring_, alt_ring_);
+    // Bring the alt buffer up as a blank grid at the CURRENT dims (reset reuses
+    // the existing allocation; cap is tiny — rows, no scrollback).
+    ring_.reset(size_.rows, size_.cols, /*scroll=*/0, blank_cell());
     cursor_ = Pos{};
     scroll_offset_ = 0;                  // alt screen has no scrollback
     scroll_top_ = 0;
@@ -1214,52 +1192,20 @@ void Screen::enter_alt_screen() {
 
 void Screen::leave_alt_screen() {
     if (!on_alt_) return;
-    const std::size_t ncells = static_cast<std::size_t>(size_.rows) *
-                               static_cast<std::size_t>(size_.cols);
-    if (saved_primary_.size() == ncells) {
-        for (std::int32_t r = 0; r < size_.rows; ++r) {
-            std::memcpy(ring_.view_row(r),
-                        saved_primary_.data() + static_cast<std::size_t>(r) *
-                                                    static_cast<std::size_t>(size_.cols),
-                        static_cast<std::size_t>(size_.cols) * sizeof(Cell));
-            ring_.mark_view_full(r);
-            if (r < static_cast<std::int32_t>(saved_primary_wrapped_.size()))
-                ring_.set_view_wrapped(r, saved_primary_wrapped_[static_cast<std::size_t>(r)]);
-        }
-    } else {
-        // The window was RESIZED while the app owned the alt screen, so the
-        // saved primary grid no longer matches the current dimensions. We can't
-        // memcpy it back verbatim — but we must NOT leave the alt frame on the
-        // primary screen (it would leak into scrollback, e.g. htop/btop's last
-        // frame lingering after exit). Best effort: restore the saved rows that
-        // still fit (top-left aligned) and BLANK the rest, so nothing leaks.
-        const std::int32_t saved_cols =
-            saved_primary_wrapped_.empty()
-                ? 0
-                : static_cast<std::int32_t>(saved_primary_.size() /
-                                            std::max<std::size_t>(1, saved_primary_wrapped_.size()));
-        const std::int32_t saved_rows =
-            static_cast<std::int32_t>(saved_primary_wrapped_.size());
-        const Cell blank = blank_cell();
-        for (std::int32_t r = 0; r < size_.rows; ++r) {
-            ring_.blank_view_row(r, blank);
-            ring_.mark_view_full(r);
-            ring_.set_view_wrapped(r, false);
-            if (r < saved_rows && saved_cols > 0) {
-                const std::int32_t n = std::min(size_.cols, saved_cols);
-                std::memcpy(ring_.view_row(r),
-                            saved_primary_.data() + static_cast<std::size_t>(r) *
-                                                        static_cast<std::size_t>(saved_cols),
-                            static_cast<std::size_t>(n) * sizeof(Cell));
-                ring_.set_view_wrapped(
-                    r, saved_primary_wrapped_[static_cast<std::size_t>(r)] && n == saved_cols);
-            }
-        }
+    // Swap the primary buffer back in — O(1), and its scrollback + content are
+    // exactly as they were on enter(). Stash the (now-inactive) alt buffer back
+    // in alt_ring_ so its allocation is reused next time.
+    std::swap(ring_, alt_ring_);
+    // If the window was resized while on the alt screen, the restored primary
+    // ring is at the OLD dims; reflow/reconcile it to the current size.
+    if (ring_.rows() != size_.rows || ring_.cols() != size_.cols) {
+        const Extent cur = size_;
+        const Extent old{ring_.cols(), ring_.rows()};
+        size_ = old;              // reflow() reads size_ as the OLD size
+        reflow(old, cur);
+        size_ = cur;
     }
     cursor_ = saved_primary_cursor_;
-    // Keep the snapshot buffers allocated (capacity reused next enter); just
-    // mark the alt screen inactive. Clearing them would free + realloc every
-    // cycle — the altstorm hot path.
     on_alt_ = false;
     clamp_cursor();
     stamp_all();

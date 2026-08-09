@@ -346,6 +346,18 @@ private:
         if (live_row >= 0 && live_row < static_cast<std::int32_t>(row_epoch_.size()))
             row_epoch_[static_cast<std::size_t>(live_row)] = ++epoch_seq_;
     }
+    // Stamp a contiguous range of rows [lo, hi] (inclusive) with ONE fresh
+    // epoch. Used by region scrolls / insert-delete-lines so only the rows that
+    // actually moved are re-fingerprinted by the renderer — vs stamp_all(), which
+    // invalidates the whole grid and makes the renderer re-upload every row.
+    void stamp_range(std::int32_t lo, std::int32_t hi) noexcept {
+        const std::uint64_t e = ++epoch_seq_;
+        const std::int32_t n = static_cast<std::int32_t>(row_epoch_.size());
+        if (lo < 0) lo = 0;
+        if (hi >= n) hi = n - 1;
+        for (std::int32_t r = lo; r <= hi; ++r)
+            row_epoch_[static_cast<std::size_t>(r)] = e;
+    }
     void stamp_all() noexcept {
         // O(1): bump the screen-wide stamp; row_version() folds it in per read.
         all_stamp_ = ++epoch_seq_;
@@ -356,6 +368,13 @@ private:
     // (see toe/term/rowring.hpp). A full-screen scroll is O(1) index work — no
     // row copy — because the scrolled-off row is already in the ring.
     RowRing ring_{};
+    // The INACTIVE screen buffer, swapped in/out on alt-screen enter/leave. We
+    // std::swap(ring_, alt_ring_) instead of copying the whole grid in and out
+    // — O(1) vector swaps vs a per-cell memcpy of the entire screen on every
+    // toggle (vim/less/htop each do it, and a torture toggle-storm did it 100k+
+    // times). The primary's scrollback rides along in the swapped-out ring,
+    // preserved intact.
+    RowRing alt_ring_{};
     mutable std::vector<Cell> scratch_row_{}; // scratch for padded reads if needed
     Pos cursor_{};
     Pen pen_{};
@@ -406,10 +425,8 @@ private:
     bool mouse_sgr_{false};
     MouseMode mouse_mode_{MouseMode::off};
 
-    // Saved primary-screen visible grid while the alternate screen is active.
-    // (Scrollback stays live in the ring; alt screen only masks the grid.)
-    std::vector<Cell> saved_primary_{};
-    std::vector<bool> saved_primary_wrapped_{};
+    // Saved primary cursor position while the alternate screen is active (the
+    // grid itself lives in the swapped-out alt_ring_, above).
     Pos saved_primary_cursor_{};
 
     // OSC 8 hyperlinks. cur_link_ is the id stamped onto glyphs written while a
