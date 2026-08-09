@@ -72,7 +72,9 @@ Result<Renderer> Renderer::create(FontAtlas &&atlas) {
 }
 
 Renderer::~Renderer() {
+    // Destroy the pipeline BEFORE its shader (sokol: the pipeline references it).
     if (pip_) sg_destroy_pipeline(sg_pipeline{pip_});
+    if (shd_) sg_destroy_shader(sg_shader{shd_});
     if (quad_vbuf_) sg_destroy_buffer(sg_buffer{quad_vbuf_});
     if (inst_vbuf_) sg_destroy_buffer(sg_buffer{inst_vbuf_});
     if (smp_) sg_destroy_sampler(sg_sampler{smp_});
@@ -88,7 +90,8 @@ Renderer::~Renderer() {
 Renderer::Renderer(Renderer &&o) noexcept
     : atlas_{std::move(o.atlas_)}, palette_{o.palette_},
       palette_epoch_seen_{o.palette_epoch_seen_}, palette_applied_{o.palette_applied_},
-      pip_{std::exchange(o.pip_, 0)}, quad_vbuf_{std::exchange(o.quad_vbuf_, 0)},
+      pip_{std::exchange(o.pip_, 0)}, shd_{std::exchange(o.shd_, 0)},
+      quad_vbuf_{std::exchange(o.quad_vbuf_, 0)},
       inst_vbuf_{std::exchange(o.inst_vbuf_, 0)}, inst_capacity_{o.inst_capacity_},
       smp_{std::exchange(o.smp_, 0)}, smp_linear_{std::exchange(o.smp_linear_, 0)},
       image_pip_{std::exchange(o.image_pip_, 0)},
@@ -98,16 +101,27 @@ Renderer::Renderer(Renderer &&o) noexcept
 
 Renderer &Renderer::operator=(Renderer &&o) noexcept {
     if (this != &o) {
+        // Free this renderer's GL resources before adopting o's. Pipeline before
+        // its shader (sokol dependency order); leaking shd_ here is what caused
+        // "shader pool exhausted" (id 154) on repeated font changes.
         if (pip_) sg_destroy_pipeline(sg_pipeline{pip_});
+        if (shd_) sg_destroy_shader(sg_shader{shd_});
         if (quad_vbuf_) sg_destroy_buffer(sg_buffer{quad_vbuf_});
         if (inst_vbuf_) sg_destroy_buffer(sg_buffer{inst_vbuf_});
         if (smp_) sg_destroy_sampler(sg_sampler{smp_});
         if (smp_linear_) sg_destroy_sampler(sg_sampler{smp_linear_});
+        if (image_pip_) sg_destroy_pipeline(sg_pipeline{image_pip_});
+        if (image_quad_vbuf_) sg_destroy_buffer(sg_buffer{image_quad_vbuf_});
+        for (auto &[id, t] : image_tex_) {
+            if (t.view) gpu::destroy_view(t.view);
+            if (t.image) gpu::destroy_image(t.image);
+        }
         atlas_ = std::move(o.atlas_);
         palette_ = o.palette_;
         palette_epoch_seen_ = o.palette_epoch_seen_;
         palette_applied_ = o.palette_applied_;
         pip_ = std::exchange(o.pip_, 0);
+        shd_ = std::exchange(o.shd_, 0);
         quad_vbuf_ = std::exchange(o.quad_vbuf_, 0);
         inst_vbuf_ = std::exchange(o.inst_vbuf_, 0);
         inst_capacity_ = o.inst_capacity_;
@@ -157,7 +171,11 @@ void Renderer::ensure_buffers() {
     smp_linear_ = sg_make_sampler(&sd).id;
 
     sg_pipeline_desc pd = {};
-    pd.shader = sg_make_shader(cell_shader_desc(sg_query_backend()));
+    // Own the shader handle so it can be destroyed on rebuild (font/ligature
+    // change move-assigns a fresh Renderer over this one). Leaking it here fills
+    // sokol's shader pool and eventually spams "shader pool exhausted" (id 154).
+    shd_ = sg_make_shader(cell_shader_desc(sg_query_backend())).id;
+    pd.shader = sg_shader{shd_};
     pd.layout.buffers[0].step_func = SG_VERTEXSTEP_PER_VERTEX;   // unit quad
     pd.layout.buffers[1].step_func = SG_VERTEXSTEP_PER_INSTANCE; // instances
     pd.layout.buffers[1].stride = sizeof(Instance);

@@ -124,6 +124,7 @@ private:
     // include). One cell pipeline, a static unit-quad vbo, and a dynamic
     // instance buffer sokol streams for us (no manual persistent-ring/fences).
     std::uint32_t pip_{0};        // sg_pipeline: the cell pass
+    std::uint32_t shd_{0};        // sg_shader backing pip_ (must be destroyed too)
     std::uint32_t quad_vbuf_{0};  // sg_buffer: unit quad (per-vertex)
     std::uint32_t inst_vbuf_{0};  // sg_buffer: instances (per-instance, stream)
     std::size_t inst_capacity_{0}; // instance-buffer capacity in bytes
