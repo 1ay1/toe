@@ -30,6 +30,10 @@ add_executable(command_log_test command_log_test.cpp)
 target_link_libraries(command_log_test PRIVATE toe::toe)
 add_test(NAME command_log COMMAND command_log_test)
 
+add_executable(redact_test redact_test.cpp)
+target_link_libraries(redact_test PRIVATE toe::toe)
+add_test(NAME redact COMMAND redact_test)
+
 add_executable(keymap_test keymap_test.cpp)
 target_link_libraries(keymap_test PRIVATE toe::toe)
 add_test(NAME keymap COMMAND keymap_test)

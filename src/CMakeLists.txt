@@ -67,6 +67,7 @@ add_library(toe
   term/screen.cpp
   term/update.cpp
   term/sbquery.cpp
+  term/redact.cpp
   term/graphics.cpp)
 
 # Canonical namespaced alias, plus a back-compat alias for consumers that still
