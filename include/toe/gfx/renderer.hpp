@@ -62,8 +62,10 @@ public:
     // bar, notifications) rendered with the SAME font + pipeline as the grid.
     // No damage cache: overlays are transient and repaint wholesale. Requires a
     // current GL context and blending enabled (draw() leaves it on).
+    // `bg_alpha` (0..1) scales every cell background's opacity so the pane can
+    // be a see-through glass overlay (glyphs stay fully opaque).
     void draw_cells(const term::Cell *cells, int cols, int rows, PixelSize px, int ox = 0,
-                    int oy = 0);
+                    int oy = 0, float bg_alpha = 1.0f);
 
 private:
     // One instance: a colored (and optionally textured) quad in pixel space.
@@ -171,8 +173,8 @@ private:
     // Packed-instance builders (colors are raw bytes; the shader normalizes).
     static Instance rect_inst(float x, float y, float w, float h,
                               std::uint8_t r, std::uint8_t g, std::uint8_t b,
-                              std::uint8_t radius) noexcept {
-        return Instance{x, y, w, h, 0, 0, 0, 0, r, g, b, 255, 0, radius, 0, 0};
+                              std::uint8_t radius, std::uint8_t a = 255) noexcept {
+        return Instance{x, y, w, h, 0, 0, 0, 0, r, g, b, a, 0, radius, 0, 0};
     }
     // An analytic-SDF cell (Powerline separator, rounded arc, ...). mode 3 in
     // the flags byte; `shape` selects the SDF (see the fs sdf_shape()). Rendered

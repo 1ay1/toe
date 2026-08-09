@@ -14,14 +14,14 @@ layout(binding=0) uniform cell_vs_params { vec4 uScreen; }; // xy = surface px, 
 in vec2 aCorner;   // unit quad corner (0..1)
 in vec4 aRect;     // x,y,w,h in pixels
 in vec4 aUV;       // u0,v0,u1,v1
-in vec3 aColor;
+in vec4 aColor;    // rgb + per-instance alpha (bg rects use .a; 255 = opaque)
 // Packed flags: .x = mode (0 rect, 1 alpha glyph, 2 colour glyph, 3 SDF shape),
 // .y = corner radius px, .z = SDF shape id, .w = spare. UBYTE4N -> [0,1]; the
 // shader scales each channel back to its raw u8.
 in vec4 aFlags;
 
 out vec2 vUV;
-out vec3 vColor;
+out vec4 vColor;
 out float vIsGlyph;
 out float vShape;  // SDF shape id (when vIsGlyph == 3)
 out vec2 vLocal;   // position within the rect, centred, in px
@@ -54,7 +54,7 @@ layout(binding=0) uniform sampler uSmp;
 layout(binding=1) uniform cell_fs_params { float uOpacity; }; // window opacity (bg only)
 
 in vec2 vUV;
-in vec3 vColor;
+in vec4 vColor;
 in float vIsGlyph;
 in float vShape;
 in vec2 vLocal;
@@ -158,7 +158,7 @@ void main() {
         float d = sdf_shape(int(vShape + 0.5), vLocal, vHalf);
         float aa = fwidth(d) + 1e-4;
         float a = 1.0 - smoothstep(-aa, aa, d);
-        frag = vec4(vColor, a);
+        frag = vec4(vColor.rgb, a);
     } else if (vIsGlyph > 1.5) {
         // Colour emoji: sample the RGBA atlas straight; standard alpha blend.
         frag = texture(sampler2D(uColorAtlas, uSmp), vUV);
@@ -171,21 +171,23 @@ void main() {
         // stronger gamma (fatten stems), dark glyphs a gentle one. This is the
         // cheap, single-pass approximation of linear-space blending that kitty/
         // ghostty use. a==0/a==1 stay fixed points so solids are untouched.
-        float luma = dot(vColor, vec3(0.2126, 0.7152, 0.0722));
+        float luma = dot(vColor.rgb, vec3(0.2126, 0.7152, 0.0722));
         // gamma in ~[1.2 .. 1.6] as luma goes 0->1.
         float g = mix(1.2, 1.6, luma);
         a = pow(a, 1.0 / g);
-        frag = vec4(vColor, a);
+        frag = vec4(vColor.rgb, a);
     } else {
-        // Solid cell background. Window opacity scales its alpha so a semi-
-        // transparent terminal shows the desktop through the BACKGROUND while
-        // glyphs (above) stay fully opaque and readable.
+        // Solid cell background. Window opacity AND the per-instance alpha
+        // (vColor.a) scale it: a semi-transparent terminal shows the desktop
+        // through the BACKGROUND, and an overlay pane (which passes a<255 on
+        // its bg rects) shows the terminal through itself — while glyphs stay
+        // fully opaque and readable.
         if (vRadius > 0.0) {
             float d = sd_round_box(vLocal, vHalf, vRadius);
             float a = 1.0 - smoothstep(-0.75, 0.75, d);
-            frag = vec4(vColor, a * uOpacity);
+            frag = vec4(vColor.rgb, a * uOpacity * vColor.a);
         } else {
-            frag = vec4(vColor, uOpacity);
+            frag = vec4(vColor.rgb, uOpacity * vColor.a);
         }
     }
 }

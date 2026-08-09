@@ -930,11 +930,19 @@ void Renderer::draw_preedit(const term::Screen &screen, PixelSize px) {
 }
 
 void Renderer::draw_cells(const term::Cell *cells, int cols, int rows, PixelSize px, int ox,
-                          int oy) {
+                          int oy, float bg_alpha) {
     if (!cells || cols <= 0 || rows <= 0) return;
     const int cw = atlas_.cell_width();
     const int ch = atlas_.cell_height();
     const int ascent = atlas_.ascent();
+    const auto ba = static_cast<std::uint8_t>(
+        std::clamp(bg_alpha, 0.0f, 1.0f) * 255.0f + 0.5f);
+    // The overlay's translucency comes from bg_alpha alone (per-instance), not
+    // window opacity — a settings pane should read the same whether or not the
+    // terminal itself is transparent. Force uOpacity=1 for these flushes and
+    // restore after.
+    const float saved_opacity = opacity_;
+    opacity_ = 1.0f;
 
     // Resolve a cell Color to concrete RGB via the palette (handles TrueColor,
     // Indexed and Default uniformly).
@@ -954,10 +962,14 @@ void Renderer::draw_cells(const term::Cell *cells, int cols, int rows, PixelSize
             if (cell.width == 0) continue; // wide-glyph spacer
             const float x = static_cast<float>(ox + c * cw);
             const int span = cell.width == 2 ? 2 : 1;
-            const Rgb bgc = resolve(cell.pen.bg, /*is_fg=*/false);
-            // Opaque background rect for every cell (the panel is not see-through).
-            bg.push_back(rect_inst(x, y, static_cast<float>(cw * span), static_cast<float>(ch),
-                                   bgc.r, bgc.g, bgc.b, 0));
+            // Background rect for every cell, scaled by bg_alpha so an overlay
+            // pane reads as frosted glass over the terminal (glyphs stay
+            // opaque). ba==0 draws no rect at all (a true see-through hole).
+            if (ba != 0) {
+                const Rgb bgc = resolve(cell.pen.bg, /*is_fg=*/false);
+                bg.push_back(rect_inst(x, y, static_cast<float>(cw * span),
+                                       static_cast<float>(ch), bgc.r, bgc.g, bgc.b, 0, ba));
+            }
             const char32_t cp = cell.cp;
             if (cp == 0 || cp == U' ') continue;
             const Rgb fgc = resolve(cell.pen.fg, /*is_fg=*/true);
@@ -974,6 +986,7 @@ void Renderer::draw_cells(const term::Cell *cells, int cols, int rows, PixelSize
 
     flush(bg, px);
     flush(glyphs, px);
+    opacity_ = saved_opacity;
 }
 
 } // namespace toe::gfx

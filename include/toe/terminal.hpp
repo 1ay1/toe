@@ -153,7 +153,7 @@ public:
     // search bar, notification — any in-terminal UI). Drawn with the same font
     // and pipeline as the grid, at pixel offset (ox, oy). Call AFTER render().
     void render_overlay(gfx::RenderContext &rc, const term::Cell *cells, int cols, int rows,
-                        PixelSize px, int ox = 0, int oy = 0);
+                        PixelSize px, int ox = 0, int oy = 0, float bg_alpha = 1.0f);
 
     // The current cell size in pixels (for laying out an overlay in cells).
     [[nodiscard]] Extent cell_size() const noexcept;
