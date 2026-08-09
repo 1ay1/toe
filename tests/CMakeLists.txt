@@ -38,6 +38,12 @@ add_executable(keymap_test keymap_test.cpp)
 target_link_libraries(keymap_test PRIVATE toe::toe)
 add_test(NAME keymap COMMAND keymap_test)
 
+# Procedural TUI glyphs (box drawing / blocks / quadrants / braille). Header-
+# only, no lib link needed.
+add_executable(box_glyphs_test box_glyphs_test.cpp)
+target_include_directories(box_glyphs_test PRIVATE "${PROJECT_SOURCE_DIR}/include")
+add_test(NAME box_glyphs COMMAND box_glyphs_test)
+
 # Universal Unicode coverage: FaceStack + FontDiscovery lazy fallback. Uses the
 # system's fonts, so it may SKIP (exit 77) on a machine with no usable primary.
 add_executable(coverage_test coverage_test.cpp)
