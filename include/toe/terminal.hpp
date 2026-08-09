@@ -31,6 +31,23 @@ namespace toe {
 
 namespace term { struct Cell; } // for render_overlay's raw cell grid
 
+// A resolved shell command block (OSC 133 shell integration): the structured,
+// agent- and UI-friendly view of one command — its text, output, exit code,
+// cwd and timing. Built on demand from the CommandLog + the live Screen, so the
+// `command` / `output` strings are the actual rendered cells, not the raw bytes.
+struct CommandView {
+    std::uint64_t id{0};
+    std::string command{};          // the command line the user ran
+    std::string output{};           // its output (empty while nothing printed)
+    std::string cwd{};              // working dir at prompt time (OSC 7)
+    std::optional<int> exit_code{}; // nullopt while still running
+    std::int64_t duration_ms{0};    // C→D wall-clock, 0 if unknown
+    std::int64_t output_lines{0};   // line count of `output`
+    bool finished{false};           // has a D mark (exit code known)
+
+    [[nodiscard]] bool succeeded() const noexcept { return exit_code == 0; }
+};
+
 // --- configuration ---------------------------------------------------------
 struct Config {
     std::string font_family = "monospace"; // empty -> system default monospace
@@ -207,6 +224,19 @@ public:
     // OSC 7: the child's reported working directory (empty until reported). A
     // host reads this to open new tabs/splits in the same directory.
     [[nodiscard]] std::string working_dir() const;
+
+    // --- shell command blocks (OSC 133) ------------------------------------
+    // Structured, resolved view of the recorded shell commands, oldest first.
+    // Requires the shell to emit OSC 133 marks (shell integration); without it
+    // the list is empty. This is the substrate for a block UI and for agent
+    // read-out / the DEC 2034 Semantic Block Query.
+    [[nodiscard]] std::vector<CommandView> commands() const;
+    // The most recently COMPLETED command (has an exit code), or nullopt.
+    [[nodiscard]] std::optional<CommandView> last_command() const;
+    // The command currently executing (output started, not finished), or nullopt.
+    [[nodiscard]] std::optional<CommandView> current_command() const;
+    // Bumped whenever the command log changes — poll to avoid re-resolving.
+    [[nodiscard]] std::uint64_t commands_generation() const noexcept;
     [[nodiscard]] int cell_width() const noexcept;
     [[nodiscard]] int cell_height() const noexcept;
 

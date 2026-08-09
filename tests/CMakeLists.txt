@@ -26,6 +26,10 @@ add_executable(tea_test tea_test.cpp)
 target_link_libraries(tea_test PRIVATE toe::toe)
 add_test(NAME tea COMMAND tea_test)
 
+add_executable(command_log_test command_log_test.cpp)
+target_link_libraries(command_log_test PRIVATE toe::toe)
+add_test(NAME command_log COMMAND command_log_test)
+
 add_executable(keymap_test keymap_test.cpp)
 target_link_libraries(keymap_test PRIVATE toe::toe)
 add_test(NAME keymap COMMAND keymap_test)

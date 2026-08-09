@@ -181,6 +181,18 @@ public:
     // Extract the selected text as UTF-8 (trailing blanks trimmed per line).
     [[nodiscard]] std::string selected_text() const;
 
+    // Total rows in the ring (history + live). An absolute row is valid in
+    // [0, total_rows()). Used to clamp CommandBlock coordinates before slicing.
+    [[nodiscard]] std::int64_t total_rows() const noexcept;
+
+    // Extract UTF-8 text spanning absolute rows [row0, row1) (row1 exclusive),
+    // starting at `col0` on the FIRST row (0 elsewhere). Trailing blanks are
+    // trimmed per line; rows are joined with '\n'. Out-of-range rows are
+    // skipped. This is how a command block's input line / output is read on
+    // demand from its coordinates without the log copying the scrollback.
+    [[nodiscard]] std::string text_between_abs(std::int64_t row0, std::int64_t row1,
+                                               std::int32_t col0 = 0) const;
+
     // Convert a viewport (visible) row to an absolute row, and back.
     [[nodiscard]] std::int64_t viewport_to_abs(std::int32_t vrow) const noexcept;
 

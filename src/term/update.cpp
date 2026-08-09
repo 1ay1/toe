@@ -7,12 +7,26 @@
 
 #include "toe/gfx/palette.hpp"
 
+#include <chrono>
 #include <cstdio>
 #include <optional>
 
 namespace toe::term {
 
 namespace {
+
+// Wall-clock milliseconds, for command-block timing (OSC 133 C→D duration).
+std::int64_t now_ms() {
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+}
+
+// The cursor's ABSOLUTE row (0 == oldest history row), where a shell-integration
+// mark lands. CommandBlocks store absolute rows so they track content as it
+// scrolls into history.
+std::int64_t cursor_abs_row(const Model &m) {
+    return static_cast<std::int64_t>(m.screen.history_rows()) + m.screen.cursor().row.get();
+}
 
 // OSC 10/11 (default fg/bg colour) query reply: OSC N ; rgb:RR/GG/BB ST, with
 // each channel doubled to the 16-bit form apps expect.
@@ -191,16 +205,42 @@ void handle_osc(Model &m, std::string_view d, Cmds &out) {
         m.screen.edit_color({term::Screen::ColorEdit::Target::cursor, 0, true, {}});
     } else if (d.starts_with("7;")) {
         // OSC 7: report the child's working directory (a file:// URI). The host
-        // reads m.working_dir to spawn new tabs/splits in the same place.
+        // reads m.working_dir to spawn new tabs/splits in the same place; the
+        // command log snapshots it per prompt for per-block cwd context.
         m.working_dir = std::string{d.substr(2)};
     } else if (d == "133;A" || d.starts_with("133;A;")) {
-        m.shell_zone = Model::ShellZone::prompt;   // FTCS_PROMPT: prompt start
+        // FTCS_PROMPT: a new prompt begins — open a fresh command block, tagged
+        // with the cwd known so far.
+        m.commands.mark_prompt(cursor_abs_row(m), m.working_dir);
+        m.shell_zone = Model::ShellZone::prompt;
     } else if (d == "133;B" || d.starts_with("133;B;")) {
-        m.shell_zone = Model::ShellZone::command;  // FTCS_COMMAND_START
+        // FTCS_COMMAND_START: the typed command begins here (after the prompt).
+        m.commands.mark_command(cursor_abs_row(m), m.screen.cursor().col.get());
+        m.shell_zone = Model::ShellZone::command;
     } else if (d == "133;C" || d.starts_with("133;C;")) {
-        m.shell_zone = Model::ShellZone::output;   // FTCS_COMMAND_EXECUTED
+        // FTCS_COMMAND_EXECUTED: output starts (Enter pressed).
+        m.commands.mark_output(cursor_abs_row(m), now_ms());
+        m.shell_zone = Model::ShellZone::output;
     } else if (d == "133;D" || d.starts_with("133;D;")) {
-        m.shell_zone = Model::ShellZone::unknown;  // FTCS_COMMAND_FINISHED
+        // FTCS_COMMAND_FINISHED: parse the optional exit code from 133;D;<code>.
+        std::optional<int> code{};
+        if (d.size() > 6) { // "133;D;" == 6 chars
+            std::string_view cs = d.substr(6);
+            const auto semi = cs.find(';'); // ignore any trailing ;params
+            if (semi != std::string_view::npos) cs = cs.substr(0, semi);
+            int v = 0;
+            bool ok = !cs.empty();
+            bool neg = false;
+            std::size_t i = 0;
+            if (ok && (cs[0] == '-' )) { neg = true; i = 1; }
+            for (; i < cs.size() && ok; ++i) {
+                if (cs[i] < '0' || cs[i] > '9') { ok = false; break; }
+                v = v * 10 + (cs[i] - '0');
+            }
+            if (ok) code = neg ? -v : v;
+        }
+        m.commands.mark_finished(cursor_abs_row(m), code, now_ms());
+        m.shell_zone = Model::ShellZone::unknown;
     } else if (d.starts_with("9;")) {
         // OSC 9: a desktop notification body (iTerm2/kitty style). Surface it to
         // the host as a titled notification via SetTitle-adjacent channel; here

@@ -2024,4 +2024,49 @@ std::string Screen::selected_text() const {
     return out;
 }
 
+std::int64_t Screen::total_rows() const noexcept {
+    return static_cast<std::int64_t>(ring_.total());
+}
+
+std::string Screen::text_between_abs(std::int64_t row0, std::int64_t row1,
+                                     std::int32_t col0) const {
+    const std::int64_t total = total_rows();
+    if (row0 < 0) row0 = 0;
+    if (row1 > total) row1 = total;
+    if (row1 <= row0) return {};
+
+    std::string out;
+    for (std::int64_t r = row0; r < row1; ++r) {
+        const std::int32_t start = (r == row0) ? col0 : 0;
+        std::string line;
+        for (std::int32_t c = start; c < size_.cols; ++c) {
+            const Cell *cell = cell_at_abs(r, c);
+            // Skip the trailing spacer cell of a wide (CJK/emoji) glyph.
+            if (cell && cell->width == 0 && cell->cp == U' ') continue;
+            const char32_t cp = cell ? cell->cp : U' ';
+            if (cp < 0x80) {
+                line.push_back(static_cast<char>(cp));
+            } else if (cp < 0x800) {
+                line.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+                line.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+            } else if (cp < 0x10000) {
+                line.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+                line.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+                line.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+            } else {
+                line.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+                line.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+                line.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+                line.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+            }
+        }
+        while (!line.empty() && line.back() == ' ') line.pop_back();
+        out += line;
+        if (r + 1 < row1) out.push_back('\n');
+    }
+    // Trim trailing empty lines (unwritten output rows read as blanks).
+    while (!out.empty() && out.back() == '\n') out.pop_back();
+    return out;
+}
+
 } // namespace toe::term

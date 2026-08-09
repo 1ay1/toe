@@ -427,6 +427,66 @@ Extent Session::grid_size() const noexcept { return impl_->grid; }
 Pos Session::cursor() const noexcept { return impl_->model.screen.cursor(); }
 std::string Session::window_title() const { return impl_->model.title; }
 std::string Session::working_dir() const { return impl_->model.working_dir; }
+
+namespace {
+// Resolve a stored CommandBlock into a public CommandView, slicing the live
+// Screen for the command line and output text. Coordinates are absolute rows.
+CommandView resolve_block(const term::CommandBlock &b, const term::Screen &scr) {
+    CommandView v;
+    v.id = b.id;
+    v.cwd = b.cwd;
+    v.exit_code = b.exit_code;
+    v.finished = b.finished();
+    v.duration_ms = b.duration_ms();
+
+    // Command line: from the B mark (input_row/col). The C mark (output_row)
+    // often fires on the SAME row as the command (before the newline), so the
+    // command always spans at least its own row; output begins on the next row.
+    if (b.input_row >= 0) {
+        std::int64_t cmd_end = (b.output_row >= 0) ? b.output_row : scr.total_rows();
+        if (cmd_end <= b.input_row) cmd_end = b.input_row + 1; // same-row C
+        v.command = scr.text_between_abs(b.input_row, cmd_end, b.input_col);
+    }
+    // Output: the rows after the command line up to the D mark (end_row); while
+    // running, read to the current bottom of the buffer.
+    if (b.output_row >= 0) {
+        // If C landed on the command's own row, real output starts one row down.
+        std::int64_t out_start = b.output_row;
+        if (b.input_row >= 0 && out_start <= b.input_row) out_start = b.input_row + 1;
+        const std::int64_t out_end = (b.end_row >= 0) ? b.end_row : scr.total_rows();
+        v.output = scr.text_between_abs(out_start, out_end);
+        v.output_lines = v.output.empty()
+                             ? 0
+                             : 1 + std::count(v.output.begin(), v.output.end(), '\n');
+    }
+    return v;
+}
+} // namespace
+
+std::vector<CommandView> Session::commands() const {
+    const auto &log = impl_->model.commands;
+    const auto &scr = impl_->model.screen;
+    std::vector<CommandView> out;
+    out.reserve(log.size());
+    for (const auto &b : log.blocks()) out.push_back(resolve_block(b, scr));
+    return out;
+}
+
+std::optional<CommandView> Session::last_command() const {
+    const auto *b = impl_->model.commands.last_completed();
+    if (!b) return std::nullopt;
+    return resolve_block(*b, impl_->model.screen);
+}
+
+std::optional<CommandView> Session::current_command() const {
+    const auto *b = impl_->model.commands.in_progress();
+    if (!b) return std::nullopt;
+    return resolve_block(*b, impl_->model.screen);
+}
+
+std::uint64_t Session::commands_generation() const noexcept {
+    return impl_->model.commands.generation();
+}
 std::uint64_t Session::generation() const noexcept { return impl_->model.screen.generation(); }
 int Session::pty_fd() const noexcept { return impl_->pty.fd(); }
 int Session::cell_width() const noexcept { return impl_->cell_w; }

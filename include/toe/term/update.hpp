@@ -21,6 +21,7 @@
 
 #include "toe/core/tea.hpp"
 #include "toe/terminal.hpp" // Config
+#include "toe/term/command_log.hpp"
 #include "toe/term/screen.hpp"
 #include "toe/vt/parser.hpp"
 
@@ -40,6 +41,13 @@ struct Model {
     // command zone to time command duration.
     enum class ShellZone : std::uint8_t { unknown, prompt, command, output };
     ShellZone shell_zone{ShellZone::unknown};
+
+    // Structured record of shell commands, folded from OSC 133/7 marks: each
+    // block carries its prompt/input/output/end rows (absolute), exit code,
+    // cwd and timing. This is the substrate for the DEC 2034 Semantic Block
+    // Query, a host block UI, and agent read-out. `commands.zone()` is the
+    // authoritative live zone (shell_zone mirrors it for back-compat).
+    CommandLog commands{};
 
     explicit Model(Config c, Extent grid) : cfg(std::move(c)), screen(grid) {}
 };
