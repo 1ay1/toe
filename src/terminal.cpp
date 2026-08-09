@@ -47,6 +47,13 @@ struct Session::Impl {
     int cell_h;
     std::optional<std::string> clipboard_request{}; // last SetClipboard, for the host to pull
 
+    // Retained font parameters so the host can rescale the font at runtime
+    // (Cmd +/- zoom) by rebuilding the atlas + renderer at a new pixel size.
+    std::string font_path_;
+    std::string font_fallback_;
+    bool ligatures_ = false;
+    int font_px_ = 0;
+
     Impl(Config c, Extent g, gfx::Renderer r, Pty p, int cw, int ch)
         : model(std::move(c), g), renderer(std::move(r)), pty(std::move(p)), grid(g), cell_w(cw),
           cell_h(ch) {
@@ -169,6 +176,40 @@ void Session::resize(PixelSize px) {
         impl_->model.screen.resize(ng);
         (void)impl_->pty.resize(ng);
     }
+}
+
+int Session::font_pixel_size() const noexcept { return impl_->font_px_; }
+
+bool Session::set_font_pixel_size(int px, PixelSize surface_px) {
+    px = std::clamp(px, 6, 200);
+    if (px == impl_->font_px_) return false;
+
+    // Rebuild the glyph atlas at the new size, then the renderer over it. A GL
+    // context must be current (the atlas + renderer allocate GL objects) — the
+    // host guarantees this, same as at create(). On any failure we keep the old
+    // renderer untouched, so a bad size never breaks a live terminal.
+    auto atlas = gfx::FontAtlas::create(impl_->font_path_, px, impl_->font_fallback_,
+                                        impl_->ligatures_);
+    if (!atlas) return false;
+    const int cw = atlas->cell_width();
+    const int ch = atlas->cell_height();
+    auto renderer = gfx::Renderer::create(std::move(*atlas));
+    if (!renderer) return false;
+
+    impl_->renderer = std::move(*renderer);
+    impl_->cell_w = cw;
+    impl_->cell_h = ch;
+    impl_->font_px_ = px;
+    impl_->model.screen.set_cell_size(cw, ch);
+    impl_->pty.set_cell_pixels(cw, ch);
+
+    // The cell size changed, so the grid dimensions for the same surface change:
+    // recompute and push the new geometry to the model and the child.
+    const Extent ng = impl_->renderer.cells_for(surface_px);
+    impl_->grid = ng;
+    impl_->model.screen.resize(ng);
+    (void)impl_->pty.resize(ng);
+    return true;
 }
 
 void Session::send_text(std::string_view utf8) { (void)impl_->pty.write(utf8); }
@@ -468,6 +509,10 @@ Result<Terminal> Terminal::create(const Config &cfg, PixelSize px) {
 
     auto impl = std::make_unique<Session::Impl>(cfg, grid, std::move(*renderer), std::move(*pty),
                                                 cw, ch);
+    impl->font_path_ = font_path;
+    impl->font_fallback_ = cfg.font_fallback;
+    impl->ligatures_ = cfg.ligatures;
+    impl->font_px_ = cfg.font_pixel_size;
     // Query replies (DA1/DSR/…) no longer need a wired sink: the pure reducer
     // returns them as WriteChild Cmds, which Impl::interpret writes to the PTY.
     return Terminal{Session{std::move(impl)}};

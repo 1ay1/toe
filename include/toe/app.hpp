@@ -106,10 +106,20 @@ struct FocusChanged {
     bool focused; // window gained (true) or lost (false) keyboard focus
 };
 
+// A live font-size change request from the host (e.g. macOS Cmd +/- /0). `delta`
+// steps the size up (+1) or down (-1) by one pixel-ish notch; `absolute`, when
+// >= 0, sets an exact pixel size (0 handled by the host as "reset to default").
+// The engine rebuilds the atlas and re-flows the grid. A window-level gesture,
+// like Resized — so it lives in the windowing event set, not the child stream.
+struct FontZoom {
+    int delta = 0;       // +1 / -1 notch; ignored when absolute >= 0
+    int absolute = -1;   // exact pixel size when >= 0
+};
+
 // A closed sum type: a host's dispatch is an exhaustive std::visit, so a new
 // event kind can't be silently ignored. There is no "empty"/"invalid" event.
 using Event = std::variant<CloseRequested, Resized, KeyPressed, TextEntered, Preedit, MouseDown,
-                           MouseUp, MouseMove, MouseWheel, FocusChanged>;
+                           MouseUp, MouseMove, MouseWheel, FocusChanged, FontZoom>;
 
 // The callback shape toe hands to an App to receive drained events.
 using EventSink = std::function<void(const Event &)>;

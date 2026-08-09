@@ -168,6 +168,21 @@ private:
         s_.report_focus(e.focused);
     }
 
+    void handle(const win::FontZoom &e) {
+        // Live font zoom (macOS Cmd +/- /0). Compute the target pixel size and
+        // rebuild the atlas; the grid re-flows to the current surface size.
+        const int cur = s_.font_pixel_size();
+        int target = cur;
+        if (e.absolute >= 0) {
+            target = e.absolute; // 0 => host asked for reset; clamp keeps it sane
+        } else if (e.delta != 0) {
+            // Step ~6% per notch so zoom feels proportional, min 1px per step.
+            const int step = std::max(1, cur / 16);
+            target = cur + (e.delta > 0 ? step : -step);
+        }
+        s_.set_font_pixel_size(target, px_);
+    }
+
     // --- shared helpers ----------------------------------------------------
     struct CellPos { int col, vrow; };
     [[nodiscard]] CellPos cell_of(int x, int y) const noexcept {

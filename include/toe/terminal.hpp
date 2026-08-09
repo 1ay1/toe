@@ -88,6 +88,14 @@ public:
     DamageRect render(gfx::RenderContext &rc, PixelSize px, bool cursor_on = true,
                       bool blink_on = true);
     void resize(PixelSize px);
+
+    // Runtime font zoom. Rebuilds the glyph atlas + renderer at `px` pixels and
+    // re-flows the grid to `surface_px`. Requires a current GL context (like
+    // render/create). Returns true if the size actually changed. Clamped to a
+    // sane range; on any rebuild failure the old renderer is kept and it returns
+    // false, so a bad size can never break a live terminal.
+    bool set_font_pixel_size(int px, PixelSize surface_px);
+    [[nodiscard]] int font_pixel_size() const noexcept;
     void send_key(const KeyEvent &ev);
     void send_text(std::string_view utf8);
     // Set the IME composition (preedit) string shown inline at the cursor while
