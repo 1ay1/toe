@@ -143,6 +143,8 @@ public:
     [[nodiscard]] bool cursor_animating() const noexcept;
     // Live-toggle/retune the caret glide (settings panel / config reload).
     void set_cursor_animation(bool enabled, int time_ms = 55, bool trail = true) noexcept;
+    // Live-set the selection highlight colour.
+    void set_selection_color(Rgb c) noexcept;
     void resize(PixelSize px);
 
     // Runtime font zoom. Rebuilds the glyph atlas + renderer at `px` pixels and

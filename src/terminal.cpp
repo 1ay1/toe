@@ -187,6 +187,11 @@ void Session::set_cursor_animation(bool enabled, int time_ms, bool trail) noexce
     impl_->renderer.set_cursor_animation(enabled, time_ms, trail);
 }
 
+void Session::set_selection_color(Rgb c) noexcept {
+    impl_->selection_bg_ = c;
+    impl_->renderer.set_selection_color(c);
+}
+
 void Session::resize(PixelSize px) {
     const Extent ng = impl_->renderer.cells_for(px);
     if (ng.cols != impl_->grid.cols || ng.rows != impl_->grid.rows) {
