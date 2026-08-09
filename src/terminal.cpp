@@ -178,6 +178,7 @@ void Session::render_overlay(gfx::RenderContext &rc, const term::Cell *cells, in
 
 Extent Session::cell_size() const noexcept { return Extent{impl_->cell_w, impl_->cell_h}; }
 Rgb Session::default_bg() const noexcept { return impl_->renderer.default_bg(); }
+bool Session::cursor_animating() const noexcept { return impl_->renderer.cursor_animating(); }
 
 void Session::resize(PixelSize px) {
     const Extent ng = impl_->renderer.cells_for(px);

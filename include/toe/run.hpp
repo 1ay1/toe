@@ -201,6 +201,11 @@ template <App A>
             drawn = key;
             last_present_ms = now.value;
 
+            // Keep the frames coming while the caret is still gliding: the grid
+            // hasn't changed (key is stable) but the cursor moved, so invalidate
+            // the drawn-key to force a repaint next iteration until it settles.
+            if (session.cursor_animating()) drawn.reset();
+
             // This present may reflect the child's response to the last input.
             // Record the input->photon sample; the HUD reports a live rolling
             // min/avg/p99 to stderr a few times a second when enabled.
@@ -228,7 +233,11 @@ template <App A>
         //    drain it (a present may have been rate-capped above) without paying
         //    an idle poll-wait + compositor roundtrip per chunk.
         toe::flush(surf);
-        if (!streaming) {
+        if (session.cursor_animating()) {
+            // Cursor glide in flight: pace at ~60fps so it stays smooth without
+            // busy-spinning. A pending PTY read still wakes us earlier.
+            toe::wait_readable(surf, session.pty_fd(), WaitDeadline::millis(kMinAnimMs));
+        } else if (!streaming) {
             // The App's readiness wait covers the PTY, the window and (if any) the
             // key-repeat timer; toe passes only the PTY fd. Idle deadline paces
             // the cursor blink / inline-image animation.

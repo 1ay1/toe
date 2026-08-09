@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
+#include <cmath>
 #include <utility>
 #include <array>
 #include <algorithm>
@@ -586,6 +588,64 @@ void Renderer::ensure_image_pipeline() {}
 void Renderer::draw_images(const term::Screen &, PixelSize) {}
 void Renderer::draw_placeholders(const term::Screen &, PixelSize) {}
 
+// Ease the rendered cursor toward its target cell and emit the cursor rect(s).
+// Exponential smoothing (~55ms time constant) gives a snappy-but-smooth glide;
+// on a big jump we lay down a few trail rects between old and new, faded by
+// lerping their colour toward the background (the pipeline has no per-instance
+// alpha, and lerp-to-bg reads identically on the opaque terminal). Sets
+// cursor_in_flight_ while still moving so the host keeps animating.
+void Renderer::animate_cursor(float tgt_x, float tgt_y, float cw, float ch, Rgb col, Rgb bg,
+                              std::vector<Instance> &out) {
+    const std::int64_t now = std::chrono::duration_cast<std::chrono::microseconds>(
+                                 std::chrono::steady_clock::now().time_since_epoch())
+                                 .count();
+    auto lerp8 = [](std::uint8_t a, std::uint8_t b, float t) {
+        return static_cast<std::uint8_t>(a + (static_cast<float>(b) - a) * t + 0.5f);
+    };
+    if (cur_anim_x_ < 0.0f || !cursor_anim_enabled_) {
+        cur_anim_x_ = tgt_x; cur_anim_y_ = tgt_y; cur_last_us_ = now;
+        cursor_in_flight_ = false;
+        out.push_back(rect_inst(tgt_x, tgt_y, cw, ch, col.r, col.g, col.b, 2));
+        return;
+    }
+    float dt = static_cast<float>(now - cur_last_us_) / 1e6f;
+    cur_last_us_ = now;
+    dt = std::clamp(dt, 0.0f, 0.05f); // ignore long stalls (tab switch / sleep)
+
+    const float px0 = cur_anim_x_, py0 = cur_anim_y_;
+    const float a = 1.0f - std::exp(-dt / 0.055f); // exponential approach
+    cur_anim_x_ += (tgt_x - cur_anim_x_) * a;
+    cur_anim_y_ += (tgt_y - cur_anim_y_) * a;
+
+    const float dx = tgt_x - cur_anim_x_, dy = tgt_y - cur_anim_y_;
+    if (dx * dx + dy * dy < 0.35f) {
+        cur_anim_x_ = tgt_x; cur_anim_y_ = tgt_y;
+        cursor_in_flight_ = false;
+    } else {
+        cursor_in_flight_ = true;
+    }
+
+    // Comet trail only for moves spanning > ~1.5 cells (typing one cell over
+    // shouldn't smear).
+    const float mvx = cur_anim_x_ - px0, mvy = cur_anim_y_ - py0;
+    if (mvx * mvx + mvy * mvy > (1.5f * cw) * (1.5f * cw)) {
+        constexpr int kTrail = 3;
+        for (int i = 1; i <= kTrail; ++i) {
+            const float t = static_cast<float>(i) / (kTrail + 1);
+            const float tx = px0 + (cur_anim_x_ - px0) * t;
+            const float ty = py0 + (cur_anim_y_ - py0) * t;
+            const float fade = 0.25f + 0.45f * t;      // tail dimmer than head
+            const float inset = (1.0f - t) * ch * 0.16f; // tail slightly smaller
+            const std::uint8_t r = lerp8(bg.r, col.r, fade);
+            const std::uint8_t g = lerp8(bg.g, col.g, fade);
+            const std::uint8_t b = lerp8(bg.b, col.b, fade);
+            out.push_back(rect_inst(tx + inset, ty + inset, cw - 2 * inset, ch - 2 * inset,
+                                    r, g, b, 3));
+        }
+    }
+    out.push_back(rect_inst(cur_anim_x_, cur_anim_y_, cw, ch, col.r, col.g, col.b, 2));
+}
+
 DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on, bool blink_on) {
     // Apply any dynamic-colour edits (OSC 4/104/10/11/12/110-112) the model has
     // recorded since the last frame, then invalidate the row cache if the
@@ -730,30 +790,46 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
             instances_.insert(instances_.end(), rc.bg.begin(), rc.bg.end());
             glyphs_.insert(glyphs_.end(), rc.glyphs.begin(), rc.glyphs.end());
         }
-        // Cursor rect sits above backgrounds, beneath glyphs.
-        if (cursor_visible) {
-            const Rgb cc = palette_.cursor_color();
-            const auto style = screen.cursor_style();
-            const float x = static_cast<float>(cur_col * cw);
-            const float y = static_cast<float>(cur_row * ch);
-            const float fw = static_cast<float>(cw);
-            const float fh = static_cast<float>(ch);
-            switch (style.shape) {
-            case term::Screen::CursorShape::block:
-                instances_.push_back(rect_inst(x, y, fw, fh, cc.r, cc.g, cc.b, /*radius=*/2));
-                break;
-            case term::Screen::CursorShape::underline: {
-                // A ~2px bar along the cell's bottom edge.
-                const float t = std::max(1.0f, fh * 0.12f);
-                instances_.push_back(rect_inst(x, y + fh - t, fw, t, cc.r, cc.g, cc.b, 0));
-                break;
-            }
+        // The block cursor inverts its cell inside the row cache above (glyph
+        // shown in the bg colour). The moving block itself is drawn as an
+        // animated overlay below, unified with bar/underline — so it glides.
+        // Remember where the cache-assembled buffer ends so the animated caret
+        // can be re-appended fresh each frame without duplicating.
+        base_instance_n_ = instances_.size();
+    }
+
+    // Animated caret: glides to its target cell. Appended AFTER the cached
+    // assembly every frame (trimmed back to the base first) so it moves even on
+    // otherwise-clean frames. All three shapes ride the same glide; block draws
+    // the full cell, bar/underline inset to a thin edge. Sets cursor_in_flight_.
+    cursor_in_flight_ = false;
+    const auto cstyle = screen.cursor_style().shape;
+    if (base_instance_n_ <= instances_.size())
+        instances_.resize(base_instance_n_); // drop last frame's caret
+    if (cursor_visible) {
+        const Rgb cc = palette_.cursor_color();
+        const Rgb bg = palette_.default_bg();
+        const float fw = static_cast<float>(cw), fh = static_cast<float>(ch);
+        std::vector<Instance> caret;
+        animate_cursor(static_cast<float>(cur_col * cw), static_cast<float>(cur_row * ch), fw, fh,
+                       cc, bg, caret);
+        for (const Instance &ci : caret) {
+            switch (cstyle) {
             case term::Screen::CursorShape::bar: {
-                // A ~2px vertical bar along the cell's left edge.
                 const float t = std::max(1.0f, fw * 0.15f);
-                instances_.push_back(rect_inst(x, y, t, fh, cc.r, cc.g, cc.b, 0));
+                instances_.push_back(rect_inst(ci.x, ci.y, t, ci.h, ci.r, ci.g, ci.b, ci.radius));
                 break;
             }
+            case term::Screen::CursorShape::underline: {
+                const float t = std::max(1.0f, fh * 0.12f);
+                instances_.push_back(
+                    rect_inst(ci.x, ci.y + ci.h - t, ci.w, t, ci.r, ci.g, ci.b, ci.radius));
+                break;
+            }
+            case term::Screen::CursorShape::block:
+            default:
+                instances_.push_back(rect_inst(ci.x, ci.y, ci.w, ci.h, ci.r, ci.g, ci.b, 2));
+                break;
             }
         }
     }
@@ -763,7 +839,7 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
     // so draw them whenever the graphics store holds any image.
     const bool has_any_image = has_images || screen.graphics().has_images();
 
-    if (!any_row_dirty && !has_any_image && redraw_from_cache(px)) {
+    if (!any_row_dirty && !has_any_image && !cursor_in_flight_ && redraw_from_cache(px)) {
         // Nothing changed: the GPU buffers already hold this exact frame. We
         // replayed the recorded draws with zero uploads / fences / memcpy.
         return {}; // empty damage: the host can skip the commit entirely

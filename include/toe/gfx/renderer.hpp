@@ -176,6 +176,32 @@ private:
 
     std::vector<Instance> instances_{};
     std::vector<Instance> glyphs_{}; // scratch for the fused build pass
+
+    // --- animated cursor ---------------------------------------------------
+    // The cursor glides toward its target cell instead of teleporting — the
+    // single most-noticeable piece of UI polish a terminal can have (ghostty's
+    // signature effect). We keep the RENDERED position as floats (pixels) and
+    // ease it toward the target each draw() using real elapsed time. A short
+    // trail is drawn between the old and new positions while in flight.
+    float cur_anim_x_{-1.0f}, cur_anim_y_{-1.0f}; // current drawn pos (px); -1 = uninit
+    float cur_tgt_x_{0.0f}, cur_tgt_y_{0.0f};     // target pos (px)
+    std::int64_t cur_last_us_{0};                 // last draw timestamp (us)
+    bool cursor_in_flight_{false};                // still easing toward target
+    bool cursor_anim_enabled_{true};              // config toggle
+    std::size_t base_instance_n_{0};              // instances_ size before the anim caret
+
+public:
+    // True while the cursor is still gliding to its target — the host keeps
+    // presenting ~60fps frames until it settles (like inline-image animation).
+    [[nodiscard]] bool cursor_animating() const noexcept { return cursor_in_flight_; }
+    // Enable/disable the glide (instant snap when off).
+    void set_cursor_animation(bool on) noexcept { cursor_anim_enabled_ = on; }
+
+private:
+    // Advance the animated cursor toward (tgt_x,tgt_y) and emit its rect(s).
+    // The trail rects fade by lerping toward `bg` (no per-instance alpha needed).
+    void animate_cursor(float tgt_x, float tgt_y, float cw, float ch, Rgb col, Rgb bg,
+                        std::vector<Instance> &out);
 };
 
 } // namespace toe::gfx

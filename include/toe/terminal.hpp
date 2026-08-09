@@ -126,6 +126,9 @@ public:
     // The default background colour (tracks live colour edits) — the host clears
     // the swapchain to this each frame.
     [[nodiscard]] Rgb default_bg() const noexcept;
+    // True while the caret is still gliding to its new cell — the host keeps
+    // presenting ~60fps frames until it settles (like inline-image animation).
+    [[nodiscard]] bool cursor_animating() const noexcept;
     void resize(PixelSize px);
 
     // Runtime font zoom. Rebuilds the glyph atlas + renderer at `px` pixels and
