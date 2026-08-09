@@ -9,6 +9,7 @@
 #define TOE_GFX_RENDERER_HPP
 
 #include <cstdint>
+#include <chrono>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -192,11 +193,23 @@ private:
     bool cursor_trail_{true};                     // draw the comet trail on jumps
     std::size_t base_instance_n_{0};              // instances_ size before the anim caret
     Rgb selection_bg_{rgb(66, 84, 112)};          // selection highlight (config-set)
+    std::int64_t bell_until_us_{0};               // visual-bell flash end (us), 0 = idle
+    static constexpr std::int64_t kBellFlashUs = 150000; // ~150ms fade
 
 public:
     // True while the cursor is still gliding to its target — the host keeps
     // presenting ~60fps frames until it settles (like inline-image animation).
     [[nodiscard]] bool cursor_animating() const noexcept { return cursor_in_flight_; }
+    // Trigger a visual-bell flash; it fades over ~150ms. animating() covers it.
+    void flash_bell() noexcept {
+        bell_until_us_ = std::chrono::duration_cast<std::chrono::microseconds>(
+                             std::chrono::steady_clock::now().time_since_epoch())
+                             .count() +
+                         kBellFlashUs;
+    }
+    // True while EITHER the caret is gliding or a bell flash is fading — the one
+    // signal the host polls to decide whether to keep presenting frames.
+    [[nodiscard]] bool animating() const noexcept;
     // The selection highlight colour (from colors.selection).
     void set_selection_color(Rgb c) noexcept { selection_bg_ = c; }
     // Configure the glide: master on/off, time constant (ms), and whether the

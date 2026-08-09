@@ -589,6 +589,15 @@ void Renderer::ensure_image_pipeline() {}
 void Renderer::draw_images(const term::Screen &, PixelSize) {}
 void Renderer::draw_placeholders(const term::Screen &, PixelSize) {}
 
+bool Renderer::animating() const noexcept {
+    if (cursor_in_flight_) return true;
+    if (bell_until_us_ == 0) return false;
+    const std::int64_t now = std::chrono::duration_cast<std::chrono::microseconds>(
+                                 std::chrono::steady_clock::now().time_since_epoch())
+                                 .count();
+    return now < bell_until_us_;
+}
+
 // Ease the rendered cursor toward its target cell and emit the cursor rect(s).
 // Exponential smoothing (~55ms time constant) gives a snappy-but-smooth glide;
 // on a big jump we lay down a few trail rects between old and new, faded by
@@ -835,12 +844,36 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
         }
     }
 
+    // Visual-bell flash: a fading fg-tinted full-screen overlay for ~150ms.
+    // Appended after the caret (also every frame while active) so it fades even
+    // on otherwise-clean frames; animating() keeps the host presenting.
+    if (bell_until_us_ != 0) {
+        const std::int64_t now = std::chrono::duration_cast<std::chrono::microseconds>(
+                                     std::chrono::steady_clock::now().time_since_epoch())
+                                     .count();
+        const std::int64_t left = bell_until_us_ - now;
+        if (left <= 0) {
+            bell_until_us_ = 0;
+        } else {
+            // Tint toward fg, strongest at trigger, fading to nothing. Since the
+            // pipeline has no per-instance alpha, lerp bg->fg by the fade factor.
+            const float k = 0.35f * (static_cast<float>(left) / static_cast<float>(kBellFlashUs));
+            const Rgb bg = palette_.default_bg();
+            const Rgb fg = palette_.default_fg();
+            auto mix = [k](std::uint8_t a, std::uint8_t b) {
+                return static_cast<std::uint8_t>(a + (static_cast<float>(b) - a) * k + 0.5f);
+            };
+            instances_.push_back(rect_inst(0, 0, static_cast<float>(px.w), static_cast<float>(px.h),
+                                           mix(bg.r, fg.r), mix(bg.g, fg.g), mix(bg.b, fg.b), 0));
+        }
+    }
+
     const bool has_images = !screen.graphics().placements().empty();
     // Placeholder cells reference transmitted images that may have no placement,
     // so draw them whenever the graphics store holds any image.
     const bool has_any_image = has_images || screen.graphics().has_images();
 
-    if (!any_row_dirty && !has_any_image && !cursor_in_flight_ && redraw_from_cache(px)) {
+    if (!any_row_dirty && !has_any_image && !animating() && redraw_from_cache(px)) {
         // Nothing changed: the GPU buffers already hold this exact frame. We
         // replayed the recorded draws with zero uploads / fences / memcpy.
         return {}; // empty damage: the host can skip the commit entirely

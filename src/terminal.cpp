@@ -55,6 +55,8 @@ struct Session::Impl {
     Config::CursorAnim cursor_anim_{}; // retained so font rebuilds keep the setting
     Rgb selection_bg_{rgb(66, 84, 112)}; // retained selection colour
     int cursor_blink_ms_ = 530;          // cursor blink half-period (0 = steady)
+    Behavior behavior_{};                // scroll/selection host policy
+    std::function<void()> on_bell_{};    // host bell handler (audible/visual)
     std::uint64_t focused_block = 0; // command block the block-nav UI is on (0=none)
 
     Impl(Config c, Extent g, gfx::Renderer r, Pty p, int cw, int ch)
@@ -94,7 +96,9 @@ struct Session::Impl {
                     } else if constexpr (std::is_same_v<T, ResizePty>) {
                         (void)pty.resize(e.size);
                     } else if constexpr (std::is_same_v<T, RingBell>) {
-                        // no audible bell yet; a visual-bell Cmd could hook here.
+                        // Bell is host policy (audible beep and/or visual flash);
+                        // the host wires on_bell_ from the behavior config.
+                        if (on_bell_) on_bell_();
                     } else if constexpr (std::is_same_v<T, Quit>) {
                         // handled by the poll transition when the child exits.
                     }
@@ -138,6 +142,9 @@ struct Session::Impl {
                         Cmds effects = term::feed_output(
                             model, std::string_view{r.bytes.data(), r.bytes.size()});
                         interpret(effects);
+                        // scroll_on_output: follow the tail when new output lands
+                        // (opt-in; the default keeps your scrollback position).
+                        if (behavior_.scroll_on_output) model.screen.scroll_to_bottom();
                         consumed += r.bytes.size();
                         if (consumed >= kBudget) {
                             more_pending = true; // yield: let the host render + poll input
@@ -181,7 +188,7 @@ void Session::render_overlay(gfx::RenderContext &rc, const term::Cell *cells, in
 
 Extent Session::cell_size() const noexcept { return Extent{impl_->cell_w, impl_->cell_h}; }
 Rgb Session::default_bg() const noexcept { return impl_->renderer.default_bg(); }
-bool Session::cursor_animating() const noexcept { return impl_->renderer.cursor_animating(); }
+bool Session::cursor_animating() const noexcept { return impl_->renderer.animating(); }
 
 void Session::set_cursor_animation(bool enabled, int time_ms, bool trail) noexcept {
     impl_->cursor_anim_ = {enabled, time_ms, trail};
@@ -195,6 +202,11 @@ void Session::set_selection_color(Rgb c) noexcept {
 
 int Session::cursor_blink_ms() const noexcept { return impl_->cursor_blink_ms_; }
 void Session::set_cursor_blink_ms(int ms) noexcept { impl_->cursor_blink_ms_ = ms < 0 ? 0 : ms; }
+
+Session::Behavior Session::behavior() const noexcept { return impl_->behavior_; }
+void Session::set_behavior(const Behavior &b) noexcept { impl_->behavior_ = b; }
+void Session::set_on_bell(std::function<void()> cb) noexcept { impl_->on_bell_ = std::move(cb); }
+void Session::flash_visual_bell() noexcept { impl_->renderer.flash_bell(); }
 
 void Session::resize(PixelSize px) {
     const Extent ng = impl_->renderer.cells_for(px);
@@ -729,6 +741,8 @@ Result<Terminal> Terminal::create(const Config &cfg, PixelSize px) {
     impl->cursor_anim_ = cfg.cursor_anim;
     impl->selection_bg_ = cfg.selection_bg;
     impl->cursor_blink_ms_ = cfg.cursor_blink_ms;
+    impl->behavior_ = {cfg.wheel_lines, cfg.scroll_on_output, cfg.scroll_on_keystroke,
+                       cfg.copy_on_select};
     impl->renderer.set_cursor_animation(cfg.cursor_anim.enabled, cfg.cursor_anim.time_ms,
                                         cfg.cursor_anim.trail);
     impl->renderer.set_selection_color(cfg.selection_bg);

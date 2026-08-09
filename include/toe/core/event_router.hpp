@@ -158,8 +158,12 @@ private:
         if (app_owns_mouse(e.mods.shift)) {
             report(toe::Session::MouseEvent::release, button_code(e.button), col, vrow, e.mods);
         } else if (e.button == MouseButton::left && s_.has_selection()) {
-            // Copy on release so a plain drag-select fills the clipboard.
-            if (std::string sel = s_.selected_text(); !sel.empty()) set_clipboard(sel);
+            // Auto-copy a drag-select to the clipboard only when the user opted
+            // in (copy_on_select). Otherwise the selection is still there to copy
+            // explicitly (Ctrl+Shift+C) — matching most terminals' default.
+            if (s_.behavior().copy_on_select) {
+                if (std::string sel = s_.selected_text(); !sel.empty()) set_clipboard(sel);
+            }
         }
     }
 
@@ -170,7 +174,7 @@ private:
             for (int i = 0; i < std::abs(e.dy); ++i)
                 report(toe::Session::MouseEvent::press, e.dy > 0 ? 64 : 65, col, vrow, {});
         } else if (!s_.on_alt_screen()) {
-            s_.scroll(e.dy * 3); // 3 lines per notch
+            s_.scroll(e.dy * s_.behavior().wheel_lines); // configured rows per notch
         }
     }
 
@@ -219,9 +223,10 @@ private:
 
     void send_to_child(toe::Msg &&m) {
         // Typing (or pasting) while scrolled up into history snaps the view back
-        // to the live bottom, so you always SEE what you send. Scroll shortcuts
-        // (Shift+PageUp/Down) return before reaching here, so paging still works.
-        s_.scroll_to_bottom();
+        // to the live bottom, so you always SEE what you send — unless the user
+        // turned that off (scroll_on_keystroke). Scroll shortcuts (Shift+PageUp/
+        // Down) return before reaching here, so paging still works either way.
+        if (s_.behavior().scroll_on_keystroke) s_.scroll_to_bottom();
         s_.run(s_.update(m));
         wrote_input_ = true;
     }

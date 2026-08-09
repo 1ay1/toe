@@ -15,6 +15,7 @@
 
 #include <memory>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -79,6 +80,16 @@ struct Config {
     // Cursor blink half-period in ms; 0 = steady (no blink). Host policy, but
     // the engine's run loop reads it to pace the blink wave.
     int cursor_blink_ms = 530;
+
+    // Scroll behaviour (host policy applied by the EventRouter). Live-tunable.
+    //   wheel_lines         — rows advanced per mouse-wheel notch
+    //   scroll_on_output    — jump to the live bottom when new output arrives
+    //   scroll_on_keystroke — jump to the live bottom when you type
+    int wheel_lines = 3;
+    bool scroll_on_output = false;
+    bool scroll_on_keystroke = true;
+    // Auto-copy a selection to the clipboard as soon as it's made.
+    bool copy_on_select = false;
 
     // Cursor glide animation (the caret eases to its new cell instead of
     // snapping). Fully tunable so a host/config can turn it off or retune feel:
@@ -152,6 +163,23 @@ public:
     // pace the blink; live-settable from the settings panel.
     [[nodiscard]] int cursor_blink_ms() const noexcept;
     void set_cursor_blink_ms(int ms) noexcept;
+
+    // Host scroll/selection behaviour the EventRouter honours. Live-settable so
+    // config edits (pane or file) take effect immediately.
+    struct Behavior {
+        int wheel_lines = 3;
+        bool scroll_on_output = false;
+        bool scroll_on_keystroke = true;
+        bool copy_on_select = false;
+    };
+    [[nodiscard]] Behavior behavior() const noexcept;
+    void set_behavior(const Behavior &b) noexcept;
+    // Host bell handler, invoked on BEL (RingBell). The host decides audible
+    // and/or visual, per the behavior config. Pass {} to disable.
+    void set_on_bell(std::function<void()> cb) noexcept;
+    // Trigger a brief visual-bell flash (a fading full-screen tint the renderer
+    // draws). animating() stays true while it fades so the host keeps painting.
+    void flash_visual_bell() noexcept;
     void resize(PixelSize px);
 
     // Runtime font zoom. Rebuilds the glyph atlas + renderer at `px` pixels and
