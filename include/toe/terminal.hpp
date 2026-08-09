@@ -75,6 +75,18 @@ struct Config {
     int font_pixel_size = 18;
     Rgb default_fg = rgb(220, 220, 220);
     Rgb default_bg = rgb(23, 23, 28);
+    Rgb selection_bg = rgb(66, 84, 112); // selection highlight colour
+
+    // Cursor glide animation (the caret eases to its new cell instead of
+    // snapping). Fully tunable so a host/config can turn it off or retune feel:
+    //   enabled     — master on/off (off = instant snap, the classic behaviour)
+    //   time_ms     — approach time constant; smaller = snappier, larger = floatier
+    //   trail       — draw a fading comet trail on jumps > ~1.5 cells
+    struct CursorAnim {
+        bool enabled = true;
+        int time_ms = 55;
+        bool trail = true;
+    } cursor_anim{};
 
     // The child terminal, adopted from the host. toe NEVER forks: the host
     // opens the PTY master (forkpty/ConPTY/ssh/tmux) and hands the fd + child
@@ -129,6 +141,8 @@ public:
     // True while the caret is still gliding to its new cell — the host keeps
     // presenting ~60fps frames until it settles (like inline-image animation).
     [[nodiscard]] bool cursor_animating() const noexcept;
+    // Live-toggle/retune the caret glide (settings panel / config reload).
+    void set_cursor_animation(bool enabled, int time_ms = 55, bool trail = true) noexcept;
     void resize(PixelSize px);
 
     // Runtime font zoom. Rebuilds the glyph atlas + renderer at `px` pixels and

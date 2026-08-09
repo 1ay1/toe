@@ -52,6 +52,8 @@ struct Session::Impl {
     gfx::FontAtlas::StyleFiles style_files_; // real bold/italic/bold-italic paths
     bool ligatures_ = false;
     int font_px_ = 0;
+    Config::CursorAnim cursor_anim_{}; // retained so font rebuilds keep the setting
+    Rgb selection_bg_{rgb(66, 84, 112)}; // retained selection colour
     std::uint64_t focused_block = 0; // command block the block-nav UI is on (0=none)
 
     Impl(Config c, Extent g, gfx::Renderer r, Pty p, int cw, int ch)
@@ -180,6 +182,11 @@ Extent Session::cell_size() const noexcept { return Extent{impl_->cell_w, impl_-
 Rgb Session::default_bg() const noexcept { return impl_->renderer.default_bg(); }
 bool Session::cursor_animating() const noexcept { return impl_->renderer.cursor_animating(); }
 
+void Session::set_cursor_animation(bool enabled, int time_ms, bool trail) noexcept {
+    impl_->cursor_anim_ = {enabled, time_ms, trail};
+    impl_->renderer.set_cursor_animation(enabled, time_ms, trail);
+}
+
 void Session::resize(PixelSize px) {
     const Extent ng = impl_->renderer.cells_for(px);
     if (ng.cols != impl_->grid.cols || ng.rows != impl_->grid.rows) {
@@ -208,6 +215,9 @@ bool Session::set_font_pixel_size(int px, PixelSize surface_px) {
     if (!renderer) return false;
 
     impl_->renderer = std::move(*renderer);
+    impl_->renderer.set_cursor_animation(impl_->cursor_anim_.enabled, impl_->cursor_anim_.time_ms,
+                                         impl_->cursor_anim_.trail);
+    impl_->renderer.set_selection_color(impl_->selection_bg_);
     impl_->cell_w = cw;
     impl_->cell_h = ch;
     impl_->font_px_ = px;
@@ -246,6 +256,9 @@ bool Session::set_font(std::string_view family_or_file, PixelSize surface_px) {
     if (!renderer) return false;
 
     impl_->renderer = std::move(*renderer);
+    impl_->renderer.set_cursor_animation(impl_->cursor_anim_.enabled, impl_->cursor_anim_.time_ms,
+                                         impl_->cursor_anim_.trail);
+    impl_->renderer.set_selection_color(impl_->selection_bg_);
     impl_->cell_w = cw;
     impl_->cell_h = ch;
     impl_->font_path_ = path;
@@ -704,6 +717,11 @@ Result<Terminal> Terminal::create(const Config &cfg, PixelSize px) {
     impl->style_files_ = {cfg.font_file_bold, cfg.font_file_italic, cfg.font_file_bold_italic};
     impl->ligatures_ = cfg.ligatures;
     impl->font_px_ = cfg.font_pixel_size;
+    impl->cursor_anim_ = cfg.cursor_anim;
+    impl->selection_bg_ = cfg.selection_bg;
+    impl->renderer.set_cursor_animation(cfg.cursor_anim.enabled, cfg.cursor_anim.time_ms,
+                                        cfg.cursor_anim.trail);
+    impl->renderer.set_selection_color(cfg.selection_bg);
     // Query replies (DA1/DSR/…) no longer need a wired sink: the pure reducer
     // returns them as WriteChild Cmds, which Impl::interpret writes to the PTY.
     return Terminal{Session{std::move(impl)}};

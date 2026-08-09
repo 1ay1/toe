@@ -188,14 +188,24 @@ private:
     std::int64_t cur_last_us_{0};                 // last draw timestamp (us)
     bool cursor_in_flight_{false};                // still easing toward target
     bool cursor_anim_enabled_{true};              // config toggle
+    float cursor_tau_{0.055f};                    // approach time constant (s)
+    bool cursor_trail_{true};                     // draw the comet trail on jumps
     std::size_t base_instance_n_{0};              // instances_ size before the anim caret
+    Rgb selection_bg_{rgb(66, 84, 112)};          // selection highlight (config-set)
 
 public:
     // True while the cursor is still gliding to its target — the host keeps
     // presenting ~60fps frames until it settles (like inline-image animation).
     [[nodiscard]] bool cursor_animating() const noexcept { return cursor_in_flight_; }
-    // Enable/disable the glide (instant snap when off).
-    void set_cursor_animation(bool on) noexcept { cursor_anim_enabled_ = on; }
+    // The selection highlight colour (from colors.selection).
+    void set_selection_color(Rgb c) noexcept { selection_bg_ = c; }
+    // Configure the glide: master on/off, time constant (ms), and whether the
+    // comet trail is drawn. All wired from toe::Config::cursor_anim.
+    void set_cursor_animation(bool on, int time_ms = 55, bool trail = true) noexcept {
+        cursor_anim_enabled_ = on;
+        cursor_tau_ = static_cast<float>(time_ms > 0 ? time_ms : 1) / 1000.0f;
+        cursor_trail_ = trail;
+    }
 
 private:
     // Advance the animated cursor toward (tgt_x,tgt_y) and emit its rect(s).

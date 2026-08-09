@@ -352,7 +352,8 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
 
         if (selected) {
             rc.bg.push_back(rect_inst(static_cast<float>(c * cw), ry, static_cast<float>(cw),
-                                      static_cast<float>(ch), 66, 84, 112, /*radius=*/0));
+                                      static_cast<float>(ch), selection_bg_.r, selection_bg_.g,
+                                      selection_bg_.b, /*radius=*/0));
         } else if (reverse || !std::holds_alternative<term::DefaultColor>(cell.pen.bg)) {
             const term::Color bg = reverse ? cell.pen.fg : cell.pen.bg;
             const Rgb col = palette_.resolve(bg, /*is_fg=*/reverse);
@@ -613,7 +614,7 @@ void Renderer::animate_cursor(float tgt_x, float tgt_y, float cw, float ch, Rgb 
     dt = std::clamp(dt, 0.0f, 0.05f); // ignore long stalls (tab switch / sleep)
 
     const float px0 = cur_anim_x_, py0 = cur_anim_y_;
-    const float a = 1.0f - std::exp(-dt / 0.055f); // exponential approach
+    const float a = 1.0f - std::exp(-dt / cursor_tau_); // exponential approach
     cur_anim_x_ += (tgt_x - cur_anim_x_) * a;
     cur_anim_y_ += (tgt_y - cur_anim_y_) * a;
 
@@ -626,9 +627,9 @@ void Renderer::animate_cursor(float tgt_x, float tgt_y, float cw, float ch, Rgb 
     }
 
     // Comet trail only for moves spanning > ~1.5 cells (typing one cell over
-    // shouldn't smear).
+    // shouldn't smear), and only when enabled.
     const float mvx = cur_anim_x_ - px0, mvy = cur_anim_y_ - py0;
-    if (mvx * mvx + mvy * mvy > (1.5f * cw) * (1.5f * cw)) {
+    if (cursor_trail_ && mvx * mvx + mvy * mvy > (1.5f * cw) * (1.5f * cw)) {
         constexpr int kTrail = 3;
         for (int i = 1; i <= kTrail; ++i) {
             const float t = static_cast<float>(i) / (kTrail + 1);
