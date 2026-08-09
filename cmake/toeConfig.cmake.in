@@ -15,7 +15,8 @@ include(CMakeFindDependencyMacro)
 # included. Both are PRIVATE — no header of them leaks.
 find_dependency(PkgConfig)
 pkg_check_modules(PNG   REQUIRED IMPORTED_TARGET libpng)
-pkg_check_modules(EPOXY REQUIRED IMPORTED_TARGET epoxy)
+# sokol GLCORE links the real libGL directly (no epoxy).
+find_dependency(OpenGL)
 
 include("${CMAKE_CURRENT_LIST_DIR}/toeTargets.cmake")
 

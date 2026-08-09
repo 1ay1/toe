@@ -22,13 +22,16 @@ pkg_check_modules(PNG        REQUIRED IMPORTED_TARGET libpng)
 # --- shader generation: sokol-shdc compiles shaders.glsl -> shaders.glsl.h ----
 # The generated header is committed (so a fresh checkout builds without the
 # tool), but regenerated here when the .glsl changes and the tool is present.
+# We ALWAYS emit both backends (glsl410 for the Linux GLCORE build, metal_macos
+# for the Apple build) so the single committed header serves every platform —
+# regenerating on one host must not break the other. Pick whichever shdc binary
+# matches the build host.
 if(APPLE)
   set(_shdc "${PROJECT_SOURCE_DIR}/tools/bin/sokol-shdc-osx-arm64")
-  set(_slang "metal_macos")
 else()
   set(_shdc "${PROJECT_SOURCE_DIR}/tools/bin/sokol-shdc-linux")
-  set(_slang "glsl410")
 endif()
+set(_slang "glsl410:metal_macos")
 if(EXISTS "${_shdc}")
   add_custom_command(
     OUTPUT  "${CMAKE_CURRENT_SOURCE_DIR}/gfx/shaders.glsl.h"
@@ -99,9 +102,13 @@ if(APPLE)
   target_link_libraries(toe PRIVATE
     "-framework Metal" "-framework MetalKit" "-framework QuartzCore" "-framework Foundation")
 else()
-  # Linux: sokol GLCORE needs a GL loader; keep epoxy for that.
-  pkg_check_modules(EPOXY REQUIRED IMPORTED_TARGET epoxy)
-  target_link_libraries(toe PRIVATE PkgConfig::EPOXY)
+  # Linux: sokol GLCORE is fully native — it includes <GL/gl.h> with
+  # GL_GLEXT_PROTOTYPES and calls the gl* entry points directly, so the real
+  # libGL (core + GLX-dispatched extensions) is linked at link time. No epoxy:
+  # sokol owns GL, and modern libGL exports every symbol sokol references
+  # (glDrawElementsInstanced, glDispatchCompute, glTexStorage2D, ...).
+  find_package(OpenGL REQUIRED)
+  target_link_libraries(toe PRIVATE OpenGL::GL)
 endif()
 
 target_compile_features(toe PUBLIC cxx_std_23)
