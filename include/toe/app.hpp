@@ -41,12 +41,15 @@
 #include <functional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 
 #include "toe/core/types.hpp"
 #include "toe/input.hpp"
 
 namespace toe {
+
+class Terminal; // for the optional OverlayApp refinement (defined in terminal.hpp)
 
 // The windowing-event types live in their own nested namespace so they don't
 // collide with the engine's internal TEA messages of the same name (toe::Resized,
@@ -232,6 +235,22 @@ concept ClipboardApp = App<A> && requires(A a, std::string_view t) {
 template <typename A>
 concept UrlOpenerApp = App<A> && requires(A a, std::string_view u) {
     { a.open_url(u) } -> std::same_as<void>;
+};
+
+// An App that can draw an in-terminal UI OVERLAY (a settings panel, search bar,
+// notification) over the terminal and capture input for it. When the overlay is
+// active it swallows window events instead of them reaching the child, and it
+// paints each frame after the terminal renders. Entirely optional — a host
+// without it runs exactly as before (the accessors below fold to nothing).
+template <typename A>
+concept OverlayApp = App<A> && requires(A a, const A ca) {
+    { ca.overlay_active() } -> std::convertible_to<bool>;
+    // Consume one window event for the overlay; return true if it was handled
+    // (and must NOT reach the terminal/child).
+    { a.overlay_event(std::declval<const win::Event &>()) } -> std::convertible_to<bool>;
+    // Draw the overlay for this frame. Called after the terminal renders, with
+    // a current GL context; the App composites via Session::render_overlay.
+    { a.overlay_render(std::declval<Terminal &>(), std::declval<PixelSize>()) };
 };
 
 // An App that needs a key-repeat timer fd folded into toe's poll set.

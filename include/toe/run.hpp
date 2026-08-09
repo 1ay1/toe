@@ -91,8 +91,20 @@ template <App A>
 
         // 2. Route window events -> Session actions via the exhaustive
         //    visitor. It reports whether any event handed bytes to the child.
+        //    When an in-terminal overlay (settings panel, search) is active, it
+        //    captures input first; events it consumes never reach the terminal.
         EventRouter<A> router{session, surf, px, running};
-        surf.poll_events([&](const Event &ev) { std::visit(router, ev); });
+        surf.poll_events([&](const Event &ev) {
+            if constexpr (OverlayApp<A>) {
+                if (surf.overlay_active() && surf.overlay_event(ev)) return;
+            }
+            std::visit(router, ev);
+        });
+
+        const bool overlay_on = [&] {
+            if constexpr (OverlayApp<A>) return surf.overlay_active();
+            else return false;
+        }();
 
         // 2b. Drain child output HERE, decoupled from the window event
         //     cadence. poll_events fires a ChildOutput at most once per
@@ -153,11 +165,16 @@ template <App A>
         // don't drop to the idle poll — loop straight back to keep draining.
         const bool streaming = pumped || session.output_pending();
         const bool rate_ok = !streaming || (now.value - last_present_ms) >= kFloodPresentMs;
-        if ((child_gone || drawn != key) && rate_ok) {
+        // The overlay animates + responds to input every frame, so force a
+        // repaint while it's active (the terminal grid may be unchanged).
+        if ((child_gone || drawn != key || overlay_on) && rate_ok) {
             glViewport(0, 0, px.w, px.h);
             auto rc = toe::gfx::RenderContext::adopt_current();
             const toe::DamageRect dmg = session.render(rc, px, blink.cursor_on, blink.text_on);
-            toe::present(surf, dmg.empty() ? toe::DamageRect::full(px) : dmg);
+            if constexpr (OverlayApp<A>) {
+                if (overlay_on) surf.overlay_render(term, px);
+            }
+            toe::present(surf, (overlay_on || dmg.empty()) ? toe::DamageRect::full(px) : dmg);
             drawn = key;
             last_present_ms = now.value;
         }
