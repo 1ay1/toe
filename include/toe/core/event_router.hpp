@@ -19,9 +19,6 @@
 #include <string_view>
 #include <utility>
 
-#include <sys/wait.h>
-#include <unistd.h>
-
 #include "toe/app.hpp"
 #include "toe/terminal.hpp"
 
@@ -112,7 +109,7 @@ private:
         // opens an OSC 8 hyperlink under the pointer, if any.
         if (e.button == MouseButton::left && (e.mods.ctrl || !s_.wants_mouse())) {
             if (std::string_view uri = s_.link_at(vrow, col); !uri.empty()) {
-                open_uri(uri);
+                open_url(surf_, uri);
                 return;
             }
         }
@@ -225,24 +222,10 @@ private:
         if (std::string sel = s_.selected_text(); !sel.empty()) set_clipboard(sel);
     }
 
-    // Launch the desktop URL handler for an OSC 8 link. fork/exec (never
-    // system()) so the URI can't be shell-interpreted — it's passed as a single
-    // argv element. Double-fork so the opener isn't a zombie child of the term.
-    static void open_uri(std::string_view uri) {
-        std::string url{uri};
-        const pid_t pid = ::fork();
-        if (pid != 0) {
-            if (pid > 0) { int st = 0; ::waitpid(pid, &st, 0); } // reap the first fork
-            return;
-        }
-        if (::fork() == 0) { // grandchild: actually exec, detached
-            ::setsid();
-            const char *argv[] = {"xdg-open", url.c_str(), nullptr};
-            ::execvp("xdg-open", const_cast<char *const *>(argv));
-            ::_exit(127);
-        }
-        ::_exit(0); // first child exits immediately
-    }
+    // Open an OSC 8 link via the host's URL opener (a UrlOpenerApp refinement).
+    // Opening a URL is an OS action — like the clipboard — so the host owns it;
+    // toe holds no fork/exec, no xdg-open, no platform binary name.
+    void open_url(S &surf, std::string_view uri) { toe::open_url(surf, uri); }
 
     toe::Session &s_;
     S &surf_;

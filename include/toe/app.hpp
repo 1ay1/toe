@@ -225,6 +225,15 @@ concept ClipboardApp = App<A> && requires(A a, std::string_view t) {
     { a.get_clipboard() } -> std::convertible_to<std::string>;
 };
 
+// An App that can open a URL in the desktop's default handler (OSC 8 links,
+// Ctrl+Click). Opening a URL is an OS action — like the clipboard — so it's a
+// host capability, not engine work. A host that doesn't provide it simply has
+// non-clickable links (open_url() below is a no-op then).
+template <typename A>
+concept UrlOpenerApp = App<A> && requires(A a, std::string_view u) {
+    { a.open_url(u) } -> std::same_as<void>;
+};
+
 // An App that needs a key-repeat timer fd folded into toe's poll set.
 template <typename A>
 concept RepeatingApp = App<A> && requires(const A ca) {
@@ -261,6 +270,10 @@ template <App A>
 [[nodiscard]] inline std::string clipboard_get(A &a) {
     if constexpr (ClipboardApp<A>) return a.get_clipboard();
     else return {};
+}
+template <App A>
+inline void open_url(A &a, std::string_view u) {
+    if constexpr (UrlOpenerApp<A>) a.open_url(u);
 }
 template <App A>
 [[nodiscard]] inline int repeat_fd(const A &a) {
