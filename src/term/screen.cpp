@@ -547,8 +547,13 @@ void Screen::put(char32_t cp) {
     at(cursor_.row, cursor_.col) = Cell{cp, pen_, static_cast<std::uint8_t>(w), cur_link_};
     last_char_ = cp; // remember for REP (CSI Ps b)
     if (w == 2) {
-        // The second half is a spacer the renderer skips.
-        at(cursor_.row, cursor_.col + 1) = Cell{U' ', pen_, 0, cur_link_};
+        // The second half is a spacer the renderer skips. The base cell was just
+        // written via at() (which stamped the row + bumped note_used to col+1);
+        // write the spacer DIRECTLY through the row pointer and extend note_used
+        // to col+2, avoiding a second at() (stamp + view_row) for the same row.
+        const std::int32_t c0 = cursor_.col.get();
+        cell_ptr(cursor_.row, Col{c0 + 1})[0] = Cell{U' ', pen_, 0, cur_link_};
+        ring_.note_used(cursor_.row.get(), c0 + 2);
     }
 
     const int advance = w;
