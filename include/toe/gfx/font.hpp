@@ -154,6 +154,9 @@ private:
     std::uint32_t tex_id_{0};
     std::uint32_t glyph_view_id_{0};
     bool atlas_dirty_{false};
+    // Reusable scratch for glyph synthesis (bold/italic) — avoids a heap alloc
+    // per never-seen glyph in the rasterize hot path. Grown, never shrunk.
+    std::vector<unsigned char> synth_scratch_{};
     int atlas_dim_{0};
     int pen_x_{0}, pen_y_{0}, shelf_h_{0}; // shelf allocator cursor
 

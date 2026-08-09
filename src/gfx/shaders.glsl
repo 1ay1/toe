@@ -64,8 +64,13 @@ void main() {
         frag = texture(sampler2D(uColorAtlas, uSmp), vUV);
     } else if (vIsGlyph > 0.5) {
         float a = texture(sampler2D(uAtlas, uSmp), vUV).r;
-        // Gamma-correct the coverage (stem darkening) — 1/1.55 ≈ kitty default.
-        a = pow(a, 1.0 / 1.55);
+        // Coverage gamma (stem darkening). HW alpha blending happens in the
+        // framebuffer's non-linear sRGB space, which visually thins light-on-
+        // dark text; raising the coverage compensates. 1/1.55 (kitty's default)
+        // over-darkens on hi-dpi grayscale AA; 1/1.35 keeps stems crisp without
+        // the muddy edges. a==0 and a==1 are fixed points, so solid interiors
+        // stay fully solid and empty stays empty.
+        a = pow(a, 1.0 / 1.35);
         frag = vec4(vColor, a);
     } else {
         if (vRadius > 0.0) {

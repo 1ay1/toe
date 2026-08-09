@@ -89,19 +89,27 @@ GlyphBitmap Face::rasterize(std::uint32_t glyph_index) const {
     out.advance = static_cast<int>(std::lround(adv * scale_));
 
     int w = 0, ht = 0, ox = 0, oy = 0;
-    unsigned char *bmp =
-        stbtt_GetGlyphBitmap(&h_->info, scale_, scale_, static_cast<int>(glyph_index), &w, &ht, &ox, &oy);
-    if (bmp) {
-        out.width = w;
-        out.height = ht;
-        out.bearing_x = ox;
-        out.bearing_y = oy; // stb: top edge relative to baseline, y DOWN positive
-        if (w > 0 && ht > 0) {
-            const std::size_t n = static_cast<std::size_t>(w) * static_cast<std::size_t>(ht);
-            out.pixels.assign(bmp, bmp + n);
-        }
-        stbtt_FreeBitmap(bmp, nullptr);
+    // Zero-copy: query the bbox, size out.pixels once, and let stb rasterize
+    // DIRECTLY into it. The old stbtt_GetGlyphBitmap path mallocs internally,
+    // then we'd copy + free — three heap ops per never-seen glyph. MakeGlyphBitmap
+    // renders into a caller buffer, so it's one allocation (the output itself,
+    // reused across frames by the atlas cache since each glyph is packed once).
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    stbtt_GetGlyphBitmapBox(&h_->info, static_cast<int>(glyph_index), scale_, scale_,
+                            &x0, &y0, &x1, &y1);
+    w = x1 - x0;
+    ht = y1 - y0;
+    ox = x0;
+    oy = y0; // stb: top edge relative to baseline, y DOWN positive
+    if (w > 0 && ht > 0) {
+        out.pixels.resize(static_cast<std::size_t>(w) * static_cast<std::size_t>(ht));
+        stbtt_MakeGlyphBitmap(&h_->info, out.pixels.data(), w, ht, /*stride=*/w, scale_, scale_,
+                              static_cast<int>(glyph_index));
     }
+    out.width = w;
+    out.height = ht;
+    out.bearing_x = ox;
+    out.bearing_y = oy;
     return out;
 }
 

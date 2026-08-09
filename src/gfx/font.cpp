@@ -9,6 +9,7 @@
 #include "toe/gfx/opentype.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <utility>
@@ -33,7 +34,8 @@ const GlyphInfo *pack_bitmap(const unsigned char *src, int w, int h, int off_x, 
                              int advance, bool bold, bool italic, std::uint64_t key,
                              std::unordered_map<std::uint64_t, GlyphInfo> &cache,
                              std::vector<std::uint8_t> &shadow, bool &dirty, int atlas_dim,
-                             int &pen_x, int &pen_y, int &shelf_h, int cell_h) {
+                             int &pen_x, int &pen_y, int &shelf_h, int cell_h,
+                             std::vector<unsigned char> &scratch) {
     GlyphInfo info;
     info.bearing_x = off_x;
     info.bearing_y = -off_y; // stb gives y-down top offset; GlyphInfo wants y-up bearing
@@ -46,10 +48,15 @@ const GlyphInfo *pack_bitmap(const unsigned char *src, int w, int h, int off_x, 
         return &it->second;
     }
 
-    // Synthesize into a scratch buffer (bold: +1px width; italic: +shear px).
+    // Synthesize into a reusable scratch buffer (bold: +1px width; italic:
+    // +shear px). Reusing the caller's buffer avoids a heap allocation for
+    // every never-seen glyph.
     const int shear = italic ? (h * 2) / 10 : 0; // ~0.2 slope
     const int bw = w + (bold ? 1 : 0) + shear;
-    std::vector<unsigned char> buf(static_cast<std::size_t>(bw) * static_cast<std::size_t>(h), 0);
+    const std::size_t need = static_cast<std::size_t>(bw) * static_cast<std::size_t>(h);
+    if (scratch.size() < need) scratch.resize(need);
+    unsigned char *buf = scratch.data();
+    std::memset(buf, 0, need);
     for (int y = 0; y < h; ++y) {
         const int sx = italic ? ((h - 1 - y) * shear) / std::max(h - 1, 1) : 0;
         for (int x = 0; x < w; ++x) {
@@ -69,6 +76,14 @@ const GlyphInfo *pack_bitmap(const unsigned char *src, int w, int h, int off_x, 
     info.height = h;
     if (pen_x + bw + 1 > atlas_dim) { pen_x = 1; pen_y += shelf_h + 1; shelf_h = 0; }
     if (pen_y + h + 1 > atlas_dim) { // atlas full
+        static bool warned = false;
+        if (!warned) {
+            std::fprintf(stderr,
+                         "toe: font atlas full (%dx%d) — new glyphs will render blank; "
+                         "consider a larger atlas or eviction\n",
+                         atlas_dim, atlas_dim);
+            warned = true;
+        }
         info.width = 0; info.height = 0;
         auto [it, _] = cache.emplace(key, info);
         return &it->second;
@@ -77,7 +92,7 @@ const GlyphInfo *pack_bitmap(const unsigned char *src, int w, int h, int off_x, 
     // The renderer uploads the shadow to the sg_image once per frame if dirty.
     for (int y = 0; y < h; ++y) {
         std::uint8_t *dst = shadow.data() + static_cast<std::size_t>(pen_y + y) * atlas_dim + pen_x;
-        std::memcpy(dst, buf.data() + static_cast<std::size_t>(y) * bw, static_cast<std::size_t>(bw));
+        std::memcpy(dst, buf + static_cast<std::size_t>(y) * bw, static_cast<std::size_t>(bw));
     }
     dirty = true;
     const float inv = 1.0f / static_cast<float>(atlas_dim);
@@ -249,7 +264,7 @@ const GlyphInfo *FontAtlas::rasterize(char32_t cp, FontStyle style) {
     if (g.is_color) return pack_color(g, key); // emoji -> RGBA atlas
     return pack_bitmap(g.pixels.empty() ? nullptr : g.pixels.data(), g.width, g.height,
                        g.bearing_x, g.bearing_y, g.advance, bold, italic, key, cache_, shadow_,
-                       atlas_dirty_, atlas_dim_, pen_x_, pen_y_, shelf_h_, cell_h_);
+                       atlas_dirty_, atlas_dim_, pen_x_, pen_y_, shelf_h_, cell_h_, synth_scratch_);
 }
 
 const GlyphInfo *FontAtlas::rasterize_index(std::uint32_t gindex, FontStyle style) {
@@ -261,7 +276,7 @@ const GlyphInfo *FontAtlas::rasterize_index(std::uint32_t gindex, FontStyle styl
     const GlyphBitmap g = faces_.primary().rasterize(gindex);
     return pack_bitmap(g.pixels.empty() ? nullptr : g.pixels.data(), g.width, g.height,
                        g.bearing_x, g.bearing_y, g.advance, bold, italic, key, cache_, shadow_,
-                       atlas_dirty_, atlas_dim_, pen_x_, pen_y_, shelf_h_, cell_h_);
+                       atlas_dirty_, atlas_dim_, pen_x_, pen_y_, shelf_h_, cell_h_, synth_scratch_);
 }
 
 void FontAtlas::shape_run(std::span<const char32_t> cps, std::span<std::uint32_t> out) const {
