@@ -467,6 +467,23 @@ private:
     // resize changes the column count. Preserves logical lines + the cursor.
     void reflow(Extent old_size, Extent new_size);
 
+    // Reusable scratch for reflow, so a drag-resize / font-zoom storm reuses one
+    // allocation instead of churning ~2 heap allocs per row every frame. The
+    // whole buffer is represented FLAT: `reflow_cells_` is a single cell arena,
+    // and `reflow_lines_`/`reflow_rows_` index into it as (offset,len) spans —
+    // no per-line/per-row std::vector, so a resize is O(cells) copies with O(1)
+    // allocations (amortised) rather than O(rows) heap traffic.
+    struct Span {
+        std::uint32_t off;   // start index into reflow_cells_
+        std::uint32_t len;   // cell count
+        bool wrapped;        // soft-wrap continuation follows (physical rows)
+        bool from_live;      // originated in the live grid (logical lines)
+        std::uint32_t line;  // source logical-line index (physical rows only)
+    };
+    std::vector<Cell> reflow_cells_{};
+    std::vector<Span> reflow_lines_{}; // logical lines
+    std::vector<Span> reflow_rows_{};  // rewrapped physical rows
+
     // Soft-wrap flag helpers for the live grid (indexed by visible row). These
     // route straight to the ring so wrapped flags travel with the row on scroll.
     void set_wrapped(std::int32_t row, bool w) noexcept {

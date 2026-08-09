@@ -114,7 +114,17 @@ void Screen::resize(Extent size) {
     } else {
         // No rewrap: keep the visible grid + scrollback, crop/pad to the new
         // geometry. On the alt screen there is no scrollback to preserve.
+        // Anchor the top-of-viewport to the same ABSOLUTE row so the user's
+        // scroll position doesn't drift when only the height changes. Top abs
+        // row before = old_view_base - scroll_offset_; keep it after.
+        const std::int64_t old_view_base = static_cast<std::int64_t>(ring_.view_base());
+        const std::int64_t top_abs = old_view_base - scroll_offset_;
         ring_.resize_keep(size.rows, size.cols, on_alt_ ? 0 : max_history_, blank_cell());
+        if (scroll_offset_ > 0) {
+            const std::int64_t new_view_base = static_cast<std::int64_t>(ring_.view_base());
+            scroll_offset_ = static_cast<std::int32_t>(std::clamp<std::int64_t>(
+                new_view_base - top_abs, 0, static_cast<std::int64_t>(ring_.scrollback())));
+        }
         size_ = size;
     }
 
@@ -142,151 +152,203 @@ void Screen::resize(Extent size) {
 // the new width, keeping the last `rows` lines live and the rest in scrollback.
 // The cursor's logical position is tracked across the transform.
 void Screen::reflow(Extent old_size, Extent new_size) {
-    struct LogLine {
-        std::vector<Cell> cells;
-        bool from_live = false; // originated in the live grid (vs history)
-    };
+    // Everything below indexes into ONE reused cell arena (reflow_cells_) via
+    // (off,len) Spans, so a resize is O(cells) copies with amortised O(1)
+    // allocations — no per-line / per-row std::vector heap churn. A drag-resize
+    // or font-zoom storm reuses the same buffers frame after frame.
+    reflow_cells_.clear();
+    reflow_lines_.clear();
+    reflow_rows_.clear();
 
-    // Trim a physical row to its last non-blank cell (a soft-wrapped row keeps
-    // its full width; a hard line keeps only up to its content).
-    const auto trimmed = [&](std::span<const Cell> row, bool wrapped) {
-        std::vector<Cell> v(row.begin(), row.end());
+    // Append a physical row's content into reflow_cells_ and return its length,
+    // trimming trailing blanks on a HARD (non-wrapped) line.
+    const auto append_trimmed = [&](const Cell *rowp, std::int32_t cols, bool wrapped) -> std::uint32_t {
+        std::int32_t len = cols;
         if (!wrapped) {
-            while (!v.empty() && v.back().blank()) v.pop_back();
+            while (len > 0 && rowp[len - 1].blank()) --len;
         }
-        return v;
+        reflow_cells_.insert(reflow_cells_.end(), rowp, rowp + len);
+        return static_cast<std::uint32_t>(len);
     };
 
-    // 1. Gather logical lines from history, joining soft-wrapped runs.
-    //    History now lives in the ring: absolute rows [0, scrollback()) are the
-    //    scrollback lines above the live view, oldest first.
-    std::vector<LogLine> logical;
+    // 1. Gather logical lines from history, joining soft-wrapped runs. History
+    //    lives in the ring: absolute rows [0, scrollback()) are scrollback,
+    //    oldest first. Each logical line is a Span into reflow_cells_.
     {
         const std::size_t hist = ring_.scrollback();
-        std::vector<Cell> cur;
+        std::uint32_t line_off = static_cast<std::uint32_t>(reflow_cells_.size());
         bool have = false;
         for (std::size_t i = 0; i < hist; ++i) {
             const Cell *rowp = ring_.abs_row(i);
             const bool wrapped = ring_.wrapped_abs(i);
-            auto piece = trimmed(std::span<const Cell>(rowp,
-                                    static_cast<std::size_t>(old_size.cols)), wrapped);
-            cur.insert(cur.end(), piece.begin(), piece.end());
+            append_trimmed(rowp, old_size.cols, wrapped);
             have = true;
-            if (!wrapped) { logical.push_back({std::move(cur), false}); cur.clear(); have = false; }
+            if (!wrapped) {
+                const auto end = static_cast<std::uint32_t>(reflow_cells_.size());
+                reflow_lines_.push_back({line_off, end - line_off, false, false});
+                line_off = end;
+                have = false;
+            }
         }
-        if (have) logical.push_back({std::move(cur), false});
+        if (have) {
+            const auto end = static_cast<std::uint32_t>(reflow_cells_.size());
+            reflow_lines_.push_back({line_off, end - line_off, false, false});
+        }
     }
 
-    // 2. Append the live grid's logical rows, tracking the cursor's flat offset.
+    // 2. Append the live grid's logical rows, tracking the cursor's logical
+    //    (line, column) so we can re-place it after rewrap.
     const std::int32_t cur_row = cursor_.row.get();
-    std::int64_t cursor_flat = -1; // index into the live logical line + column
     std::size_t cursor_line = 0;
     std::int32_t cursor_col_in_line = 0;
     {
-        std::vector<Cell> cur;
-        std::int32_t line_start_row = 0;
+        std::uint32_t line_off = static_cast<std::uint32_t>(reflow_cells_.size());
+        bool have = false;
         for (std::int32_t r = 0; r < old_size.rows; ++r) {
             const bool wrapped = wrapped_at(r);
-            std::vector<Cell> piece;
-            for (std::int32_t c = 0; c < old_size.cols; ++c) piece.push_back(at(Row{r}, Col{c}));
-            if (!wrapped) while (!piece.empty() && piece.back().blank()) piece.pop_back();
             if (r == cur_row) {
-                cursor_line = logical.size();
-                cursor_col_in_line = static_cast<std::int32_t>(cur.size()) + cursor_.col.get();
+                cursor_line = reflow_lines_.size();
+                cursor_col_in_line =
+                    static_cast<std::int32_t>(reflow_cells_.size() - line_off) + cursor_.col.get();
             }
-            cur.insert(cur.end(), piece.begin(), piece.end());
+            append_trimmed(ring_.view_row(r), old_size.cols, wrapped);
+            have = true;
             if (!wrapped) {
-                logical.push_back({std::move(cur), true});
-                cur.clear();
-                line_start_row = r + 1;
+                const auto end = static_cast<std::uint32_t>(reflow_cells_.size());
+                reflow_lines_.push_back({line_off, end - line_off, false, true});
+                line_off = end;
+                have = false;
             }
         }
-        (void)line_start_row;
-        (void)cursor_flat;
-        if (!cur.empty()) logical.push_back({std::move(cur), true});
+        if (have) {
+            const auto end = static_cast<std::uint32_t>(reflow_cells_.size());
+            reflow_lines_.push_back({line_off, end - line_off, false, true});
+        }
     }
 
-    // 3. Re-wrap each logical line at the new width into physical rows.
+    // Capture the scroll anchor: which LOGICAL line is at the top of the
+    // viewport right now, so we can keep the user's scroll position across the
+    // rewrap instead of snapping to the bottom. The anchored absolute row is
+    // (view_base - scroll_offset_) in the OLD ring; map it to a logical-line
+    // index by counting physical rows per logical line as we built them.
+    const std::int64_t anchor_abs =
+        static_cast<std::int64_t>(ring_.view_base()) - scroll_offset_;
+    const bool was_scrolled = scroll_offset_ > 0;
+    // reflow_lines_ were appended in absolute order (history then live), and
+    // each logical line spanned a known number of OLD physical rows. Walk them
+    // to find which logical line covers anchor_abs.
+    std::uint32_t anchor_line = 0;
+    if (was_scrolled) {
+        std::int64_t acc = 0;
+        for (std::size_t li = 0; li < reflow_lines_.size(); ++li) {
+            const std::uint32_t oldrows =
+                reflow_lines_[li].len == 0
+                    ? 1u
+                    : (reflow_lines_[li].len + static_cast<std::uint32_t>(old_size.cols) - 1) /
+                          static_cast<std::uint32_t>(old_size.cols);
+            if (anchor_abs < acc + oldrows) { anchor_line = static_cast<std::uint32_t>(li); break; }
+            acc += oldrows;
+            anchor_line = static_cast<std::uint32_t>(li);
+        }
+    }
+
+    // 3. Re-wrap each logical line at the new width into physical-row Spans
+    //    (still pointing into the same reflow_cells_ arena — no copy).
     const std::int32_t ncols = new_size.cols;
-    std::vector<std::vector<Cell>> rows;
-    std::vector<bool> rows_wrapped;
     std::int32_t new_cursor_row = 0, new_cursor_col = 0;
     bool cursor_placed = false;
-    for (std::size_t li = 0; li < logical.size(); ++li) {
-        const auto &ln = logical[li];
-        std::size_t off = 0;
-        const std::size_t n = ln.cells.size();
+    for (std::size_t li = 0; li < reflow_lines_.size(); ++li) {
+        const Span ln = reflow_lines_[li];
+        std::uint32_t off = 0;
         // do/while emits at least one row, so an empty logical line yields one
-        // blank physical row (no separate empty-line branch, which double-counts).
+        // blank physical row (no separate empty-line branch that double-counts).
         do {
-            const std::size_t take = std::min<std::size_t>(static_cast<std::size_t>(ncols), n - off);
-            std::vector<Cell> row(static_cast<std::size_t>(ncols));
-            for (std::size_t c = 0; c < take; ++c) row[c] = ln.cells[off + c];
-            const bool more = (off + take) < n;
-            // Place the cursor when we reach its logical line + column.
+            const std::uint32_t take =
+                std::min<std::uint32_t>(static_cast<std::uint32_t>(ncols), ln.len - off);
+            const bool more = (off + take) < ln.len;
             if (ln.from_live && li == cursor_line && !cursor_placed) {
                 const std::int32_t col = cursor_col_in_line;
                 if (col >= static_cast<std::int32_t>(off) &&
-                    (col < static_cast<std::int32_t>(off + static_cast<std::size_t>(ncols)) || !more)) {
-                    new_cursor_row = static_cast<std::int32_t>(rows.size());
+                    (col < static_cast<std::int32_t>(off + static_cast<std::uint32_t>(ncols)) ||
+                     !more)) {
+                    new_cursor_row = static_cast<std::int32_t>(reflow_rows_.size());
                     new_cursor_col = std::clamp(col - static_cast<std::int32_t>(off), 0, ncols - 1);
                     cursor_placed = true;
                 }
             }
-            rows.push_back(std::move(row));
-            rows_wrapped.push_back(more);
+            reflow_rows_.push_back({ln.off + off, take, more, ln.from_live,
+                                    static_cast<std::uint32_t>(li)});
             off += take;
-        } while (off < n);
+        } while (off < ln.len);
     }
-    if (!cursor_placed && !rows.empty()) {
-        new_cursor_row = static_cast<std::int32_t>(rows.size()) - 1;
+    if (!cursor_placed && !reflow_rows_.empty()) {
+        new_cursor_row = static_cast<std::int32_t>(reflow_rows_.size()) - 1;
         new_cursor_col = 0;
     }
 
-    // 4. Split into scrollback (all but the last `rows` lines) + live grid,
-    //    then rebuild the ring from scratch: reset gives us `nrows` blank live
-    //    rows and no scrollback; we scroll_up_one to prepend each scrollback
-    //    line (O(1) each), then paint the live grid rows in place.
+    // 4. Split into scrollback (all but the last `rows` rows) + live grid, then
+    //    rebuild the ring: reset gives `nrows` blank live rows + no scrollback;
+    //    scroll_up_one prepends each scrollback line (O(1) each); the live grid
+    //    is painted in place. Each row is a Span-directed copy from reflow_cells_.
     const std::int32_t nrows = new_size.rows;
-    const std::int32_t total = static_cast<std::int32_t>(rows.size());
+    const std::int32_t total = static_cast<std::int32_t>(reflow_rows_.size());
     const std::int32_t live_count = std::min(total, nrows);
     const std::int32_t live_first = total - live_count;
+
+    // Write a rewrapped physical-row Span into a destination cell buffer, zero-
+    // padding to ncols. src cells come from reflow_cells_[span.off .. +span.len].
+    const auto paint = [&](Cell *dst, const Span &sp) {
+        const Cell *src = reflow_cells_.data() + sp.off;
+        const std::uint32_t len = std::min<std::uint32_t>(sp.len, static_cast<std::uint32_t>(ncols));
+        for (std::uint32_t c = 0; c < len; ++c) dst[c] = src[c];
+        for (std::int32_t c = static_cast<std::int32_t>(len); c < ncols; ++c) dst[c] = Cell{};
+    };
 
     size_ = new_size;
     ring_.reset(nrows, ncols, max_history_, Cell{});
 
-    // Scrollback lines: cap to max_history_, oldest dropped first.
     std::int32_t sb_first = 0;
     if (static_cast<std::size_t>(live_first) > max_history_)
         sb_first = live_first - static_cast<std::int32_t>(max_history_);
     for (std::int32_t i = sb_first; i < live_first; ++i) {
-        // Push the current top row into scrollback, opening a blank bottom row,
-        // then write this scrollback line into what is now the top visible row
-        // and immediately scroll it up so it lands in history.
-        Cell *dst = ring_.view_row(0);
-        const auto &src = rows[static_cast<std::size_t>(i)];
-        for (std::int32_t c = 0; c < ncols; ++c) dst[c] = src[static_cast<std::size_t>(c)];
+        const Span &sp = reflow_rows_[static_cast<std::size_t>(i)];
+        paint(ring_.view_row(0), sp);
         ring_.mark_view_full(0);
-        ring_.set_view_wrapped(0, rows_wrapped[static_cast<std::size_t>(i)]);
+        ring_.set_view_wrapped(0, sp.wrapped);
         ring_.scroll_up_one(true, Cell{});
     }
 
-    // Live grid: paint directly into the visible rows.
     for (std::int32_t r = 0; r < nrows; ++r) {
         Cell *dst = ring_.view_row(r);
         ring_.mark_view_full(r);
         if (r < live_count) {
-            const auto &src = rows[static_cast<std::size_t>(live_first + r)];
-            for (std::int32_t c = 0; c < ncols; ++c) dst[c] = src[static_cast<std::size_t>(c)];
-            ring_.set_view_wrapped(r, rows_wrapped[static_cast<std::size_t>(live_first + r)]);
+            const Span &sp = reflow_rows_[static_cast<std::size_t>(live_first + r)];
+            paint(dst, sp);
+            ring_.set_view_wrapped(r, sp.wrapped);
         } else {
             for (std::int32_t c = 0; c < ncols; ++c) dst[c] = Cell{};
             ring_.set_view_wrapped(r, false);
         }
     }
 
-    scroll_offset_ = 0;
-    // Cursor: map into the live region (clamp if it scrolled into history).
+    // Restore the scroll position: if the user was scrolled into history, put
+    // the SAME logical line back at the top of the viewport (re-wrapped to the
+    // new width). Otherwise stay live at the bottom.
+    if (was_scrolled) {
+        // First physical row (in the new rewrap) belonging to the anchor line.
+        std::int32_t anchor_row = 0;
+        for (std::int32_t i = 0; i < total; ++i) {
+            if (reflow_rows_[static_cast<std::size_t>(i)].line == anchor_line) { anchor_row = i; break; }
+        }
+        // Absolute rows [0,total) map onto the new ring the same way (scrollback
+        // then live). view_base() == number of scrollback rows == live_first.
+        // scroll_offset counts rows UP from the live top, so:
+        const std::int32_t new_view_base = live_first;
+        scroll_offset_ = std::clamp(new_view_base - anchor_row, 0,
+                                    static_cast<std::int32_t>(ring_.scrollback()));
+    } else {
+        scroll_offset_ = 0;
+    }
     cursor_.row = Row{std::clamp(new_cursor_row - live_first, 0, std::max(nrows - 1, 0))};
     cursor_.col = Col{std::clamp(new_cursor_col, 0, std::max(ncols - 1, 0))};
     wrap_pending_ = false;

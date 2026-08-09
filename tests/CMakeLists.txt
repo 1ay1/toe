@@ -14,6 +14,14 @@ add_executable(screen_test screen_test.cpp)
 target_link_libraries(screen_test PRIVATE toe::toe)
 add_test(NAME screen COMMAND screen_test)
 
+add_executable(resize_test resize_test.cpp)
+target_link_libraries(resize_test PRIVATE toe::toe)
+add_test(NAME resize COMMAND resize_test)
+
+add_executable(scrollback_test scrollback_test.cpp)
+target_link_libraries(scrollback_test PRIVATE toe::toe)
+add_test(NAME scrollback COMMAND scrollback_test)
+
 add_executable(tea_test tea_test.cpp)
 target_link_libraries(tea_test PRIVATE toe::toe)
 add_test(NAME tea COMMAND tea_test)

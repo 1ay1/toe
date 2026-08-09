@@ -255,17 +255,18 @@ public:
         new_cols = new_cols < 0 ? 0 : new_cols;
         const std::size_t old_total = count_;
         const std::int32_t copy_cols = std::min(cols_, new_cols);
-        // Snapshot the existing rows (absolute order) before reallocating.
-        std::vector<std::vector<Cell>> saved;
-        std::vector<bool> saved_wrapped;
-        saved.reserve(old_total);
-        saved_wrapped.reserve(old_total);
+        // Snapshot existing rows (absolute order) into ONE flat buffer laid out
+        // at the NEW width — crop/blank-pad per row — plus a parallel wrapped[].
+        // A single allocation instead of one std::vector per row (the height-
+        // only resize used to churn ~old_total heap allocs). Reused across calls.
+        const std::size_t ncols = static_cast<std::size_t>(new_cols);
+        keep_scratch_.assign(old_total * ncols, blank);
+        keep_wrapped_.assign(old_total, false);
         for (std::size_t i = 0; i < old_total; ++i) {
-            std::vector<Cell> row(static_cast<std::size_t>(new_cols), blank);
+            Cell *dst = keep_scratch_.data() + i * ncols;
             const Cell *src = abs_row(i);
-            for (std::int32_t c = 0; c < copy_cols; ++c) row[static_cast<std::size_t>(c)] = src[c];
-            saved.push_back(std::move(row));
-            saved_wrapped.push_back(wrapped_abs(i));
+            for (std::int32_t c = 0; c < copy_cols; ++c) dst[static_cast<std::size_t>(c)] = src[c];
+            keep_wrapped_[i] = wrapped_abs(i);
         }
         // Reallocate the arena for the new geometry.
         rows_ = new_rows;
@@ -280,27 +281,21 @@ public:
         used_.assign(cap_slots_, 0);
         blank_line_.clear();
         head_ = 0;
-        // Keep the last (rows_ + scroll) saved rows; the visible grid is always
-        // the final rows_ of them (blank-padded if we had fewer rows before).
         const std::size_t want = cap_slots_;
-        const std::size_t have = saved.size();
+        const std::size_t have = old_total;
         const std::size_t drop = have > want ? have - want : 0;
         const std::size_t kept = have - drop;
-        // We need at least rows_ live rows; if we kept fewer than rows_, the
-        // deficit is fresh blank rows appended at the bottom.
         const std::size_t live_from_saved = std::min(kept, static_cast<std::size_t>(rows_));
         const std::size_t sb = kept - live_from_saved;
         count_ = sb + static_cast<std::size_t>(rows_);
         for (std::size_t i = 0; i < kept; ++i) {
             Cell *dst = abs_row(i);
-            const auto &row = saved[drop + i];
-            std::memcpy(dst, row.data(), static_cast<std::size_t>(cols_) * sizeof(Cell));
-            set_wrapped_abs(i, saved_wrapped[drop + i]);
+            const Cell *src = keep_scratch_.data() + (drop + i) * ncols;
+            std::memcpy(dst, src, static_cast<std::size_t>(cols_) * sizeof(Cell));
+            set_wrapped_abs(i, keep_wrapped_[drop + i]);
             used_[slot_of(i)] = static_cast<std::size_t>(cols_); // restored: assume full
         }
-        // Slots [0,kept) now hold restored content; the rest are pristine fill.
         high_water_ = kept;
-        // Any trailing visible rows beyond what we restored are already blank.
     }
 
     [[nodiscard]] const Cell &blank_cell() const noexcept { return blank_; }
@@ -401,6 +396,9 @@ private:
     std::int32_t rows_ = 0, cols_ = 0;
     std::size_t head_ = 0;             // slot of absolute row 0 (oldest)
     std::size_t count_ = 0;            // total live rows (scrollback + visible)
+    // Reusable flat snapshot for resize_keep (one alloc, not one per row).
+    std::vector<Cell> keep_scratch_{};
+    std::vector<bool> keep_wrapped_{};
 };
 
 } // namespace toe::term
