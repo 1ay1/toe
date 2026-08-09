@@ -51,6 +51,16 @@ public:
     DamageRect draw(const term::Screen &screen, PixelSize px, bool cursor_on = true,
                     bool blink_on = true);
 
+    // Draw a raw CELL GRID as an overlay pass, on top of whatever is already in
+    // the framebuffer, at pixel offset (ox, oy). `cells` is row-major, `cols`
+    // wide by `rows` tall (a width-0 cell is a wide-glyph spacer, skipped).
+    // This is the host's hook for in-terminal UI (a settings panel, a search
+    // bar, notifications) rendered with the SAME font + pipeline as the grid.
+    // No damage cache: overlays are transient and repaint wholesale. Requires a
+    // current GL context and blending enabled (draw() leaves it on).
+    void draw_cells(const term::Cell *cells, int cols, int rows, PixelSize px, int ox = 0,
+                    int oy = 0);
+
 private:
     // One instance: a colored (and optionally textured) quad in pixel space.
     //   rect   16B  x,y,w,h in pixels (float — needs sub-pixel precision)

@@ -29,6 +29,8 @@
 
 namespace toe {
 
+namespace term { struct Cell; } // for render_overlay's raw cell grid
+
 // --- configuration ---------------------------------------------------------
 struct Config {
     std::string font_family = "monospace"; // empty -> system default monospace
@@ -87,6 +89,15 @@ public:
     // compositor; empty() means nothing was redrawn (skip the present).
     DamageRect render(gfx::RenderContext &rc, PixelSize px, bool cursor_on = true,
                       bool blink_on = true);
+
+    // Composite a raw cell grid over the terminal this frame (a settings panel,
+    // search bar, notification — any in-terminal UI). Drawn with the same font
+    // and pipeline as the grid, at pixel offset (ox, oy). Call AFTER render().
+    void render_overlay(gfx::RenderContext &rc, const term::Cell *cells, int cols, int rows,
+                        PixelSize px, int ox = 0, int oy = 0);
+
+    // The current cell size in pixels (for laying out an overlay in cells).
+    [[nodiscard]] Extent cell_size() const noexcept;
     void resize(PixelSize px);
 
     // Runtime font zoom. Rebuilds the glyph atlas + renderer at `px` pixels and

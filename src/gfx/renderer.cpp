@@ -1285,4 +1285,51 @@ void Renderer::draw_preedit(const term::Screen &screen, PixelSize px) {
     flush(all, px);
 }
 
+void Renderer::draw_cells(const term::Cell *cells, int cols, int rows, PixelSize px, int ox,
+                          int oy) {
+    if (!cells || cols <= 0 || rows <= 0) return;
+    const int cw = atlas_.cell_width();
+    const int ch = atlas_.cell_height();
+    const int ascent = atlas_.ascent();
+
+    // Resolve a cell Color to concrete RGB via the palette (handles TrueColor,
+    // Indexed and Default uniformly).
+    const auto resolve = [&](const term::Color &c, bool is_fg) -> Rgb {
+        return palette_.resolve(c, is_fg);
+    };
+
+    std::vector<Instance> bg, glyphs;
+    bg.reserve(static_cast<std::size_t>(cols) * static_cast<std::size_t>(rows));
+    glyphs.reserve(static_cast<std::size_t>(cols) * static_cast<std::size_t>(rows));
+
+    for (int r = 0; r < rows; ++r) {
+        const float y = static_cast<float>(oy + r * ch);
+        for (int c = 0; c < cols; ++c) {
+            const term::Cell &cell = cells[static_cast<std::size_t>(r) * static_cast<std::size_t>(cols) +
+                                           static_cast<std::size_t>(c)];
+            if (cell.width == 0) continue; // wide-glyph spacer
+            const float x = static_cast<float>(ox + c * cw);
+            const int span = cell.width == 2 ? 2 : 1;
+            const Rgb bgc = resolve(cell.pen.bg, /*is_fg=*/false);
+            // Opaque background rect for every cell (the panel is not see-through).
+            bg.push_back(rect_inst(x, y, static_cast<float>(cw * span), static_cast<float>(ch),
+                                   bgc.r, bgc.g, bgc.b, 0));
+            const char32_t cp = cell.cp;
+            if (cp == 0 || cp == U' ') continue;
+            const Rgb fgc = resolve(cell.pen.fg, /*is_fg=*/true);
+            if (const GlyphInfo *gi = atlas_.glyph(cp); gi && gi->width && gi->height) {
+                const float gx = x + static_cast<float>(gi->bearing_x);
+                const float gy = y + static_cast<float>(ascent - gi->bearing_y);
+                glyphs.push_back(Instance{gx, gy, static_cast<float>(gi->width),
+                                          static_cast<float>(gi->height), gi->u0, gi->v0, gi->u1,
+                                          gi->v1, fgc.r, fgc.g, fgc.b, 255,
+                                          static_cast<std::uint8_t>(gi->is_color ? 2 : 1), 0, 0, 0});
+            }
+        }
+    }
+
+    flush(bg, px);
+    flush(glyphs, px);
+}
+
 } // namespace toe::gfx

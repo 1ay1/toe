@@ -169,6 +169,14 @@ DamageRect Session::render(gfx::RenderContext &rc, PixelSize px, bool cursor_on,
     return impl_->renderer.draw(impl_->model.screen, px, cursor_on, blink_on);
 }
 
+void Session::render_overlay(gfx::RenderContext &rc, const term::Cell *cells, int cols, int rows,
+                             PixelSize px, int ox, int oy) {
+    glBindFramebuffer(GL_FRAMEBUFFER, rc.target().id);
+    impl_->renderer.draw_cells(cells, cols, rows, px, ox, oy);
+}
+
+Extent Session::cell_size() const noexcept { return Extent{impl_->cell_w, impl_->cell_h}; }
+
 void Session::resize(PixelSize px) {
     const Extent ng = impl_->renderer.cells_for(px);
     if (ng.cols != impl_->grid.cols || ng.rows != impl_->grid.rows) {
