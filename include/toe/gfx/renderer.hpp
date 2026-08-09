@@ -16,7 +16,6 @@
 #include "toe/core/types.hpp"
 #include "toe/gfx/font.hpp"
 #include "toe/gfx/palette.hpp"
-#include "toe/gfx/shader.hpp"
 #include "toe/term/screen.hpp"
 
 namespace toe::gfx {
@@ -77,8 +76,7 @@ private:
     };
     static_assert(sizeof(Instance) == 40, "Instance layout drifted");
 
-    explicit Renderer(FontAtlas &&atlas, Program &&prog)
-        : atlas_{std::move(atlas)}, prog_{std::move(prog)} {}
+    explicit Renderer(FontAtlas &&atlas) : atlas_{std::move(atlas)} {}
 
     void ensure_buffers();
     void flush(std::span<const Instance> insts, PixelSize px);
@@ -114,46 +112,30 @@ private:
     Palette palette_{};
     std::uint64_t palette_epoch_seen_{0}; // last model palette_epoch() applied
     std::size_t palette_applied_{0};      // count of color_edits() consumed
-    Program prog_;
-    int u_screen_{-1}; // cached glGetUniformLocation results (per-frame lookups
-    int u_atlas_{-1};  // into the driver were a measurable cost)
-    int u_color_atlas_{-1}; // RGBA emoji atlas sampler (texture unit 1)
+    // sokol resources (opaque .id handles so this header avoids the sokol
+    // include). One cell pipeline, a static unit-quad vbo, and a dynamic
+    // instance buffer sokol streams for us (no manual persistent-ring/fences).
+    std::uint32_t pip_{0};        // sg_pipeline: the cell pass
+    std::uint32_t quad_vbuf_{0};  // sg_buffer: unit quad (per-vertex)
+    std::uint32_t inst_vbuf_{0};  // sg_buffer: instances (per-instance, stream)
+    std::size_t inst_capacity_{0}; // instance-buffer capacity in bytes
+    std::uint32_t smp_{0};        // sg_sampler (nearest for coverage glyphs)
+    std::uint32_t smp_linear_{0}; // sg_sampler (linear for colour emoji)
 
-    std::uint32_t vao_{0};
-    std::uint32_t quad_vbo_{0};
-    std::uint32_t inst_vbo_{0};
-    std::size_t inst_bytes_capacity_{0};
-
-    // Persistent-mapped streaming ring (GL 4.4 / GL_ARB_buffer_storage). When
-    // available we write instances straight into GPU-visible memory with no
-    // glBufferSubData copy, cycling through kRing sub-regions and fencing each
-    // so the CPU never overwrites a region the GPU is still reading. We issue
-    // two draws per frame (backgrounds then glyphs), so 4 regions keeps ~2
-    // frames of slack before a slot is reused.
-    static constexpr int kRing = 4;
-    bool persistent_{false};
-    unsigned char *inst_map_{nullptr};      // base of the persistent mapping
-    std::size_t inst_region_bytes_{0};      // capacity of one ring region
-    int ring_slot_{0};
-    void *fences_[kRing]{};                  // GLsync per region (opaque here)
-    void setup_instance_attribs();
-
-    // Remember the last two batches' draw parameters so a clean frame (nothing
-    // changed) can re-issue the exact same draws without re-uploading a single
-    // byte or touching a fence — the GPU buffers already hold the right data.
+    // Remember the last frame's two batch sizes so a clean frame re-issues the
+    // same draws without re-uploading (the instance buffer already holds them).
     struct DrawCall { std::uint32_t first{0}; std::uint32_t count{0}; };
     DrawCall last_draws_[2]{};
     int last_draw_n_{0};
-    bool redraw_from_cache(PixelSize px); // returns false if no cached draws yet
+    bool redraw_from_cache(PixelSize px); // false if no cached draws yet
 
     // --- inline images (kitty graphics) ------------------------------------
     // A separate RGBA-textured-quad pass drawn over the glyphs. Each image id
-    // gets one GL texture, uploaded lazily when the graphics revision advances.
-    Program image_prog_{};
-    std::int32_t img_u_screen_{-1}, img_u_tex_{-1};
-    std::uint32_t image_vao_{0}, image_vbo_{0};
-    std::uint32_t image_vbo_rect_{0}; // per-image rect (x,y,w,h)
-    std::unordered_map<std::uint32_t, std::uint32_t> image_tex_{}; // image id -> GL tex
+    // gets one sokol image + view, uploaded lazily as the revision advances.
+    std::uint32_t image_pip_{0};
+    std::uint32_t image_quad_vbuf_{0};
+    struct ImageTex { std::uint32_t image{0}; std::uint32_t view{0}; };
+    std::unordered_map<std::uint32_t, ImageTex> image_tex_{}; // image id -> sokol tex
     std::uint64_t images_revision_{0};
     void ensure_image_pipeline();
     void draw_images(const term::Screen &screen, PixelSize px);
@@ -176,11 +158,9 @@ private:
     // Fill shape_scratch_ for one row by shaping its ASCII runs; no-op (all
     // zero) when ligatures are off or the row has none.
     void shape_row(std::span<const term::Cell> cells, int cols);
-    // Cache the last uniform/texture state so repeated flushes in a frame (and
-    // across static frames) skip redundant GL calls.
+    // The last screen-size uniform the flush pass used, so a static frame skips
+    // redundant uniform work.
     float u_px_w_{-1.0f}, u_px_h_{-1.0f};
-    std::uint32_t bound_tex_{0};
-    std::uint32_t bound_color_tex_{0};
     void bind_common(PixelSize px);
 
     // Packed-instance builders (colors are raw bytes; the shader normalizes).

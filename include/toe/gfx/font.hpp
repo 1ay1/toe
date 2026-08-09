@@ -116,13 +116,21 @@ public:
     void shape_run(std::span<const char32_t> cps, std::span<std::uint32_t> out) const;
     [[nodiscard]] bool has_shaper() const noexcept;
 
-    // The GL atlas texture id (GL_R8), for binding by the renderer.
-    [[nodiscard]] std::uint32_t texture() const noexcept { return tex_; }
+    // The atlas glyph texture, as a sokol view for the renderer to bind. The
+    // atlas is packed incrementally into a CPU shadow (`shadow_`) and re-uploaded
+    // to the sg_image on change (sokol replaces whole images). `atlas_dirty()`
+    // reports whether an upload is pending; the renderer flushes it before draw.
+    [[nodiscard]] std::uint32_t glyph_image_id() const noexcept { return tex_id_; }
+    [[nodiscard]] std::uint32_t color_image_id() const noexcept { return color_tex_id_; }
     [[nodiscard]] int atlas_size() const noexcept { return atlas_dim_; }
-    // The RGBA colour atlas (emoji), bound alongside for is_color glyphs. 0
-    // until the first colour glyph is packed.
-    [[nodiscard]] std::uint32_t color_texture() const noexcept { return color_tex_; }
     [[nodiscard]] int color_atlas_size() const noexcept { return color_dim_; }
+    // Sync any pending CPU-shadow changes to the GPU images (called by the
+    // renderer once per frame before binding). Creates the images lazily.
+    void sync_gpu();
+    // The sokol view handles (opaque uint32 ids from sg_view.id) for binding.
+    // Valid after sync_gpu(); 0 = not yet created.
+    [[nodiscard]] std::uint32_t glyph_view() const noexcept { return glyph_view_id_; }
+    [[nodiscard]] std::uint32_t color_view() const noexcept { return color_view_id_; }
 
 private:
     FontAtlas() = default;
@@ -139,14 +147,21 @@ private:
     int pixel_size_{0};
     bool ligatures_{true};
 
-    std::uint32_t tex_{0};
+    // GPU atlas: a CPU shadow (the authoritative pixels, packed incrementally)
+    // plus a lazily-created sokol image the shadow is uploaded into. `tex_id_`
+    // is the sg_image id, `glyph_view_id_` the sg_view id; 0 until created.
+    std::vector<std::uint8_t> shadow_{};    // R8 glyph atlas pixels
+    std::uint32_t tex_id_{0};
+    std::uint32_t glyph_view_id_{0};
+    bool atlas_dirty_{false};
     int atlas_dim_{0};
     int pen_x_{0}, pen_y_{0}, shelf_h_{0}; // shelf allocator cursor
 
-    // Separate RGBA atlas for colour (emoji) glyphs, with its own shelf cursor.
-    // Lazily created on the first colour glyph so alpha-only sessions pay
-    // nothing.
-    std::uint32_t color_tex_{0};
+    // Separate RGBA colour (emoji) atlas, same shadow+image scheme, lazy.
+    std::vector<std::uint8_t> color_shadow_{};
+    std::uint32_t color_tex_id_{0};
+    std::uint32_t color_view_id_{0};
+    bool color_dirty_{false};
     int color_dim_{0};
     int cpen_x_{0}, cpen_y_{0}, cshelf_h_{0};
     const GlyphInfo *pack_color(const GlyphBitmap &g, std::uint64_t key);

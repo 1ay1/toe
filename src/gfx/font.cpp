@@ -13,7 +13,7 @@
 #include <fstream>
 #include <utility>
 
-#include <epoxy/gl.h>
+#include "toe/gfx/gpu.hpp"
 
 namespace toe::gfx {
 
@@ -31,8 +31,9 @@ std::vector<std::uint8_t> read_file(const std::string &path) {
 // italic by horizontal shear during the copy. Cheap, and fine at cell sizes.
 const GlyphInfo *pack_bitmap(const unsigned char *src, int w, int h, int off_x, int off_y,
                              int advance, bool bold, bool italic, std::uint64_t key,
-                             std::unordered_map<std::uint64_t, GlyphInfo> &cache, std::uint32_t tex,
-                             int atlas_dim, int &pen_x, int &pen_y, int &shelf_h, int cell_h) {
+                             std::unordered_map<std::uint64_t, GlyphInfo> &cache,
+                             std::vector<std::uint8_t> &shadow, bool &dirty, int atlas_dim,
+                             int &pen_x, int &pen_y, int &shelf_h, int cell_h) {
     GlyphInfo info;
     info.bearing_x = off_x;
     info.bearing_y = -off_y; // stb gives y-down top offset; GlyphInfo wants y-up bearing
@@ -72,9 +73,13 @@ const GlyphInfo *pack_bitmap(const unsigned char *src, int w, int h, int off_x, 
         auto [it, _] = cache.emplace(key, info);
         return &it->second;
     }
-    glBindTexture(GL_TEXTURE_2D, tex);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, pen_x, pen_y, bw, h, GL_RED, GL_UNSIGNED_BYTE, buf.data());
+    // Blit the synthesized coverage into the CPU shadow at the shelf position.
+    // The renderer uploads the shadow to the sg_image once per frame if dirty.
+    for (int y = 0; y < h; ++y) {
+        std::uint8_t *dst = shadow.data() + static_cast<std::size_t>(pen_y + y) * atlas_dim + pen_x;
+        std::memcpy(dst, buf.data() + static_cast<std::size_t>(y) * bw, static_cast<std::size_t>(bw));
+    }
+    dirty = true;
     const float inv = 1.0f / static_cast<float>(atlas_dim);
     info.u0 = static_cast<float>(pen_x) * inv;
     info.v0 = static_cast<float>(pen_y) * inv;
@@ -137,17 +142,10 @@ Result<FontAtlas> FontAtlas::create(std::string font_path, int pixel_size,
             delete sh;
     }
 
-    // R8 atlas.
+    // R8 atlas: a CPU shadow, uploaded to a lazily-created sg_image by sync_gpu.
     a.atlas_dim_ = 1024;
-    glGenTextures(1, &a.tex_);
-    glBindTexture(GL_TEXTURE_2D, a.tex_);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, a.atlas_dim_, a.atlas_dim_, 0, GL_RED, GL_UNSIGNED_BYTE,
-                 nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    a.shadow_.assign(static_cast<std::size_t>(a.atlas_dim_) * a.atlas_dim_, 0);
+    a.atlas_dirty_ = true; // create the image on first sync
     a.pen_x_ = 1;
     a.pen_y_ = 1;
     a.shelf_h_ = 0;
@@ -156,10 +154,13 @@ Result<FontAtlas> FontAtlas::create(std::string font_path, int pixel_size,
 
 FontAtlas::FontAtlas(FontAtlas &&o) noexcept
     : faces_{std::move(o.faces_)}, shaper_{std::exchange(o.shaper_, nullptr)},
-      pixel_size_{o.pixel_size_}, ligatures_{o.ligatures_}, tex_{std::exchange(o.tex_, 0)},
+      pixel_size_{o.pixel_size_}, ligatures_{o.ligatures_},
+      shadow_{std::move(o.shadow_)}, tex_id_{std::exchange(o.tex_id_, 0)},
+      glyph_view_id_{std::exchange(o.glyph_view_id_, 0)}, atlas_dirty_{o.atlas_dirty_},
       atlas_dim_{o.atlas_dim_}, pen_x_{o.pen_x_}, pen_y_{o.pen_y_}, shelf_h_{o.shelf_h_},
-      color_tex_{std::exchange(o.color_tex_, 0)}, color_dim_{o.color_dim_}, cpen_x_{o.cpen_x_},
-      cpen_y_{o.cpen_y_}, cshelf_h_{o.cshelf_h_},
+      color_shadow_{std::move(o.color_shadow_)}, color_tex_id_{std::exchange(o.color_tex_id_, 0)},
+      color_view_id_{std::exchange(o.color_view_id_, 0)}, color_dirty_{o.color_dirty_},
+      color_dim_{o.color_dim_}, cpen_x_{o.cpen_x_}, cpen_y_{o.cpen_y_}, cshelf_h_{o.cshelf_h_},
       cell_w_{o.cell_w_}, cell_h_{o.cell_h_}, ascent_{o.ascent_}, cache_{std::move(o.cache_)} {
     fast_ = o.fast_;
 }
@@ -171,9 +172,15 @@ FontAtlas &FontAtlas::operator=(FontAtlas &&o) noexcept {
         shaper_ = std::exchange(o.shaper_, nullptr);
         pixel_size_ = o.pixel_size_;
         ligatures_ = o.ligatures_;
-        tex_ = std::exchange(o.tex_, 0);
+        shadow_ = std::move(o.shadow_);
+        tex_id_ = std::exchange(o.tex_id_, 0);
+        glyph_view_id_ = std::exchange(o.glyph_view_id_, 0);
+        atlas_dirty_ = o.atlas_dirty_;
         atlas_dim_ = o.atlas_dim_;
-        color_tex_ = std::exchange(o.color_tex_, 0);
+        color_shadow_ = std::move(o.color_shadow_);
+        color_tex_id_ = std::exchange(o.color_tex_id_, 0);
+        color_view_id_ = std::exchange(o.color_view_id_, 0);
+        color_dirty_ = o.color_dirty_;
         color_dim_ = o.color_dim_;
         cpen_x_ = o.cpen_x_;
         cpen_y_ = o.cpen_y_;
@@ -193,11 +200,38 @@ FontAtlas &FontAtlas::operator=(FontAtlas &&o) noexcept {
 FontAtlas::~FontAtlas() { destroy(); }
 
 void FontAtlas::destroy() noexcept {
-    if (tex_) { glDeleteTextures(1, &tex_); tex_ = 0; }
-    if (color_tex_) { glDeleteTextures(1, &color_tex_); color_tex_ = 0; }
+    if (glyph_view_id_) { gpu::destroy_view(glyph_view_id_); glyph_view_id_ = 0; }
+    if (tex_id_) { gpu::destroy_image(tex_id_); tex_id_ = 0; }
+    if (color_view_id_) { gpu::destroy_view(color_view_id_); color_view_id_ = 0; }
+    if (color_tex_id_) { gpu::destroy_image(color_tex_id_); color_tex_id_ = 0; }
     delete static_cast<ot::Shaper *>(shaper_);
     shaper_ = nullptr;
     // Faces (blobs + rasterizer handles) free themselves via FaceStack.
+}
+
+// Upload any pending CPU-shadow changes to the GPU images (lazy-create them).
+// Called by the renderer once per frame before it binds the atlas.
+void FontAtlas::sync_gpu() {
+    if (atlas_dirty_) {
+        if (!tex_id_) {
+            tex_id_ = gpu::make_image(atlas_dim_, atlas_dim_, gpu::Fmt::R8, shadow_.data());
+            glyph_view_id_ = gpu::make_texture_view(tex_id_);
+        } else {
+            gpu::update_image(tex_id_, atlas_dim_, atlas_dim_, gpu::Fmt::R8, shadow_.data());
+        }
+        atlas_dirty_ = false;
+    }
+    if (color_dirty_ && !color_shadow_.empty()) {
+        if (!color_tex_id_) {
+            color_tex_id_ =
+                gpu::make_image(color_dim_, color_dim_, gpu::Fmt::RGBA8, color_shadow_.data());
+            color_view_id_ = gpu::make_texture_view(color_tex_id_);
+        } else {
+            gpu::update_image(color_tex_id_, color_dim_, color_dim_, gpu::Fmt::RGBA8,
+                              color_shadow_.data());
+        }
+        color_dirty_ = false;
+    }
 }
 
 bool FontAtlas::has_shaper() const noexcept { return shaper_ != nullptr; }
@@ -214,8 +248,8 @@ const GlyphInfo *FontAtlas::rasterize(char32_t cp, FontStyle style) {
     const GlyphBitmap g = r.face->rasterize(r.index);
     if (g.is_color) return pack_color(g, key); // emoji -> RGBA atlas
     return pack_bitmap(g.pixels.empty() ? nullptr : g.pixels.data(), g.width, g.height,
-                       g.bearing_x, g.bearing_y, g.advance, bold, italic, key, cache_, tex_,
-                       atlas_dim_, pen_x_, pen_y_, shelf_h_, cell_h_);
+                       g.bearing_x, g.bearing_y, g.advance, bold, italic, key, cache_, shadow_,
+                       atlas_dirty_, atlas_dim_, pen_x_, pen_y_, shelf_h_, cell_h_);
 }
 
 const GlyphInfo *FontAtlas::rasterize_index(std::uint32_t gindex, FontStyle style) {
@@ -226,8 +260,8 @@ const GlyphInfo *FontAtlas::rasterize_index(std::uint32_t gindex, FontStyle styl
 
     const GlyphBitmap g = faces_.primary().rasterize(gindex);
     return pack_bitmap(g.pixels.empty() ? nullptr : g.pixels.data(), g.width, g.height,
-                       g.bearing_x, g.bearing_y, g.advance, bold, italic, key, cache_, tex_,
-                       atlas_dim_, pen_x_, pen_y_, shelf_h_, cell_h_);
+                       g.bearing_x, g.bearing_y, g.advance, bold, italic, key, cache_, shadow_,
+                       atlas_dirty_, atlas_dim_, pen_x_, pen_y_, shelf_h_, cell_h_);
 }
 
 void FontAtlas::shape_run(std::span<const char32_t> cps, std::span<std::uint32_t> out) const {
@@ -247,18 +281,10 @@ void FontAtlas::shape_run(std::span<const char32_t> cps, std::span<std::uint32_t
 }
 
 void FontAtlas::ensure_color_atlas() {
-    if (color_tex_) return;
+    if (!color_shadow_.empty()) return;
     color_dim_ = 1024;
-    glGenTextures(1, &color_tex_);
-    glBindTexture(GL_TEXTURE_2D, color_tex_);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, color_dim_, color_dim_, 0, GL_RGBA,
-                 GL_UNSIGNED_BYTE, nullptr);
-    // LINEAR for colour emoji (they're scaled to the cell; nearest looks blocky).
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    color_shadow_.assign(static_cast<std::size_t>(color_dim_) * color_dim_ * 4, 0);
+    color_dirty_ = true;
     cpen_x_ = 1;
     cpen_y_ = 1;
     cshelf_h_ = 0;
@@ -284,10 +310,14 @@ const GlyphInfo *FontAtlas::pack_color(const GlyphBitmap &g, std::uint64_t key) 
             cshelf_h_ = 0;
         }
         if (cpen_y_ + g.height + 1 <= color_dim_) {
-            glBindTexture(GL_TEXTURE_2D, color_tex_);
-            glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-            glTexSubImage2D(GL_TEXTURE_2D, 0, cpen_x_, cpen_y_, g.width, g.height, GL_RGBA,
-                            GL_UNSIGNED_BYTE, g.pixels.data());
+            // Blit into the RGBA shadow (row by row; 4 bytes/px).
+            for (int y = 0; y < g.height; ++y) {
+                std::uint8_t *dst = color_shadow_.data() +
+                    (static_cast<std::size_t>(cpen_y_ + y) * color_dim_ + cpen_x_) * 4;
+                std::memcpy(dst, g.pixels.data() + static_cast<std::size_t>(y) * g.width * 4,
+                            static_cast<std::size_t>(g.width) * 4);
+            }
+            color_dirty_ = true;
             const float inv = 1.0f / static_cast<float>(color_dim_);
             info.u0 = static_cast<float>(cpen_x_) * inv;
             info.v0 = static_cast<float>(cpen_y_) * inv;
