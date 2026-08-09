@@ -282,6 +282,7 @@ bool Session::output_pending() const noexcept { return impl_->more_pending; }
 
 void Session::scroll(int lines) { impl_->model.screen.scroll(lines); }
 void Session::scroll_to_bottom() { impl_->model.screen.scroll_to_bottom(); }
+int Session::scroll_offset() const noexcept { return impl_->model.screen.scroll_offset(); }
 
 void Session::select_begin(int vrow, int col, int mode) {
     using SM = term::Screen::SelectMode;

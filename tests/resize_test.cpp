@@ -167,6 +167,28 @@ int main() {
         ck(s.scroll_offset() > 0, "scrolled-up view does not yank to bottom on new output");
     }
 
+    // The real bug: feed_output() used to scroll_to_bottom() on EVERY chunk,
+    // yanking a reader down. Drive output through the FULL update path (parser +
+    // feed_output) exactly as the live terminal does, and verify a scrolled-up
+    // view holds its place across many output bursts.
+    {
+        term::Model m(toe::Config{}, Extent{80, 10});
+        for (int i = 0; i < 50; ++i) {
+            char b[32]; std::snprintf(b, sizeof b, "ROW-%03d\r\n", i);
+            (void)term::feed_output(m, b);
+        }
+        m.screen.scroll(15); // scroll up into history
+        const std::string top = trim(m.screen.row(Row{0}));
+        const int off0 = m.screen.scroll_offset();
+        ck(off0 > 0, "feed_output path: scrolled up");
+        for (int i = 50; i < 80; ++i) { // 30 more lines of output
+            char b[32]; std::snprintf(b, sizeof b, "ROW-%03d\r\n", i);
+            (void)term::feed_output(m, b);
+        }
+        ck(trim(m.screen.row(Row{0})) == top, "feed_output: view stays on the same line");
+        ck(m.screen.scroll_offset() > 0, "feed_output: output does NOT yank to bottom");
+    }
+
     std::printf(failures ? "\nresize test: %d FAILURES\n" : "\nresize test: PASS\n", failures);
     return failures ? 1 : 0;
 }

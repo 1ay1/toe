@@ -224,8 +224,12 @@ void handle_osc(Model &m, std::string_view d, Cmds &out) {
 
 Cmds feed_output(Model &m, std::string_view bytes) {
     Cmds out;
-    // New output arrived: snap the view to the live bottom (conventional).
-    m.screen.scroll_to_bottom();
+    // New output does NOT snap the view to the bottom: if the user has scrolled
+    // up into history, they stay anchored to what they're reading (Screen's
+    // scroll_up bumps the offset to keep it fixed). Only typing snaps to the
+    // bottom (see the Key handler). At the live bottom (offset 0) output follows
+    // the tail naturally, so both cases are already correct without a forced
+    // scroll_to_bottom here — which was yanking readers down on every chunk.
     m.parser.feed(std::span<const char>{bytes.data(), bytes.size()}, [&](const vt::Action &a) {
         if (const auto *osc = std::get_if<vt::OscDispatch>(&a)) {
             handle_osc(m, osc->data, out);

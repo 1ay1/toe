@@ -140,6 +140,7 @@ public:
     // Scrollback: move the view by `lines` (positive = up/into history).
     void scroll(int lines);
     void scroll_to_bottom();
+    [[nodiscard]] int scroll_offset() const noexcept;
 
     // --- selection ---------------------------------------------------------
     // Begin/extend a selection at a VISIBLE cell (viewport row/col). mode: 0
