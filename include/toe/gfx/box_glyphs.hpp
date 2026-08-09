@@ -121,12 +121,7 @@ inline constexpr float kHeavy = 1.f / 4;
     case U'\u2510': Dst(lo,t); Lst(lo,t); return n; // ┐
     case U'\u2514': Ust(lo,t); Rst(lo,t); return n; // └
     case U'\u2518': Ust(lo,t); Lst(lo,t); return n; // ┘
-    // Rounded corners: same as the sharp ones (a stepped notch would need
-    // sub-pixel arcs; at cell sizes the sharp join reads clean and uniform).
-    case U'\u256D': Dst(lo,t); Rst(lo,t); return n; // ╭
-    case U'\u256E': Dst(lo,t); Lst(lo,t); return n; // ╮
-    case U'\u2570': Ust(lo,t); Rst(lo,t); return n; // ╰
-    case U'\u256F': Ust(lo,t); Lst(lo,t); return n; // ╯
+    // (Rounded corners ╭╮╯╰ are drawn as true SDF arcs — see cell_sdf.)
     // Heavy corners.
     case U'\u250F': Dst(hlo,T); Rst(hlo,T); return n; // ┏
     case U'\u2513': Dst(hlo,T); Lst(hlo,T); return n; // ┓
@@ -178,6 +173,38 @@ inline constexpr float kHeavy = 1.f / 4;
     }
 
     return 0; // not procedural — use the font atlas
+}
+
+// SDF shape ids for cell_sdf() — must match the fragment shader's sdf_shape().
+enum : std::uint8_t {
+    kSdfNone = 0,
+    kSdfTriRight = 1,   // right-pointing solid triangle (Powerline )
+    kSdfTriLeft = 2,    // left-pointing solid triangle (Powerline )
+    kSdfArrowRight = 3, // right chevron (Powerline )
+    kSdfArrowLeft = 4,  // left chevron (Powerline )
+    kSdfArcTL = 5,      // rounded corner ╭
+    kSdfArcTR = 6,      // ╮
+    kSdfArcBL = 7,      // ╰
+    kSdfArcBR = 8,      // ╯
+};
+
+// If `cp` is drawn by an analytic SDF (Powerline separators, rounded corners),
+// return its shape id (>=1); else 0. This is the resolution-independent path:
+// the fragment shader evaluates the exact shape per pixel, so these glyphs are
+// mathematically perfect and crisp at ANY size / zoom with zero atlas memory.
+[[nodiscard]] inline std::uint8_t cell_sdf(char32_t cp) noexcept {
+    switch (cp) {
+    case U'\u256D': return kSdfArcTL; // ╭
+    case U'\u256E': return kSdfArcTR; // ╮
+    case U'\u2570': return kSdfArcBL; // ╰
+    case U'\u256F': return kSdfArcBR; // ╯
+    // Powerline separators (private-use area, the de-facto standard codepoints).
+    case U'\uE0B0': return kSdfTriRight;   // solid right
+    case U'\uE0B2': return kSdfTriLeft;    // solid left
+    case U'\uE0B1': return kSdfArrowRight; // chevron right
+    case U'\uE0B3': return kSdfArrowLeft;  // chevron left
+    default: return kSdfNone;
+    }
 }
 
 } // namespace toe::gfx

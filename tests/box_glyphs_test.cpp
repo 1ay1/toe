@@ -52,8 +52,7 @@ int main() {
     ck(fills(U'\u254B') == 2, "heavy cross");
     ck(fills(U'\u251C') >= 2, "light tee");
 
-    // Rounded corners resolve to rects (not the font).
-    for (char32_t cp = 0x256D; cp <= 0x2570; ++cp) ck(fills(cp) >= 2, "rounded corner");
+    // Rounded corners are drawn as SDF arcs (asserted below), not rect fills.
 
     // Double lines — the classic menu set.
     ck(fills(U'\u2550') == 2, "double horiz (2 rails)");
@@ -69,6 +68,18 @@ int main() {
     // A plain letter must NOT be procedural (fall through to the font).
     ck(fills(U'A') == 0, "letter A -> font");
     ck(fills(U' ') == 0, "space -> font");
+
+    // Analytic SDF shapes: rounded corners + Powerline separators resolve to a
+    // shape id (>=1) and are NOT drawn as rect fills (they take the SDF path).
+    ck(cell_sdf(U'\u256D') == kSdfArcTL, "rounded TL -> SDF arc");
+    ck(cell_sdf(U'\u256F') == kSdfArcBR, "rounded BR -> SDF arc");
+    ck(cell_sdf(U'\uE0B0') == kSdfTriRight, "powerline solid right -> SDF tri");
+    ck(cell_sdf(U'\uE0B2') == kSdfTriLeft, "powerline solid left -> SDF tri");
+    ck(cell_sdf(U'\uE0B1') == kSdfArrowRight, "powerline chevron right -> SDF");
+    ck(cell_sdf(U'A') == kSdfNone, "letter is not an SDF shape");
+    ck(cell_sdf(U'\u2500') == kSdfNone, "straight line stays rect fill");
+    // Rounded corners must be SDF-only (no double-draw as rects).
+    ck(fills(U'\u256D') == 0, "rounded corner not in rect path");
 
     // Uniform weight sanity: light and heavy strokes are the shared constants.
     ck(kLight < kHeavy, "light thinner than heavy");

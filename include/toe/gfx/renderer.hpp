@@ -174,6 +174,14 @@ private:
                               std::uint8_t radius) noexcept {
         return Instance{x, y, w, h, 0, 0, 0, 0, r, g, b, 255, 0, radius, 0, 0};
     }
+    // An analytic-SDF cell (Powerline separator, rounded arc, ...). mode 3 in
+    // the flags byte; `shape` selects the SDF (see the fs sdf_shape()). Rendered
+    // resolution-independently — no atlas, crisp at any size.
+    static Instance sdf_inst(float x, float y, float w, float h,
+                             std::uint8_t r, std::uint8_t g, std::uint8_t b,
+                             std::uint8_t shape) noexcept {
+        return Instance{x, y, w, h, 0, 0, 0, 0, r, g, b, 255, /*is_glyph=*/3, 0, shape, 0};
+    }
 
     std::vector<Instance> instances_{};
     std::vector<Instance> glyphs_{}; // scratch for the fused build pass

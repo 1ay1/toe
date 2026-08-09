@@ -168,12 +168,11 @@ void Renderer::ensure_buffers() {
     pd.layout.attrs[ATTR_cell_aRect]    = {1, 0,  SG_VERTEXFORMAT_FLOAT4};
     pd.layout.attrs[ATTR_cell_aUV]      = {1, 16, SG_VERTEXFORMAT_FLOAT4};
     pd.layout.attrs[ATTR_cell_aColor]   = {1, 32, SG_VERTEXFORMAT_UBYTE4N};
-    // is_glyph (0/1/2) and radius (px) are packed as raw u8. UBYTE4N is the only
-    // ubyte format that yields a FLOAT shader attr (UBYTE4 yields int, which the
-    // validation layer rejects against the float `in`), so it normalizes the
-    // byte to [0,1]; the shader multiplies by 255.0 to recover the raw value.
-    pd.layout.attrs[ATTR_cell_aIsGlyph] = {1, 36, SG_VERTEXFORMAT_UBYTE4N};
-    pd.layout.attrs[ATTR_cell_aRadius]  = {1, 37, SG_VERTEXFORMAT_UBYTE4N};
+    // Flags packed as raw u8 at offset 36: [mode, radius, shape, spare]. UBYTE4N
+    // is the only ubyte format that yields a FLOAT vec4 shader attr (UBYTE4
+    // yields int, rejected against the float `in`); it normalizes each byte to
+    // [0,1] and the shader multiplies by 255 to recover the raw values.
+    pd.layout.attrs[ATTR_cell_aFlags]   = {1, 36, SG_VERTEXFORMAT_UBYTE4N};
     pd.primitive_type = SG_PRIMITIVETYPE_TRIANGLE_STRIP;
     pd.colors[0].blend.enabled = true;
     pd.colors[0].blend.src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA;
@@ -404,6 +403,16 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
                 return static_cast<std::uint8_t>((f * 45 + b * 55) / 100);
             };
             fgcol = {dim(fgcol.r, bg.r), dim(fgcol.g, bg.g), dim(fgcol.b, bg.b)};
+        }
+
+        // Analytic SDF glyphs (Powerline separators, rounded corners) render
+        // as a single distance-field cell — crisp and antialiased at ANY size,
+        // no atlas. Checked before the rect path; goes into rc.bg like fills.
+        if (std::uint8_t sh = cell_sdf(cp)) {
+            const float fcw = static_cast<float>(cw), fch = static_cast<float>(ch);
+            const float cx = static_cast<float>(c * cw);
+            rc.bg.push_back(sdf_inst(cx, ry, fcw, fch, fgcol.r, fgcol.g, fgcol.b, sh));
+            continue;
         }
 
         // Geometric block elements and box-drawing lines tile/connect pixel-
