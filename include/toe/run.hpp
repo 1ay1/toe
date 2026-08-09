@@ -28,6 +28,7 @@
 #include <string>
 
 #include "toe/app.hpp"
+#include "toe/latency.hpp"
 #include "toe/core/blink.hpp"
 #include "toe/core/event_router.hpp"
 #include "toe/gfx/render_target.hpp"
@@ -79,6 +80,16 @@ template <App A>
     std::string last_title;
     std::optional<RenderKey> drawn;    // key of the last rendered frame
     std::uint64_t last_present_ms = 0; // for the flood frame-rate cap
+
+    // Input-to-photon latency: stamp when we write input to the child, measure
+    // at the present that reflects it. A HUD prints live min/avg/p99 when
+    // HAND_LATENCY_HUD is set in the environment — the number that decides how
+    // "instant" a TUI feels, which almost no terminal reports.
+    LatencyMeter latency;
+    const bool latency_hud = [] {
+        const char *e = std::getenv("HAND_LATENCY_HUD");
+        return e && *e && *e != '0';
+    }();
 
     // Optionally let the App bind to the live Terminal once (e.g. to install a
     // live-resize render hook that draws mid-drag, when AppKit's modal resize
@@ -141,6 +152,7 @@ template <App A>
         //    PTY a few ms to echo, draining what returns so the typed glyph
         //    lands in THIS frame instead of a vsync later.
         if (router.take_wrote_input()) {
+            latency.mark_input(LatencyMeter::now_us());
             toe::flush(surf);
             const Readiness echo =
                 toe::wait_readable(surf, session.pty_fd(), WaitDeadline::millis(kEchoWaitMs));
@@ -188,6 +200,26 @@ template <App A>
             toe::present(surf, (overlay_on || dmg.empty()) ? toe::DamageRect::full(px) : dmg);
             drawn = key;
             last_present_ms = now.value;
+
+            // This present may reflect the child's response to the last input.
+            // Record the input->photon sample; the HUD reports a live rolling
+            // min/avg/p99 to stderr a few times a second when enabled.
+            if (latency_hud) {
+                // A present within a sane budget reflects the keystroke's echo.
+                // If a huge output flood delayed this present far past a couple
+                // of frames, that gap is throughput, not input latency — drop
+                // the pending mark so the HUD stays honest.
+                latency.drop_if_stale(LatencyMeter::now_us(), 50 * 1000);
+                latency.mark_present(LatencyMeter::now_us());
+                static std::uint64_t last_report_ms = 0;
+                if (latency.has_samples() && now.value - last_report_ms >= 500) {
+                    const auto s = latency.stats();
+                    std::fprintf(stderr,
+                                 "[hand latency] n=%zu  min=%.1f  avg=%.1f  p99=%.1f  max=%.1f ms\n",
+                                 s.n, s.min_ms, s.avg_ms, s.p99_ms, s.max_ms);
+                    last_report_ms = now.value;
+                }
+            }
         }
 
         // 5. Sleep until real work arrives — child output, a window event, or
