@@ -233,6 +233,10 @@ void Renderer::ensure_buffers() {
     pd.colors[0].blend.dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
     pd.colors[0].blend.src_factor_alpha = SG_BLENDFACTOR_ONE;
     pd.colors[0].blend.dst_factor_alpha = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    // The host swapchain is colour-only (no depth/stencil attachment), so the
+    // pipeline must declare no depth format — otherwise sokol's validation
+    // layer rejects sg_apply_pipeline (APIP_SWAPCHAIN_DEPTH_FORMAT).
+    pd.depth.pixel_format = SG_PIXELFORMAT_NONE;
     pip_ = sg_make_pipeline(&pd).id;
 }
 
