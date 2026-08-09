@@ -73,6 +73,12 @@ public:
         constexpr auto operator<=>(const CursorStyle &) const = default;
     };
     [[nodiscard]] CursorStyle cursor_style() const noexcept { return cursor_style_; }
+    // Set the cursor shape/blink. Apps override this live via DECSCUSR; the host
+    // uses it to apply the configured default (initial value, and on a config
+    // reload). Touches the screen so the change is drawn.
+    void set_cursor_style(CursorStyle st) noexcept {
+        if (st != cursor_style_) { cursor_style_ = st; touch(); }
+    }
 
     // --- IME preedit (composition) -----------------------------------------
     // The in-progress composition string shown inline at the cursor before the

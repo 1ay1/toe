@@ -293,6 +293,41 @@ bool Session::set_font(std::string_view family_or_file, PixelSize surface_px) {
     return true;
 }
 
+void Session::set_cursor_shape(int shape) noexcept {
+    using CS = term::Screen::CursorShape;
+    const CS cs = shape == 1 ? CS::bar : shape == 2 ? CS::underline : CS::block;
+    auto st = impl_->model.screen.cursor_style(); // keep current blink phase
+    st.shape = cs;
+    impl_->model.screen.set_cursor_style(st);
+}
+
+bool Session::set_ligatures(bool on, PixelSize surface_px) {
+    if (on == impl_->ligatures_) return true; // no-op
+    impl_->ligatures_ = on;
+    // Rebuild the atlas with the new ligature flag (the shaper is created/
+    // destroyed inside FontAtlas::create), same path as a font change.
+    auto atlas = gfx::FontAtlas::create(impl_->font_path_, impl_->font_px_, impl_->font_fallback_,
+                                        on, impl_->style_files_);
+    if (!atlas) return false;
+    const int cw = atlas->cell_width();
+    const int ch = atlas->cell_height();
+    auto renderer = gfx::Renderer::create(std::move(*atlas));
+    if (!renderer) return false;
+    impl_->renderer = std::move(*renderer);
+    impl_->renderer.set_cursor_animation(impl_->cursor_anim_.enabled, impl_->cursor_anim_.time_ms,
+                                         impl_->cursor_anim_.trail);
+    impl_->renderer.set_selection_color(impl_->selection_bg_);
+    impl_->cell_w = cw;
+    impl_->cell_h = ch;
+    impl_->model.screen.set_cell_size(cw, ch);
+    impl_->pty.set_cell_pixels(cw, ch);
+    const Extent ng = impl_->renderer.cells_for(surface_px);
+    impl_->grid = ng;
+    impl_->model.screen.resize(ng);
+    (void)impl_->pty.resize(ng);
+    return true;
+}
+
 void Session::send_text(std::string_view utf8) { (void)impl_->pty.write(utf8); }
 void Session::set_preedit(std::string_view utf8, int cursor_cells) {
     impl_->model.screen.set_preedit(std::string{utf8}, cursor_cells);
@@ -743,6 +778,16 @@ Result<Terminal> Terminal::create(const Config &cfg, PixelSize px) {
     impl->cursor_blink_ms_ = cfg.cursor_blink_ms;
     impl->behavior_ = {cfg.wheel_lines, cfg.scroll_on_output, cfg.scroll_on_keystroke,
                        cfg.copy_on_select};
+    // Initial cursor shape from config (apps may override via DECSCUSR).
+    {
+        using CS = term::Screen::CursorShape;
+        const CS cs = cfg.cursor_shape == 1 ? CS::bar
+                      : cfg.cursor_shape == 2 ? CS::underline
+                                              : CS::block;
+        auto st = impl->model.screen.cursor_style();
+        st.shape = cs;
+        impl->model.screen.set_cursor_style(st);
+    }
     impl->renderer.set_cursor_animation(cfg.cursor_anim.enabled, cfg.cursor_anim.time_ms,
                                         cfg.cursor_anim.trail);
     impl->renderer.set_selection_color(cfg.selection_bg);

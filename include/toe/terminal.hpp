@@ -80,6 +80,9 @@ struct Config {
     // Cursor blink half-period in ms; 0 = steady (no blink). Host policy, but
     // the engine's run loop reads it to pace the blink wave.
     int cursor_blink_ms = 530;
+    // Initial cursor shape (apps override it live via DECSCUSR). 0 block, 1 bar,
+    // 2 underline — matches hand's CursorShape enum order.
+    int cursor_shape = 0;
 
     // Scroll behaviour (host policy applied by the EventRouter). Live-tunable.
     //   wheel_lines         — rows advanced per mouse-wheel notch
@@ -180,6 +183,11 @@ public:
     // Trigger a brief visual-bell flash (a fading full-screen tint the renderer
     // draws). animating() stays true while it fades so the host keeps painting.
     void flash_visual_bell() noexcept;
+    // Set the DEFAULT cursor shape (0 block, 1 bar, 2 underline). Apps still
+    // override live via DECSCUSR; this is the config default, live-settable.
+    void set_cursor_shape(int shape) noexcept;
+    // Toggle programming ligatures live (rebuilds the atlas at the current px).
+    bool set_ligatures(bool on, PixelSize surface_px);
     void resize(PixelSize px);
 
     // Runtime font zoom. Rebuilds the glyph atlas + renderer at `px` pixels and
