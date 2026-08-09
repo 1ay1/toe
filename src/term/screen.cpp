@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.0-or-later
 
 #include "toe/term/screen.hpp"
+#include "toe/term/width.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -444,23 +445,11 @@ void Screen::apply(const vt::Action &action, Cmds &out) {
 
 namespace {
 // Display width of a codepoint: 2 for double-width (CJK, emoji, fullwidth),
-// 0 for combining/zero-width marks, 1 otherwise. Backed by wcwidth; a one-time
-// setlocale makes it honor the Unicode East-Asian-Width tables.
+// 0 for combining/zero-width marks, 1 otherwise. Uses a fast built-in range
+// table (toe/term/width.hpp) — NOT libc wcwidth(), which is locale-dependent
+// and slow enough to dominate parse time under CJK/emoji floods.
 int char_width(char32_t cp) {
-    if (cp == 0) return 0;
-    if (cp < 0x20) return 0; // controls never occupy a cell here
-    // ASCII printables (the overwhelming majority of terminal output) are
-    // always single-width — skip the expensive libc wcwidth() table lookup,
-    // which otherwise dominates parse time under a flood of plain text.
-    if (cp < 0x7f) return 1;
-    static const bool locale_set = [] {
-        std::setlocale(LC_CTYPE, "");
-        return true;
-    }();
-    (void)locale_set;
-    const int w = ::wcwidth(static_cast<wchar_t>(cp));
-    if (w < 0) return 1;      // unknown -> assume single-width rather than drop
-    return w > 2 ? 2 : w;
+    return codepoint_width(cp);
 }
 } // namespace
 
