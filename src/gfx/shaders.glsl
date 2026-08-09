@@ -64,13 +64,17 @@ void main() {
         frag = texture(sampler2D(uColorAtlas, uSmp), vUV);
     } else if (vIsGlyph > 0.5) {
         float a = texture(sampler2D(uAtlas, uSmp), vUV).r;
-        // Coverage gamma (stem darkening). HW alpha blending happens in the
-        // framebuffer's non-linear sRGB space, which visually thins light-on-
-        // dark text; raising the coverage compensates. 1/1.55 (kitty's default)
-        // over-darkens on hi-dpi grayscale AA; 1/1.35 keeps stems crisp without
-        // the muddy edges. a==0 and a==1 are fixed points, so solid interiors
-        // stay fully solid and empty stays empty.
-        a = pow(a, 1.0 / 1.35);
+        // Luminance-aware coverage gamma. HW alpha blending runs in the frame-
+        // buffer's non-linear sRGB space, which makes light text on a dark bg
+        // look too THIN and (less so) dark text on light look too heavy. So we
+        // pick the correction by the glyph's own luminance: bright glyphs get a
+        // stronger gamma (fatten stems), dark glyphs a gentle one. This is the
+        // cheap, single-pass approximation of linear-space blending that kitty/
+        // ghostty use. a==0/a==1 stay fixed points so solids are untouched.
+        float luma = dot(vColor, vec3(0.2126, 0.7152, 0.0722));
+        // gamma in ~[1.2 .. 1.6] as luma goes 0->1.
+        float g = mix(1.2, 1.6, luma);
+        a = pow(a, 1.0 / g);
         frag = vec4(vColor, a);
     } else {
         if (vRadius > 0.0) {
