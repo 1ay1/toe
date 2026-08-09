@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -215,6 +216,14 @@ public:
     // Live-apply the default foreground/background colors (like an OSC 10/11
     // from the app). Takes effect on the next frame; recolors the whole grid.
     void set_default_colors(Rgb fg, Rgb bg);
+
+    // Live-apply the 16 ANSI palette colours (indices 0-15: 0-7 normal, 8-15
+    // bright), like a batch of OSC 4 edits. Fewer than 16 sets a prefix; more
+    // are ignored. Recolors the whole grid next frame. Powers theme switching.
+    void set_palette(std::span<const Rgb> colors);
+
+    // Live-apply the cursor colour (like OSC 12). Recolors next frame.
+    void set_cursor_color(Rgb c);
 
     // Live-apply a new font by FAMILY (resolved to a file by the host) or an
     // explicit file path, rebuilding the atlas + renderer at the current pixel

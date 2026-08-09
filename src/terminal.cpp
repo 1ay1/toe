@@ -266,6 +266,20 @@ void Session::set_default_colors(Rgb fg, Rgb bg) {
     impl_->model.screen.edit_color(CE{CE::Target::bg, 0, false, bg});
 }
 
+void Session::set_palette(std::span<const Rgb> colors) {
+    // Batch of index edits (same channel OSC 4 uses). Cap at the 16 ANSI slots.
+    using CE = term::Screen::ColorEdit;
+    const std::size_t n = std::min<std::size_t>(colors.size(), 16);
+    for (std::size_t i = 0; i < n; ++i)
+        impl_->model.screen.edit_color(
+            CE{CE::Target::index, static_cast<std::uint8_t>(i), false, colors[i]});
+}
+
+void Session::set_cursor_color(Rgb c) {
+    using CE = term::Screen::ColorEdit;
+    impl_->model.screen.edit_color(CE{CE::Target::cursor, 0, false, c});
+}
+
 bool Session::set_font(std::string_view family_or_file, PixelSize surface_px) {
     // The host resolves a family name to a concrete file (it knows the OS font
     // dirs); we take a path directly. An empty/unchanged path is a no-op.
