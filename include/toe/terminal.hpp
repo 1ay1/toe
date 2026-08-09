@@ -180,6 +180,17 @@ public:
     void scroll_to_bottom();
     [[nodiscard]] int scroll_offset() const noexcept;
 
+    // --- command-block navigation (OSC 133) --------------------------------
+    // Jump the scroll view to a shell command's prompt. These power a
+    // human-facing block UI over full-screen scrollback: step through past
+    // commands, or jump straight to the last one that FAILED. Each returns true
+    // if it moved the view (false = no such block). The `id` of the block
+    // jumped to is reported so a host can highlight it.
+    bool jump_to_prev_command();  // toward older commands (up)
+    bool jump_to_next_command();  // toward newer commands (down); at the newest, go live
+    bool jump_to_last_failed();   // most recent non-zero-exit command
+    [[nodiscard]] std::uint64_t focused_block() const noexcept; // 0 = none
+
     // --- selection ---------------------------------------------------------
     // Begin/extend a selection at a VISIBLE cell (viewport row/col). mode: 0
     // character, 1 line, 2 block.

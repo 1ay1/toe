@@ -97,6 +97,19 @@ void Screen::scroll_to_bottom() {
     }
 }
 
+void Screen::scroll_to_abs_row(std::int64_t abs_row, std::int32_t margin) {
+    // viewport_to_abs(vrow) = scrollback - scroll_offset + vrow. Solve for the
+    // offset that lands abs_row at viewport row `margin`.
+    const std::int64_t sb = static_cast<std::int64_t>(ring_.scrollback());
+    const std::int64_t want = sb + margin - abs_row;
+    const std::int32_t off = static_cast<std::int32_t>(
+        std::clamp<std::int64_t>(want, 0, sb));
+    if (off != scroll_offset_) {
+        scroll_offset_ = off;
+        touch();
+    }
+}
+
 void Screen::resize(Extent size) {
     if (size == size_ || size.cols <= 0 || size.rows <= 0) {
         if (size == size_) return;

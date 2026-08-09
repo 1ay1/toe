@@ -53,6 +53,10 @@ public:
     void scroll(std::int32_t delta);
     // Jump back to the live view.
     void scroll_to_bottom();
+    // Scroll so absolute row `abs_row` sits `margin` rows below the viewport
+    // top (0 = at the very top). Used to jump to a command block's prompt.
+    // Clamps to the valid scroll range.
+    void scroll_to_abs_row(std::int64_t abs_row, std::int32_t margin = 1);
     // True when the cursor is within the currently-visible region.
     [[nodiscard]] bool cursor_visible() const noexcept { return scroll_offset_ == 0; }
 

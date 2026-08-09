@@ -75,11 +75,26 @@ private:
                 }
             }
 
+            // Command-block navigation (OSC 133): Ctrl+Shift+Up/Down jump to
+            // the previous/next shell command's prompt; Ctrl+Shift+E jumps to
+            // the last command that FAILED. Primary screen only — alt-screen
+            // apps (vim/tmux) own these keys. This is hand's block UI for
+            // full-screen scrollback: no other terminal navigates a live TUI's
+            // history by semantic command.
+            if (const auto *sk = std::get_if<toe::SpecialKey>(&e.key.key);
+                sk && e.key.mods.ctrl && e.key.mods.shift && !s_.on_alt_screen()) {
+                if (*sk == toe::SpecialKey::Up) { s_.jump_to_prev_command(); return; }
+                if (*sk == toe::SpecialKey::Down) { s_.jump_to_next_command(); return; }
+            }
+
             // Clipboard shortcuts intercept before the key reaches the child.
             if (const auto *txt = std::get_if<toe::TextInput>(&e.key.key);
                 txt && e.key.mods.ctrl && e.key.mods.shift) {
                 if (txt->utf8 == "v" || txt->utf8 == "V") return paste_clipboard();
                 if (txt->utf8 == "c" || txt->utf8 == "C") return copy_selection();
+                if ((txt->utf8 == "e" || txt->utf8 == "E") && !s_.on_alt_screen()) {
+                    if (s_.jump_to_last_failed()) return; // else fall through
+                }
             }
         }
 

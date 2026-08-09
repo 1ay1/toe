@@ -52,6 +52,7 @@ struct Session::Impl {
     gfx::FontAtlas::StyleFiles style_files_; // real bold/italic/bold-italic paths
     bool ligatures_ = false;
     int font_px_ = 0;
+    std::uint64_t focused_block = 0; // command block the block-nav UI is on (0=none)
 
     Impl(Config c, Extent g, gfx::Renderer r, Pty p, int cw, int ch)
         : model(std::move(c), g), renderer(std::move(r)), pty(std::move(p)), grid(g), cell_w(cw),
@@ -320,6 +321,58 @@ bool Session::output_pending() const noexcept { return impl_->more_pending; }
 void Session::scroll(int lines) { impl_->model.screen.scroll(lines); }
 void Session::scroll_to_bottom() { impl_->model.screen.scroll_to_bottom(); }
 int Session::scroll_offset() const noexcept { return impl_->model.screen.scroll_offset(); }
+
+// --- command-block navigation ----------------------------------------------
+std::uint64_t Session::focused_block() const noexcept { return impl_->focused_block; }
+
+bool Session::jump_to_prev_command() {
+    const auto &blocks = impl_->model.commands.blocks();
+    if (blocks.empty()) return false;
+    auto &scr = impl_->model.screen;
+    // The absolute row currently at the top of the viewport; we want the newest
+    // block whose prompt is strictly ABOVE it (older). If none is focused yet,
+    // start from the current view top.
+    const std::int64_t top_abs = scr.viewport_to_abs(0);
+    const term::CommandBlock *target = nullptr;
+    for (const auto &b : blocks) { // newest-last; scan for the closest-above
+        if (b.prompt_row >= 0 && b.prompt_row < top_abs) target = &b;
+    }
+    if (!target) return false;
+    scr.scroll_to_abs_row(target->prompt_row, /*margin=*/0);
+    impl_->focused_block = target->id;
+    return true;
+}
+
+bool Session::jump_to_next_command() {
+    const auto &blocks = impl_->model.commands.blocks();
+    if (blocks.empty()) return false;
+    auto &scr = impl_->model.screen;
+    const std::int64_t top_abs = scr.viewport_to_abs(0);
+    const term::CommandBlock *target = nullptr;
+    for (const auto &b : blocks) { // first block whose prompt is BELOW the top
+        if (b.prompt_row >= 0 && b.prompt_row > top_abs) { target = &b; break; }
+    }
+    if (!target) { // past the newest block -> return to the live view
+        scr.scroll_to_bottom();
+        impl_->focused_block = 0;
+        return scr.scroll_offset() == 0;
+    }
+    scr.scroll_to_abs_row(target->prompt_row, /*margin=*/0);
+    impl_->focused_block = target->id;
+    return true;
+}
+
+bool Session::jump_to_last_failed() {
+    const auto &blocks = impl_->model.commands.blocks();
+    const term::CommandBlock *target = nullptr;
+    for (const auto &b : blocks) { // newest-last: last non-zero-exit wins
+        if (b.finished() && !b.succeeded() && b.prompt_row >= 0) target = &b;
+    }
+    if (!target) return false;
+    impl_->model.screen.scroll_to_abs_row(target->prompt_row, /*margin=*/0);
+    impl_->focused_block = target->id;
+    return true;
+}
 
 void Session::select_begin(int vrow, int col, int mode) {
     using SM = term::Screen::SelectMode;

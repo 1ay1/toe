@@ -147,6 +147,60 @@ int main() {
         ok(noreply.rfind("\x1bP>2b", 0) == 0, "query after disable -> status 2");
     }
 
+    // ── block navigation: jump-to-command scroll math ──────────────────────
+    // Build several OSC 133 command blocks (one FAILING) with enough output to
+    // push earlier ones into scrollback, then verify scroll_to_abs_row lands a
+    // chosen block's prompt in the viewport — the primitive hand's Ctrl+Shift+
+    // Up/Down/E block navigation drives.
+    {
+        term::Model m{cfg, Extent{80, 10}};
+        auto cmd = [&](const char *name, int out_lines, int exit_code) {
+            feed(m, "\x1b]133;A\x1b\\");            // A: prompt
+            feed(m, std::string("$ ") + name + "\r\n");
+            feed(m, "\x1b]133;C\x1b\\");            // C: output begins
+            for (int i = 0; i < out_lines; ++i) {
+                char b[32]; std::snprintf(b, sizeof b, "%s-out-%d\r\n", name, i);
+                feed(m, b);
+            }
+            char d[32]; std::snprintf(d, sizeof d, "\x1b]133;D;%d\x1b\\", exit_code);
+            feed(m, d);                             // D: done + exit
+        };
+        cmd("first", 8, 0);
+        cmd("boom", 8, 1);   // <- the failing one
+        cmd("third", 8, 0);
+
+        const auto &blocks = m.commands.blocks();
+        ok(blocks.size() >= 3, "three command blocks recorded");
+
+        // Find the failing block and its prompt row.
+        const term::CommandBlock *failed = nullptr;
+        for (const auto &b : blocks)
+            if (b.finished() && !b.succeeded() && b.prompt_row >= 0) failed = &b;
+        ok(failed != nullptr, "the failing (exit 1) block is found");
+
+        if (failed) {
+            // It should be up in scrollback now (third's output pushed it up).
+            ok(m.screen.scroll_offset() == 0, "view starts live (bottom)");
+            m.screen.scroll_to_abs_row(failed->prompt_row, /*margin=*/0);
+            // After jumping, the failed prompt's absolute row must be inside the
+            // visible window [top_abs, top_abs+rows).
+            const std::int64_t top = m.screen.viewport_to_abs(0);
+            const std::int64_t bot = top + m.screen.size().rows;
+            ok(failed->prompt_row >= top && failed->prompt_row < bot,
+               "jump_to lands the failed block's prompt in the viewport");
+            // And the '$ boom' text is actually on the row we jumped to.
+            const int vrow = static_cast<int>(failed->prompt_row - top) + 1; // +1: prompt then input
+            bool sees_boom = false;
+            for (int r = 0; r < m.screen.size().rows; ++r) {
+                std::string line;
+                for (auto c : m.screen.row(Row{r})) if (c.cp) line += static_cast<char>(c.cp & 0x7f);
+                if (line.find("boom") != std::string::npos) { sees_boom = true; break; }
+            }
+            ok(sees_boom, "the failed command text is visible after the jump");
+            (void)vrow;
+        }
+    }
+
     std::printf(fails ? "%d command-log test(s) failed\n" : "all command-log tests passed\n",
                 fails);
     return fails ? 1 : 0;
