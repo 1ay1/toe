@@ -63,9 +63,10 @@ public:
     // No damage cache: overlays are transient and repaint wholesale. Requires a
     // current GL context and blending enabled (draw() leaves it on).
     // `bg_alpha` (0..1) scales every cell background's opacity so the pane can
-    // be a see-through glass overlay (glyphs stay fully opaque).
+    // be a see-through glass overlay (glyphs stay fully opaque). Optional
+    // per-cell `alpha` plane (row-major, cols*rows) overrides bg_alpha per cell.
     void draw_cells(const term::Cell *cells, int cols, int rows, PixelSize px, int ox = 0,
-                    int oy = 0, float bg_alpha = 1.0f);
+                    int oy = 0, float bg_alpha = 1.0f, const std::uint8_t *alpha = nullptr);
 
 private:
     // One instance: a colored (and optionally textured) quad in pixel space.

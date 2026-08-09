@@ -152,8 +152,12 @@ public:
     // Composite a raw cell grid over the terminal this frame (a settings panel,
     // search bar, notification — any in-terminal UI). Drawn with the same font
     // and pipeline as the grid, at pixel offset (ox, oy). Call AFTER render().
+    // `bg_alpha` scales every cell's background (frosted-glass overlay). An
+    // optional per-cell `alpha` plane (0..255, row-major, same dims) overrides
+    // it per cell — e.g. a faint scrim outside a near-opaque panel.
     void render_overlay(gfx::RenderContext &rc, const term::Cell *cells, int cols, int rows,
-                        PixelSize px, int ox = 0, int oy = 0, float bg_alpha = 1.0f);
+                        PixelSize px, int ox = 0, int oy = 0, float bg_alpha = 1.0f,
+                        const std::uint8_t *alpha = nullptr);
 
     // The current cell size in pixels (for laying out an overlay in cells).
     [[nodiscard]] Extent cell_size() const noexcept;

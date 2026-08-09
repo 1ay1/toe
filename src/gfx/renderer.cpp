@@ -930,7 +930,7 @@ void Renderer::draw_preedit(const term::Screen &screen, PixelSize px) {
 }
 
 void Renderer::draw_cells(const term::Cell *cells, int cols, int rows, PixelSize px, int ox,
-                          int oy, float bg_alpha) {
+                          int oy, float bg_alpha, const std::uint8_t *alpha) {
     if (!cells || cols <= 0 || rows <= 0) return;
     const int cw = atlas_.cell_width();
     const int ch = atlas_.cell_height();
@@ -962,13 +962,19 @@ void Renderer::draw_cells(const term::Cell *cells, int cols, int rows, PixelSize
             if (cell.width == 0) continue; // wide-glyph spacer
             const float x = static_cast<float>(ox + c * cw);
             const int span = cell.width == 2 ? 2 : 1;
-            // Background rect for every cell, scaled by bg_alpha so an overlay
-            // pane reads as frosted glass over the terminal (glyphs stay
-            // opaque). ba==0 draws no rect at all (a true see-through hole).
-            if (ba != 0) {
+            // Per-cell background alpha: the optional plane wins over bg_alpha,
+            // so an overlay can be a faint scrim outside a near-opaque panel.
+            const std::uint8_t cell_a =
+                alpha ? alpha[static_cast<std::size_t>(r) * static_cast<std::size_t>(cols) +
+                              static_cast<std::size_t>(c)]
+                      : ba;
+            // Background rect for every cell, scaled so an overlay pane reads as
+            // frosted glass over the terminal (glyphs stay opaque). alpha==0
+            // draws no rect at all (a true see-through hole).
+            if (cell_a != 0) {
                 const Rgb bgc = resolve(cell.pen.bg, /*is_fg=*/false);
                 bg.push_back(rect_inst(x, y, static_cast<float>(cw * span),
-                                       static_cast<float>(ch), bgc.r, bgc.g, bgc.b, 0, ba));
+                                       static_cast<float>(ch), bgc.r, bgc.g, bgc.b, 0, cell_a));
             }
             const char32_t cp = cell.cp;
             if (cp == 0 || cp == U' ') continue;

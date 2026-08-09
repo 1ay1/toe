@@ -183,9 +183,10 @@ DamageRect Session::render(gfx::RenderContext &rc, PixelSize px, bool cursor_on,
 }
 
 void Session::render_overlay(gfx::RenderContext &rc, const term::Cell *cells, int cols, int rows,
-                             PixelSize px, int ox, int oy, float bg_alpha) {
+                             PixelSize px, int ox, int oy, float bg_alpha,
+                             const std::uint8_t *alpha) {
     (void)rc;
-    impl_->renderer.draw_cells(cells, cols, rows, px, ox, oy, bg_alpha);
+    impl_->renderer.draw_cells(cells, cols, rows, px, ox, oy, bg_alpha, alpha);
 }
 
 Extent Session::cell_size() const noexcept { return Extent{impl_->cell_w, impl_->cell_h}; }
