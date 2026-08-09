@@ -80,6 +80,7 @@ template <App A>
     std::string last_title;
     std::optional<RenderKey> drawn;    // key of the last rendered frame
     std::uint64_t last_present_ms = 0; // for the flood frame-rate cap
+    bool prev_overlay_on = false;      // overlay state last frame (edge detect)
 
     // Input-to-photon latency: stamp when we write input to the child, measure
     // at the present that reflects it. A HUD prints live min/avg/p99 when
@@ -184,8 +185,14 @@ template <App A>
         const bool streaming = pumped || session.output_pending();
         const bool rate_ok = !streaming || (now.value - last_present_ms) >= kFloodPresentMs;
         // The overlay animates + responds to input every frame, so force a
-        // repaint while it's active (the terminal grid may be unchanged).
-        if ((child_gone || drawn != key || overlay_on) && rate_ok) {
+        // repaint while it's active (the terminal grid may be unchanged). ALSO
+        // force ONE repaint on the frame it CLOSES (overlay_on just went false):
+        // the grid is unchanged so the RenderKey matches, but the pane pixels
+        // are still on screen and must be erased NOW — otherwise closing looks
+        // laggy (the pane lingers until the next unrelated damage).
+        const bool overlay_closed = prev_overlay_on && !overlay_on;
+        prev_overlay_on = overlay_on;
+        if ((child_gone || drawn != key || overlay_on || overlay_closed) && rate_ok) {
             // The host begins the swapchain frame (sokol pass + clear to the
             // terminal's default background), toe renders the grid + overlay
             // into it, then the host ends the pass and presents.
@@ -197,7 +204,9 @@ template <App A>
                 if (overlay_on) surf.overlay_render(term, px);
             }
             surf.end_frame();
-            toe::present(surf, (overlay_on || dmg.empty()) ? toe::DamageRect::full(px) : dmg);
+            toe::present(surf, (overlay_on || overlay_closed || dmg.empty())
+                                   ? toe::DamageRect::full(px)
+                                   : dmg);
             drawn = key;
             last_present_ms = now.value;
 
