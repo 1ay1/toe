@@ -48,14 +48,24 @@ enum class FontStyle : std::uint8_t {
 
 class FontAtlas {
 public:
-    // Load a monospace font at `pixel_size`. If `family` is empty, Fontconfig
-    // picks the system default monospace. Creates the GL atlas texture.
+    // Optional REAL styled font files (bold / italic / bold-italic). Any empty
+    // path means "synthesize that style from the regular face" (embolden/shear),
+    // preserving the old behaviour. When present, that style renders from the
+    // real face — the biggest single glyph-quality upgrade.
+    struct StyleFiles {
+        std::string bold;
+        std::string italic;
+        std::string bold_italic;
+    };
+
     // Build the atlas from a font FILE path at `pixel_size`. `fallback_path`
     // (may be empty) is a secondary font used for codepoints the primary lacks
-    // (CJK/emoji/symbols). `ligatures` enables GSUB calt/liga shaping.
+    // (CJK/emoji/symbols). `ligatures` enables GSUB calt/liga shaping. `styles`
+    // supplies optional real bold/italic faces.
     [[nodiscard]] static Result<FontAtlas> create(std::string font_path, int pixel_size,
                                                   std::string fallback_path = {},
-                                                  bool ligatures = true);
+                                                  bool ligatures = true,
+                                                  StyleFiles styles = StyleFiles{});
 
     FontAtlas(const FontAtlas &) = delete;
     FontAtlas &operator=(const FontAtlas &) = delete;
@@ -143,6 +153,11 @@ private:
     // fallback chain (primary first, then CJK/emoji/symbol faces); glyph lookup
     // and rasterization go through it. The primary face fixes the cell metrics.
     FaceStack faces_{};
+    // Optional REAL styled stacks, indexed by style bits (1=bold, 2=italic,
+    // 3=bold-italic); index 0 is unused (regular lives in faces_). An empty
+    // stack means "synthesize this style from faces_" (the old path).
+    std::array<FaceStack, 4> styled_{};
+    std::array<bool, 4> has_styled_{}; // true if styled_[i] holds a real face
     void *shaper_{nullptr};         // ot::Shaper* over the primary face's GSUB
     int pixel_size_{0};
     bool ligatures_{true};

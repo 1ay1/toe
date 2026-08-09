@@ -110,7 +110,8 @@ const GlyphInfo *pack_bitmap(const unsigned char *src, int w, int h, int off_x, 
 } // namespace
 
 Result<FontAtlas> FontAtlas::create(std::string font_path, int pixel_size,
-                                    std::string fallback_path, bool ligatures) {
+                                    std::string fallback_path, bool ligatures,
+                                    StyleFiles styles) {
     if (font_path.empty()) return fail("font: no font file path given");
     auto data = read_file(font_path);
     if (data.empty()) return fail("font: cannot read '" + font_path + "'");
@@ -147,6 +148,23 @@ Result<FontAtlas> FontAtlas::create(std::string font_path, int pixel_size,
     // preloading the whole font tree.
     a.faces_.enable_discovery(pixel_size);
 
+    // Optional REAL styled faces (bold / italic / bold-italic). Load each into
+    // its own stack indexed by style bits; discovery is enabled so styled text
+    // still gets CJK/emoji/symbol fallback. An absent file leaves has_styled_
+    // false, so rasterize() synthesizes that style from the regular face.
+    const std::string style_paths[4] = {
+        {}, std::move(styles.bold), std::move(styles.italic), std::move(styles.bold_italic)};
+    for (int i = 1; i < 4; ++i) {
+        if (style_paths[i].empty()) continue;
+        auto sd = read_file(style_paths[i]);
+        if (sd.empty()) continue;
+        auto sf = Face::load(std::move(sd), pixel_size);
+        if (!sf) continue;
+        a.styled_[static_cast<std::size_t>(i)].push(std::move(sf), style_paths[i]);
+        a.styled_[static_cast<std::size_t>(i)].enable_discovery(pixel_size);
+        a.has_styled_[static_cast<std::size_t>(i)] = true;
+    }
+
     // Ligature shaper (GSUB calt/liga) over the primary face's bytes. Optional;
     // identity if unavailable.
     if (ligatures) {
@@ -168,10 +186,12 @@ Result<FontAtlas> FontAtlas::create(std::string font_path, int pixel_size,
 }
 
 FontAtlas::FontAtlas(FontAtlas &&o) noexcept
-    : faces_{std::move(o.faces_)}, shaper_{std::exchange(o.shaper_, nullptr)},
+    : faces_{std::move(o.faces_)}, styled_{std::move(o.styled_)},
+      has_styled_{o.has_styled_}, shaper_{std::exchange(o.shaper_, nullptr)},
       pixel_size_{o.pixel_size_}, ligatures_{o.ligatures_},
       shadow_{std::move(o.shadow_)}, tex_id_{std::exchange(o.tex_id_, 0)},
       glyph_view_id_{std::exchange(o.glyph_view_id_, 0)}, atlas_dirty_{o.atlas_dirty_},
+      synth_scratch_{std::move(o.synth_scratch_)},
       atlas_dim_{o.atlas_dim_}, pen_x_{o.pen_x_}, pen_y_{o.pen_y_}, shelf_h_{o.shelf_h_},
       color_shadow_{std::move(o.color_shadow_)}, color_tex_id_{std::exchange(o.color_tex_id_, 0)},
       color_view_id_{std::exchange(o.color_view_id_, 0)}, color_dirty_{o.color_dirty_},
@@ -184,6 +204,9 @@ FontAtlas &FontAtlas::operator=(FontAtlas &&o) noexcept {
     if (this != &o) {
         destroy();
         faces_ = std::move(o.faces_);
+        styled_ = std::move(o.styled_);
+        has_styled_ = o.has_styled_;
+        synth_scratch_ = std::move(o.synth_scratch_);
         shaper_ = std::exchange(o.shaper_, nullptr);
         pixel_size_ = o.pixel_size_;
         ligatures_ = o.ligatures_;
@@ -252,14 +275,35 @@ void FontAtlas::sync_gpu() {
 bool FontAtlas::has_shaper() const noexcept { return shaper_ != nullptr; }
 
 const GlyphInfo *FontAtlas::rasterize(char32_t cp, FontStyle style) {
-    const bool bold = (static_cast<std::uint8_t>(style) & 1) != 0;
-    const bool italic = (static_cast<std::uint8_t>(style) & 2) != 0;
+    const auto sbits = static_cast<std::uint8_t>(style) & 3u;
+    bool bold = (sbits & 1) != 0;
+    bool italic = (sbits & 2) != 0;
     const std::uint64_t key = (static_cast<std::uint64_t>(style) << 32) | cp;
+
+    // Prefer a REAL styled face when one is loaded for this style. Falling back
+    // through the exact-then-lesser styles matches how designers ship families:
+    // e.g. bold-italic text uses the bold-italic file if present, else the
+    // italic file with synthesized bold, else bold with synthesized italic,
+    // else the regular with both synthesized. Whatever we DON'T have a real
+    // face for stays flagged for synthesis in pack_bitmap.
+    FaceStack *stack = &faces_;
+    if (sbits != 0) {
+        if (has_styled_[sbits]) { // exact styled face
+            stack = &styled_[sbits];
+            bold = italic = false; // fully real, synthesize nothing
+        } else if (sbits == 3u && has_styled_[2]) { // bold-italic -> italic + synth bold
+            stack = &styled_[2];
+            italic = false;
+        } else if (sbits == 3u && has_styled_[1]) { // bold-italic -> bold + synth italic
+            stack = &styled_[1];
+            bold = false;
+        }
+    }
 
     // The fallback chain picks the first face that owns the codepoint; the
     // glyph is rasterized with THAT face's own scale, and its advance travels
     // with it (pack_bitmap clips into the monospace cell).
-    const FaceStack::Resolved r = faces_.resolve(cp);
+    const FaceStack::Resolved r = stack->resolve(cp);
     const GlyphBitmap g = r.face->rasterize(r.index);
     if (g.is_color) return pack_color(g, key); // emoji -> RGBA atlas
     return pack_bitmap(g.pixels.empty() ? nullptr : g.pixels.data(), g.width, g.height,

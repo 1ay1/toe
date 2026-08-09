@@ -58,6 +58,14 @@ struct Config {
     // Optional fallback font (CJK/emoji/symbols) for codepoints the primary
     // font lacks. A file path; empty disables fallback.
     std::string font_fallback{};
+    // Optional REAL styled faces. When set, bold/italic/bold-italic text renders
+    // from these actual font files (far better than synthesis). Each empty field
+    // falls back to synthesizing that style from the regular face (embolden /
+    // shear), so this is purely additive. The host resolves the family's style
+    // variants and fills these in.
+    std::string font_file_bold{};
+    std::string font_file_italic{};
+    std::string font_file_bold_italic{};
     // GSUB calt/liga shaping. Off by default: the built-in shaper handles the
     // simple ligature subtable forms, but complex programming fonts (JetBrains
     // Mono, Fira Code) use multi-pass contextual chains it can't fully evaluate,

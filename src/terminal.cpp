@@ -49,6 +49,7 @@ struct Session::Impl {
     // (Cmd +/- zoom) by rebuilding the atlas + renderer at a new pixel size.
     std::string font_path_;
     std::string font_fallback_;
+    gfx::FontAtlas::StyleFiles style_files_; // real bold/italic/bold-italic paths
     bool ligatures_ = false;
     int font_px_ = 0;
 
@@ -197,7 +198,7 @@ bool Session::set_font_pixel_size(int px, PixelSize surface_px) {
     // host guarantees this, same as at create(). On any failure we keep the old
     // renderer untouched, so a bad size never breaks a live terminal.
     auto atlas = gfx::FontAtlas::create(impl_->font_path_, px, impl_->font_fallback_,
-                                        impl_->ligatures_);
+                                        impl_->ligatures_, impl_->style_files_);
     if (!atlas) return false;
     const int cw = atlas->cell_width();
     const int ch = atlas->cell_height();
@@ -235,7 +236,7 @@ bool Session::set_font(std::string_view family_or_file, PixelSize surface_px) {
     if (path.empty() || path == impl_->font_path_) return false;
 
     auto atlas = gfx::FontAtlas::create(path, impl_->font_px_, impl_->font_fallback_,
-                                        impl_->ligatures_);
+                                        impl_->ligatures_, impl_->style_files_);
     if (!atlas) return false;
     const int cw = atlas->cell_width();
     const int ch = atlas->cell_height();
@@ -618,8 +619,10 @@ Result<Terminal> Terminal::create(const Config &cfg, PixelSize px) {
     if (font_path.empty())
         return fail("font: no font file for '" + cfg.font_family +
                     "' (set font.file to a .ttf/.otf path)");
-    auto atlas =
-        gfx::FontAtlas::create(font_path, cfg.font_pixel_size, cfg.font_fallback, cfg.ligatures);
+    gfx::FontAtlas::StyleFiles style_files{cfg.font_file_bold, cfg.font_file_italic,
+                                           cfg.font_file_bold_italic};
+    auto atlas = gfx::FontAtlas::create(font_path, cfg.font_pixel_size, cfg.font_fallback,
+                                        cfg.ligatures, style_files);
     if (!atlas) {
         return std::unexpected(atlas.error());
     }
@@ -644,6 +647,7 @@ Result<Terminal> Terminal::create(const Config &cfg, PixelSize px) {
                                                 cw, ch);
     impl->font_path_ = font_path;
     impl->font_fallback_ = cfg.font_fallback;
+    impl->style_files_ = {cfg.font_file_bold, cfg.font_file_italic, cfg.font_file_bold_italic};
     impl->ligatures_ = cfg.ligatures;
     impl->font_px_ = cfg.font_pixel_size;
     // Query replies (DA1/DSR/…) no longer need a wired sink: the pure reducer
