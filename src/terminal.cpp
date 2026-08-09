@@ -54,6 +54,7 @@ struct Session::Impl {
     int font_px_ = 0;
     Config::CursorAnim cursor_anim_{}; // retained so font rebuilds keep the setting
     Rgb selection_bg_{rgb(66, 84, 112)}; // retained selection colour
+    int cursor_blink_ms_ = 530;          // cursor blink half-period (0 = steady)
     std::uint64_t focused_block = 0; // command block the block-nav UI is on (0=none)
 
     Impl(Config c, Extent g, gfx::Renderer r, Pty p, int cw, int ch)
@@ -191,6 +192,9 @@ void Session::set_selection_color(Rgb c) noexcept {
     impl_->selection_bg_ = c;
     impl_->renderer.set_selection_color(c);
 }
+
+int Session::cursor_blink_ms() const noexcept { return impl_->cursor_blink_ms_; }
+void Session::set_cursor_blink_ms(int ms) noexcept { impl_->cursor_blink_ms_ = ms < 0 ? 0 : ms; }
 
 void Session::resize(PixelSize px) {
     const Extent ng = impl_->renderer.cells_for(px);
@@ -724,6 +728,7 @@ Result<Terminal> Terminal::create(const Config &cfg, PixelSize px) {
     impl->font_px_ = cfg.font_pixel_size;
     impl->cursor_anim_ = cfg.cursor_anim;
     impl->selection_bg_ = cfg.selection_bg;
+    impl->cursor_blink_ms_ = cfg.cursor_blink_ms;
     impl->renderer.set_cursor_animation(cfg.cursor_anim.enabled, cfg.cursor_anim.time_ms,
                                         cfg.cursor_anim.trail);
     impl->renderer.set_selection_color(cfg.selection_bg);

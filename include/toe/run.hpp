@@ -164,7 +164,7 @@ template <App A>
         //    frame-rate cap allows it. The RenderKey folds damage + blink
         //    into one comparison.
         const Millis now = Millis::now();
-        const BlinkState blink = BlinkState::at(now);
+        const BlinkState blink = BlinkState::at(now, static_cast<std::uint64_t>(session.cursor_blink_ms()));
         const RenderKey key{session.generation(), blink};
 
         // Title follows the child (OSC 0/2). Cheap string compare gates it.

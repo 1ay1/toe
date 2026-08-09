@@ -76,6 +76,9 @@ struct Config {
     Rgb default_fg = rgb(220, 220, 220);
     Rgb default_bg = rgb(23, 23, 28);
     Rgb selection_bg = rgb(66, 84, 112); // selection highlight colour
+    // Cursor blink half-period in ms; 0 = steady (no blink). Host policy, but
+    // the engine's run loop reads it to pace the blink wave.
+    int cursor_blink_ms = 530;
 
     // Cursor glide animation (the caret eases to its new cell instead of
     // snapping). Fully tunable so a host/config can turn it off or retune feel:
@@ -145,6 +148,10 @@ public:
     void set_cursor_animation(bool enabled, int time_ms = 55, bool trail = true) noexcept;
     // Live-set the selection highlight colour.
     void set_selection_color(Rgb c) noexcept;
+    // Cursor blink half-period (ms); 0 = steady. Read by the host run loop to
+    // pace the blink; live-settable from the settings panel.
+    [[nodiscard]] int cursor_blink_ms() const noexcept;
+    void set_cursor_blink_ms(int ms) noexcept;
     void resize(PixelSize px);
 
     // Runtime font zoom. Rebuilds the glyph atlas + renderer at `px` pixels and

@@ -58,6 +58,14 @@ struct BlinkState {
         return {CursorBlink::on(t), TextBlink::on(t)};
     }
 
+    // Runtime cursor half-period (from config). 0 disables cursor blink (steady
+    // on). The SGR-5 text-blink phase keeps its fixed cadence. Used so
+    // cursor.blink / cursor.blink_ms are real, not compile-time constants.
+    [[nodiscard]] static BlinkState at(Millis t, std::uint64_t cursor_ms) noexcept {
+        const bool cursor = (cursor_ms == 0) ? true : ((t.value / cursor_ms) % 2 == 0);
+        return {cursor, TextBlink::on(t)};
+    }
+
     constexpr auto operator<=>(const BlinkState &) const = default;
 };
 
