@@ -188,7 +188,10 @@ Renderer &Renderer::operator=(Renderer &&o) noexcept {
 Extent Renderer::cells_for(PixelSize px) const noexcept {
     const int cw = atlas_.cell_width();
     const int ch = atlas_.cell_height();
-    return Extent{cw > 0 ? px.w / cw : 1, ch > 0 ? px.h / ch : 1};
+    // Reserve the window padding on every edge (2*pad total per axis).
+    const int w = std::max(0, px.w - 2 * pad_);
+    const int h = std::max(0, px.h - 2 * pad_);
+    return Extent{cw > 0 ? std::max(1, w / cw) : 1, ch > 0 ? std::max(1, h / ch) : 1};
 }
 
 // Build the cell pipeline + static quad + a dynamic instance buffer sokol
@@ -263,7 +266,12 @@ void Renderer::bind_common(PixelSize px) {
     cell_vs_params_t vsp = {};
     vsp.uScreen[0] = static_cast<float>(px.w);
     vsp.uScreen[1] = static_cast<float>(px.h);
+    vsp.uScreen[2] = static_cast<float>(pad_); // origin x (window padding)
+    vsp.uScreen[3] = static_cast<float>(pad_); // origin y
     sg_apply_uniforms(UB_cell_vs_params, SG_RANGE(vsp));
+    cell_fs_params_t fsp = {};
+    fsp.uOpacity = opacity_;
+    sg_apply_uniforms(UB_cell_fs_params, SG_RANGE(fsp));
 }
 
 // Clean-frame fast path is handled by the host re-presenting; with sokol we

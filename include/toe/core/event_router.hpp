@@ -202,7 +202,10 @@ private:
     // --- shared helpers ----------------------------------------------------
     struct CellPos { int col, vrow; };
     [[nodiscard]] CellPos cell_of(int x, int y) const noexcept {
-        return {x / std::max(1, s_.cell_width()), y / std::max(1, s_.cell_height())};
+        // Pointer pixels are surface-relative; subtract the window padding so
+        // the top-left grid cell maps to (0,0) even with an inset.
+        const int p = s_.padding();
+        return {(x - p) / std::max(1, s_.cell_width()), (y - p) / std::max(1, s_.cell_height())};
     }
 
     [[nodiscard]] bool app_owns_mouse(bool shift_held) const noexcept {

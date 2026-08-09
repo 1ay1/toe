@@ -190,7 +190,7 @@ template <App A>
             // terminal's default background), toe renders the grid + overlay
             // into it, then the host ends the pass and presents.
             const toe::Rgb bg = session.default_bg();
-            surf.begin_frame(px, bg.r, bg.g, bg.b);
+            surf.begin_frame(px, bg.r, bg.g, bg.b, session.opacity());
             auto rc = toe::gfx::RenderContext::adopt_current();
             const toe::DamageRect dmg = session.render(rc, px, blink.cursor_on, blink.text_on);
             if constexpr (OverlayApp<A>) {

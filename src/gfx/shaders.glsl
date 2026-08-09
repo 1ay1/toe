@@ -9,7 +9,7 @@
 
 // ─────────────────────────────── cell program ──────────────────────────────
 @vs cell_vs
-layout(binding=0) uniform cell_vs_params { vec2 uScreen; };
+layout(binding=0) uniform cell_vs_params { vec4 uScreen; }; // xy = surface px, zw = origin (padding) px
 
 in vec2 aCorner;   // unit quad corner (0..1)
 in vec4 aRect;     // x,y,w,h in pixels
@@ -26,7 +26,10 @@ out vec2 vHalf;    // half-extent of the rect, in px
 out float vRadius;
 
 void main() {
-    vec2 px = aRect.xy + aCorner * aRect.zw;
+    // Shift every rect by the padding origin (uScreen.zw), then px -> NDC over
+    // the FULL surface (uScreen.xy). This insets the whole terminal by the
+    // configured window padding with no per-vertex work at the emit sites.
+    vec2 px = uScreen.zw + aRect.xy + aCorner * aRect.zw;
     vec2 ndc = vec2((px.x / uScreen.x) * 2.0 - 1.0,
                     1.0 - (px.y / uScreen.y) * 2.0); // y-down px -> y-up ndc
     gl_Position = vec4(ndc, 0.0, 1.0);
@@ -44,6 +47,7 @@ void main() {
 layout(binding=0) uniform texture2D uAtlas;       // R8 coverage (alpha glyphs)
 layout(binding=1) uniform texture2D uColorAtlas;  // RGBA (colour emoji)
 layout(binding=0) uniform sampler uSmp;
+layout(binding=1) uniform cell_fs_params { float uOpacity; }; // window opacity (bg only)
 
 in vec2 vUV;
 in vec3 vColor;
@@ -77,12 +81,15 @@ void main() {
         a = pow(a, 1.0 / g);
         frag = vec4(vColor, a);
     } else {
+        // Solid cell background. Window opacity scales its alpha so a semi-
+        // transparent terminal shows the desktop through the BACKGROUND while
+        // glyphs (above) stay fully opaque and readable.
         if (vRadius > 0.0) {
             float d = sd_round_box(vLocal, vHalf, vRadius);
             float a = 1.0 - smoothstep(-0.75, 0.75, d);
-            frag = vec4(vColor, a);
+            frag = vec4(vColor, a * uOpacity);
         } else {
-            frag = vec4(vColor, 1.0);
+            frag = vec4(vColor, uOpacity);
         }
     }
 }

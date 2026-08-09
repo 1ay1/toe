@@ -56,6 +56,8 @@ struct Session::Impl {
     Rgb selection_bg_{rgb(66, 84, 112)}; // retained selection colour
     int cursor_blink_ms_ = 530;          // cursor blink half-period (0 = steady)
     Behavior behavior_{};                // scroll/selection host policy
+    int padding_ = 0;                    // window padding, retained across rebuilds
+    float opacity_ = 1.0f;               // window opacity, retained across rebuilds
     std::function<void()> on_bell_{};    // host bell handler (audible/visual)
     std::uint64_t focused_block = 0; // command block the block-nav UI is on (0=none)
 
@@ -239,6 +241,8 @@ bool Session::set_font_pixel_size(int px, PixelSize surface_px) {
     impl_->renderer.set_cursor_animation(impl_->cursor_anim_.enabled, impl_->cursor_anim_.time_ms,
                                          impl_->cursor_anim_.trail);
     impl_->renderer.set_selection_color(impl_->selection_bg_);
+    impl_->renderer.set_padding(impl_->padding_);
+    impl_->renderer.set_opacity(impl_->opacity_);
     impl_->cell_w = cw;
     impl_->cell_h = ch;
     impl_->font_px_ = px;
@@ -280,6 +284,8 @@ bool Session::set_font(std::string_view family_or_file, PixelSize surface_px) {
     impl_->renderer.set_cursor_animation(impl_->cursor_anim_.enabled, impl_->cursor_anim_.time_ms,
                                          impl_->cursor_anim_.trail);
     impl_->renderer.set_selection_color(impl_->selection_bg_);
+    impl_->renderer.set_padding(impl_->padding_);
+    impl_->renderer.set_opacity(impl_->opacity_);
     impl_->cell_w = cw;
     impl_->cell_h = ch;
     impl_->font_path_ = path;
@@ -293,12 +299,31 @@ bool Session::set_font(std::string_view family_or_file, PixelSize surface_px) {
     return true;
 }
 
+int Session::padding() const noexcept { return impl_->padding_; }
+
+void Session::set_opacity(float o) noexcept {
+    impl_->opacity_ = o < 0.0f ? 0.0f : (o > 1.0f ? 1.0f : o);
+    impl_->renderer.set_opacity(impl_->opacity_);
+}
+float Session::opacity() const noexcept { return impl_->opacity_; }
+
 void Session::set_cursor_shape(int shape) noexcept {
     using CS = term::Screen::CursorShape;
     const CS cs = shape == 1 ? CS::bar : shape == 2 ? CS::underline : CS::block;
     auto st = impl_->model.screen.cursor_style(); // keep current blink phase
     st.shape = cs;
     impl_->model.screen.set_cursor_style(st);
+}
+
+void Session::set_padding(int px, PixelSize surface_px) noexcept {
+    impl_->padding_ = px < 0 ? 0 : px;
+    impl_->renderer.set_padding(impl_->padding_);
+    const Extent ng = impl_->renderer.cells_for(surface_px);
+    if (ng.cols != impl_->grid.cols || ng.rows != impl_->grid.rows) {
+        impl_->grid = ng;
+        impl_->model.screen.resize(ng);
+        (void)impl_->pty.resize(ng);
+    }
 }
 
 bool Session::set_ligatures(bool on, PixelSize surface_px) {
@@ -317,6 +342,8 @@ bool Session::set_ligatures(bool on, PixelSize surface_px) {
     impl_->renderer.set_cursor_animation(impl_->cursor_anim_.enabled, impl_->cursor_anim_.time_ms,
                                          impl_->cursor_anim_.trail);
     impl_->renderer.set_selection_color(impl_->selection_bg_);
+    impl_->renderer.set_padding(impl_->padding_);
+    impl_->renderer.set_opacity(impl_->opacity_);
     impl_->cell_w = cw;
     impl_->cell_h = ch;
     impl_->model.screen.set_cell_size(cw, ch);
@@ -756,6 +783,9 @@ Result<Terminal> Terminal::create(const Config &cfg, PixelSize px) {
     if (!renderer) {
         return std::unexpected(renderer.error());
     }
+    // Window padding must be set BEFORE the initial grid is measured so the
+    // first cells_for() reserves it.
+    renderer->set_padding(cfg.padding);
 
     const Extent grid = renderer->cells_for(px);
 
@@ -788,6 +818,10 @@ Result<Terminal> Terminal::create(const Config &cfg, PixelSize px) {
         st.shape = cs;
         impl->model.screen.set_cursor_style(st);
     }
+    impl->padding_ = cfg.padding;
+    impl->opacity_ = cfg.opacity;
+    impl->renderer.set_padding(cfg.padding);
+    impl->renderer.set_opacity(cfg.opacity);
     impl->renderer.set_cursor_animation(cfg.cursor_anim.enabled, cfg.cursor_anim.time_ms,
                                         cfg.cursor_anim.trail);
     impl->renderer.set_selection_color(cfg.selection_bg);

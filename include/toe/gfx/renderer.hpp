@@ -195,6 +195,8 @@ private:
     Rgb selection_bg_{rgb(66, 84, 112)};          // selection highlight (config-set)
     std::int64_t bell_until_us_{0};               // visual-bell flash end (us), 0 = idle
     static constexpr std::int64_t kBellFlashUs = 150000; // ~150ms fade
+    int pad_{0};                                  // inner window padding (px per edge)
+    float opacity_{1.0f};                         // window opacity (bg alpha scale)
 
 public:
     // True while the cursor is still gliding to its target — the host keeps
@@ -212,6 +214,14 @@ public:
     [[nodiscard]] bool animating() const noexcept;
     // The selection highlight colour (from colors.selection).
     void set_selection_color(Rgb c) noexcept { selection_bg_ = c; }
+    // Inner window padding in pixels: the grid is inset by this on every edge.
+    // cells_for() reserves 2*pad, and the vertex shader shifts by the origin.
+    void set_padding(int px) noexcept { pad_ = px < 0 ? 0 : px; }
+    [[nodiscard]] int padding() const noexcept { return pad_; }
+    // Window opacity in [0,1]: scales the terminal BACKGROUND alpha (glyphs stay
+    // opaque), so a compositor can show the desktop through the bg. 1 = opaque.
+    void set_opacity(float o) noexcept { opacity_ = o < 0.0f ? 0.0f : (o > 1.0f ? 1.0f : o); }
+    [[nodiscard]] float opacity() const noexcept { return opacity_; }
     // Configure the glide: master on/off, time constant (ms), and whether the
     // comet trail is drawn. All wired from toe::Config::cursor_anim.
     void set_cursor_animation(bool on, int time_ms = 55, bool trail = true) noexcept {

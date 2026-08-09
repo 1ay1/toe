@@ -93,6 +93,10 @@ struct Config {
     bool scroll_on_keystroke = true;
     // Auto-copy a selection to the clipboard as soon as it's made.
     bool copy_on_select = false;
+    // Inner window padding in pixels (grid inset on every edge). Live-settable.
+    int padding = 0;
+    // Window opacity in [0,1]; 1 = opaque. Live-settable.
+    float opacity = 1.0f;
 
     // Cursor glide animation (the caret eases to its new cell instead of
     // snapping). Fully tunable so a host/config can turn it off or retune feel:
@@ -188,6 +192,16 @@ public:
     void set_cursor_shape(int shape) noexcept;
     // Toggle programming ligatures live (rebuilds the atlas at the current px).
     bool set_ligatures(bool on, PixelSize surface_px);
+    // Set inner window padding (px per edge) live; re-grids to the new area.
+    void set_padding(int px, PixelSize surface_px) noexcept;
+    // Current window padding (px per edge) — the EventRouter subtracts it when
+    // mapping pointer pixels to cells.
+    [[nodiscard]] int padding() const noexcept;
+    // Window opacity in [0,1]: the host clears the swapchain at this alpha and
+    // the renderer scales the background alpha, so a compositor shows the
+    // desktop through the terminal bg. Live-settable.
+    void set_opacity(float o) noexcept;
+    [[nodiscard]] float opacity() const noexcept;
     void resize(PixelSize px);
 
     // Runtime font zoom. Rebuilds the glyph atlas + renderer at `px` pixels and
