@@ -99,6 +99,54 @@ int main() {
     feed(m2, ftcs('A'));
     ok(m2.commands.generation() > g0, "generation bumps on a mark");
 
+    // --- DEC 2034 Semantic Block Query -------------------------------------
+    auto writes = [](const Cmds &cs) {
+        std::string s;
+        for (auto &c : cs)
+            if (auto *w = std::get_if<WriteChild>(&c)) s += w->bytes;
+        return s;
+    };
+    {
+        // Fresh model with one completed command.
+        term::Model mq{cfg, Extent{80, 24}};
+        feed(mq, osc7("file:///tmp"));
+        feed(mq, ftcs('A')); feed(mq, "$ ");
+        feed(mq, ftcs('B')); feed(mq, "echo hi");
+        feed(mq, ftcs('C')); feed(mq, "\r\nhi\r\n");
+        feed(mq, ftcs('D', "0"));
+
+        // Enable 2034 -> DCS handshake carrying a 4-word token.
+        std::string hs = writes(term::feed_output(mq, "\x1b[?2034h"));
+        ok(mq.sbquery.enabled(), "2034 enabled after CSI ?2034h");
+        ok(hs.rfind("\x1bP>2034;1b", 0) == 0, "handshake is DCS >2034;1b...");
+        ok(mq.sbquery.token() != 0, "a non-zero token was minted");
+
+        // DECRQM verify -> reports set (1).
+        std::string rqm = writes(term::feed_output(mq, "\x1b[?2034$p"));
+        ok(rqm == "\x1b[?2034;1$y", "DECRQM reports 2034 set");
+
+        // Query last block WITH the correct token -> status 1 + JSON.
+        std::uint64_t tok = mq.sbquery.token();
+        auto w16 = [&](int sh) { return std::to_string((tok >> sh) & 0xFFFF); };
+        std::string q = "\x1b[>1;1;" + w16(48) + ";" + w16(32) + ";" + w16(16) + ";" + w16(0) + "b";
+        std::string reply = writes(term::feed_output(mq, q));
+        ok(reply.rfind("\x1bP>1b", 0) == 0, "query with good token -> status 1");
+        ok(reply.find("\"command\":\"echo hi\"") != std::string::npos, "JSON has command");
+        ok(reply.find("\"exitCode\":0") != std::string::npos, "JSON has exitCode 0");
+        ok(reply.find("\"output\":\"hi\"") != std::string::npos, "JSON has output");
+
+        // Query with a WRONG token -> status 3 (bad token).
+        std::string bad = "\x1b[>1;1;9;9;9;9b";
+        std::string breply = writes(term::feed_output(mq, bad));
+        ok(breply.rfind("\x1bP>3b", 0) == 0, "query with bad token -> status 3");
+
+        // Disable -> a subsequent query has no active token (status 2).
+        term::feed_output(mq, "\x1b[?2034l");
+        ok(!mq.sbquery.enabled(), "2034 disabled after CSI ?2034l");
+        std::string noreply = writes(term::feed_output(mq, q));
+        ok(noreply.rfind("\x1bP>2b", 0) == 0, "query after disable -> status 2");
+    }
+
     std::printf(fails ? "%d command-log test(s) failed\n" : "all command-log tests passed\n",
                 fails);
     return fails ? 1 : 0;

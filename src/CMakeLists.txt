@@ -66,6 +66,7 @@ add_library(toe
   input/keymap.cpp
   term/screen.cpp
   term/update.cpp
+  term/sbquery.cpp
   term/graphics.cpp)
 
 # Canonical namespaced alias, plus a back-compat alias for consumers that still

@@ -262,6 +262,67 @@ void handle_osc(Model &m, std::string_view d, Cmds &out) {
 
 } // namespace
 
+// Resolve a block's command / output text against the live Screen. Mirrors the
+// split logic in Session::commands() (C often lands on the command's own row).
+static std::pair<std::string, std::string> resolve_block_text(const Model &m,
+                                                             const CommandBlock &b,
+                                                             bool want_output) {
+    const Screen &scr = m.screen;
+    std::string command, output;
+    if (b.input_row >= 0) {
+        std::int64_t cmd_end = (b.output_row > b.input_row) ? b.output_row : b.input_row + 1;
+        if (b.output_row < 0) cmd_end = scr.total_rows();
+        if (cmd_end <= b.input_row) cmd_end = b.input_row + 1;
+        command = scr.text_between_abs(b.input_row, cmd_end, b.input_col);
+    }
+    if (want_output && b.output_row >= 0) {
+        std::int64_t out_start = b.output_row;
+        if (b.input_row >= 0 && out_start <= b.input_row) out_start = b.input_row + 1;
+        const std::int64_t out_end = (b.end_row >= 0) ? b.end_row : scr.total_rows();
+        output = scr.text_between_abs(out_start, out_end);
+    }
+    return {std::move(command), std::move(output)};
+}
+
+// DEC 2034 Semantic Block Query CSI handling. Returns true if the sequence was a
+// 2034 control/query (and was consumed), so the caller skips Screen::apply.
+static bool handle_sbquery_csi(Model &m, const vt::CsiDispatch &c, Cmds &out) {
+    auto has_param = [&](int v) {
+        for (int p : c.params) if (p == v) return true;
+        return false;
+    };
+    // CSI ? 2034 h / l  (enable / disable), and CSI ? 2034 $ p (DECRQM verify).
+    if (c.private_marker && c.marker == '?' && has_param(2034)) {
+        if (c.final == 'h') {
+            out.emplace_back(WriteChild{m.sbquery.enable()});
+            return true;
+        }
+        if (c.final == 'l') {
+            m.sbquery.disable();
+            return true;
+        }
+        if (c.final == 'p' && c.intermediates == "$") {
+            out.emplace_back(WriteChild{m.sbquery.decrqm_reply()});
+            return true;
+        }
+    }
+    // CSI > Ps ; Pn ; T1;T2;T3;T4 b  — the query itself.
+    if (c.marker == '>' && c.final == 'b') {
+        std::string params;
+        for (std::size_t i = 0; i < c.params.size(); ++i) {
+            if (i) params += ';';
+            params += std::to_string(c.params[i]);
+        }
+        BlockTextResolver res{[&m](const CommandBlock &b, bool wo) {
+            return resolve_block_text(m, b, wo);
+        }};
+        out.emplace_back(WriteChild{m.sbquery.query(params, m.commands, res)});
+        return true;
+    }
+    return false;
+}
+
+
 Cmds feed_output(Model &m, std::string_view bytes) {
     Cmds out;
     // New output does NOT snap the view to the bottom: if the user has scrolled
@@ -273,6 +334,9 @@ Cmds feed_output(Model &m, std::string_view bytes) {
     m.parser.feed(std::span<const char>{bytes.data(), bytes.size()}, [&](const vt::Action &a) {
         if (const auto *osc = std::get_if<vt::OscDispatch>(&a)) {
             handle_osc(m, osc->data, out);
+        } else if (const auto *csi = std::get_if<vt::CsiDispatch>(&a);
+                   csi && handle_sbquery_csi(m, *csi, out)) {
+            // DEC 2034 control/query consumed — don't hand it to the Screen.
         } else {
             m.screen.apply(a, out); // Screen emits its own effects (replies, bell)
         }

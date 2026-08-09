@@ -217,6 +217,12 @@ public:
         return sync_output_ ? sync_frozen_gen_ : generation_;
     }
 
+    // True while the app is mid-frame under DEC 2026 synchronized output — i.e.
+    // it has begun a batch (?2026h) and not yet committed it (?2026l). A host
+    // or agent should treat the screen as NOT settled until this is false, so a
+    // read/snapshot never captures a torn, half-drawn frame.
+    [[nodiscard]] bool sync_active() const noexcept { return sync_output_; }
+
     // Per-row damage token for the renderer's cache. Returns a 64-bit value
     // that changes iff viewport row `vrow`'s displayed content changed since
     // last frame — letting the renderer skip re-fingerprinting untouched rows.

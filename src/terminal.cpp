@@ -487,6 +487,34 @@ std::optional<CommandView> Session::current_command() const {
 std::uint64_t Session::commands_generation() const noexcept {
     return impl_->model.commands.generation();
 }
+
+bool Session::frame_settled() const noexcept {
+    return !impl_->model.screen.sync_active();
+}
+
+std::string Session::snapshot_text(bool include_scrollback) const {
+    const auto &scr = impl_->model.screen;
+    const Extent g = impl_->grid;
+    const std::int64_t total = scr.total_rows();
+    const std::int64_t bottom = total;                     // exclusive
+    const std::int64_t vis_top = total - g.rows;           // first visible abs row
+    const std::int64_t top = include_scrollback ? 0 : (vis_top < 0 ? 0 : vis_top);
+    return scr.text_between_abs(top, bottom);
+}
+
+std::vector<int> Session::changed_rows(std::uint64_t since_generation) const {
+    const auto &scr = impl_->model.screen;
+    const Extent g = impl_->grid;
+    std::vector<int> rows;
+    // A row counts as changed when its per-row version exceeds the caller's
+    // token. row_version() returns 0 when scrolled into history (can't tell) —
+    // treat that as "changed" so the caller re-reads conservatively.
+    for (int r = 0; r < g.rows; ++r) {
+        const std::uint64_t v = scr.row_version(r);
+        if (v == 0 || v > since_generation) rows.push_back(r);
+    }
+    return rows;
+}
 std::uint64_t Session::generation() const noexcept { return impl_->model.screen.generation(); }
 int Session::pty_fd() const noexcept { return impl_->pty.fd(); }
 int Session::cell_width() const noexcept { return impl_->cell_w; }

@@ -22,6 +22,7 @@
 #include "toe/core/tea.hpp"
 #include "toe/terminal.hpp" // Config
 #include "toe/term/command_log.hpp"
+#include "toe/term/sbquery.hpp"
 #include "toe/term/screen.hpp"
 #include "toe/vt/parser.hpp"
 
@@ -48,6 +49,10 @@ struct Model {
     // Query, a host block UI, and agent read-out. `commands.zone()` is the
     // authoritative live zone (shell_zone mirrors it for back-compat).
     CommandLog commands{};
+
+    // DEC 2034 Semantic Block Query session state (token + enabled flag). The
+    // JSON-over-DCS agent read-out of `commands`.
+    SemanticBlockQuery sbquery{};
 
     explicit Model(Config c, Extent grid) : cfg(std::move(c)), screen(grid) {}
 };

@@ -237,6 +237,22 @@ public:
     [[nodiscard]] std::optional<CommandView> current_command() const;
     // Bumped whenever the command log changes — poll to avoid re-resolving.
     [[nodiscard]] std::uint64_t commands_generation() const noexcept;
+
+    // --- agent / automation read-out ---------------------------------------
+    // True when the screen is safe to read: not mid-frame under DEC 2026
+    // synchronized output. A driver waits for this before snapshotting so it
+    // never captures a torn, half-drawn frame.
+    [[nodiscard]] bool frame_settled() const noexcept;
+
+    // The visible screen as clean UTF-8 text (one line per row, trailing blanks
+    // trimmed) — the token-frugal default read for an agent, versus the raw
+    // ANSI byte log. `include_scrollback` extends upward through history.
+    [[nodiscard]] std::string snapshot_text(bool include_scrollback = false) const;
+
+    // Damage-delta read: the viewport row indices whose content changed since
+    // `since_generation` (0 = all rows). Lets a driver re-read only what moved
+    // instead of the whole grid. Pair with generation() as the token.
+    [[nodiscard]] std::vector<int> changed_rows(std::uint64_t since_generation) const;
     [[nodiscard]] int cell_width() const noexcept;
     [[nodiscard]] int cell_height() const noexcept;
 
