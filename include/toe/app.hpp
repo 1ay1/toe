@@ -142,6 +142,9 @@ using win::MouseButton;
 struct WindowConfig {
     std::string_view title = "toe";
     PixelSize size{800, 500};
+    // Server-side (native) title bar. Hosts that draw their OWN chrome (hand's
+    // Activity Tabs) set this false so the backend removes the WM decorations.
+    bool decorations = true;
 };
 
 // --- readiness waiting (part of the App contract) --------------------------
