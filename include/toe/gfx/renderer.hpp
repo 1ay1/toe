@@ -179,6 +179,17 @@ private:
                               std::uint8_t radius, std::uint8_t a = 255) noexcept {
         return Instance{x, y, w, h, 0, 0, 0, 0, r, g, b, a, 0, radius, 0, 0};
     }
+    // A rounded background rect that rounds ONLY the corners in `corners` (bit
+    // TL=1 TR=2 BR=4 BL=8). Used for the selection highlight so a multi-cell
+    // region gets smooth OUTER corners while interior cell edges stay square
+    // and tile seamlessly. corners==0 rounds all four (matches rect_inst).
+    static constexpr std::uint8_t kCornerTL = 1, kCornerTR = 2, kCornerBR = 4, kCornerBL = 8;
+    static Instance rect_round_inst(float x, float y, float w, float h,
+                                    std::uint8_t r, std::uint8_t g, std::uint8_t b,
+                                    std::uint8_t radius, std::uint8_t corners,
+                                    std::uint8_t a = 255) noexcept {
+        return Instance{x, y, w, h, 0, 0, 0, 0, r, g, b, a, 0, radius, corners, 0};
+    }
     // An analytic-SDF cell (Powerline separator, rounded arc, ...). mode 3 in
     // the flags byte; `shape` selects the SDF (see the fs sdf_shape()). Rendered
     // resolution-independently — no atlas, crisp at any size.

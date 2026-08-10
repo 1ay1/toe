@@ -67,6 +67,22 @@ float sd_round_box(vec2 p, vec2 half_ext, float r) {
     return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
 }
 
+// Rounded box where only the corners named in `mask` are rounded (bit TL=1
+// TR=2 BR=4 BL=8). Local p is centred; +x right, +y down. Per corner we pick
+// the radius (0 = square) for that quadrant so a multi-cell selection region
+// rounds only its true outer corners while interior seams stay flush.
+float sd_round_box_mask(vec2 p, vec2 half_ext, float r, int mask) {
+    bool right = p.x > 0.0;
+    bool bottom = p.y > 0.0;
+    int bit = (!right && !bottom) ? 1     // TL
+            : ( right && !bottom) ? 2     // TR
+            : ( right &&  bottom) ? 4     // BR
+            :                       8;    // BL
+    float rr = ((mask & bit) != 0) ? r : 0.0;
+    vec2 q = abs(p) - half_ext + rr;
+    return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - rr;
+}
+
 // Signed distance to a triangle (a,b,c). Negative inside. From iq.
 float sd_triangle(vec2 p, vec2 a, vec2 b, vec2 c) {
     vec2 e0 = b - a, e1 = c - b, e2 = a - c;
@@ -183,7 +199,10 @@ void main() {
         // its bg rects) shows the terminal through itself — while glyphs stay
         // fully opaque and readable.
         if (vRadius > 0.0) {
-            float d = sd_round_box(vLocal, vHalf, vRadius);
+            int corners = int(vShape + 0.5); // aFlags.z reused as a corner mask
+            float d = (corners == 0)
+                        ? sd_round_box(vLocal, vHalf, vRadius)
+                        : sd_round_box_mask(vLocal, vHalf, vRadius, corners);
             float a = 1.0 - smoothstep(-0.75, 0.75, d);
             frag = vec4(vColor.rgb, a * uOpacity * vColor.a);
         } else {

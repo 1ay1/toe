@@ -335,9 +335,31 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
         const bool on_cursor = row_has_cursor && cursor_block && c == cur_col;
 
         if (selected) {
-            rc.bg.push_back(rect_inst(static_cast<float>(c * cw), ry, static_cast<float>(cw),
-                                      static_cast<float>(ch), selection_bg_.r, selection_bg_.g,
-                                      selection_bg_.b, /*radius=*/0));
+            // Round only the OUTER corners of the selection region so a
+            // multi-cell selection reads as one smooth shape while interior
+            // cell seams stay flush (no lumpy per-cell rounding). A corner is
+            // exterior when both cells adjacent to it are unselected.
+            const bool up = screen.is_selected(abs_row - 1, c);
+            const bool dn = screen.is_selected(abs_row + 1, c);
+            const bool lf = c > 0 && screen.is_selected(abs_row, c - 1);
+            const bool rt = c + 1 < cache_cols_ && screen.is_selected(abs_row, c + 1);
+            std::uint8_t corners = 0;
+            if (!up && !lf) corners |= kCornerTL;
+            if (!up && !rt) corners |= kCornerTR;
+            if (!dn && !rt) corners |= kCornerBR;
+            if (!dn && !lf) corners |= kCornerBL;
+            // Radius scaled to the cell but capped so thin cells stay sane.
+            const std::uint8_t rad = static_cast<std::uint8_t>(
+                std::min({cw, ch, 8}) * 4 / 10); // ~40% of the smaller extent
+            if (corners == 0 || rad == 0) {
+                rc.bg.push_back(rect_inst(static_cast<float>(c * cw), ry, static_cast<float>(cw),
+                                          static_cast<float>(ch), selection_bg_.r, selection_bg_.g,
+                                          selection_bg_.b, /*radius=*/0));
+            } else {
+                rc.bg.push_back(rect_round_inst(
+                    static_cast<float>(c * cw), ry, static_cast<float>(cw), static_cast<float>(ch),
+                    selection_bg_.r, selection_bg_.g, selection_bg_.b, rad, corners));
+            }
         } else if (reverse || !std::holds_alternative<term::DefaultColor>(cell.pen.bg)) {
             const term::Color bg = reverse ? cell.pen.fg : cell.pen.bg;
             const Rgb col = palette_.resolve(bg, /*is_fg=*/reverse);
@@ -776,6 +798,15 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
             if (any_selection) {
                 for (int c = 0; c < grid.cols; ++c) {
                     if (screen.is_selected(abs_row, c)) hash_val(h, c);
+                }
+                // The rounded selection corners depend on the row ABOVE and
+                // BELOW (a corner rounds only when its vertical neighbour is
+                // unselected). Fold both neighbours' selection edges into the
+                // key so growing/shrinking a selection vertically rebuilds the
+                // adjacent row and its corners never go stale.
+                for (int c = 0; c < grid.cols; ++c) {
+                    if (screen.is_selected(abs_row - 1, c)) hash_val(h, 0x10000 | c);
+                    if (screen.is_selected(abs_row + 1, c)) hash_val(h, 0x20000 | c);
                 }
             }
             key = mix(h) & 0x7fffffffffffffffULL; // clear tag bit: distinct from epoch keys
