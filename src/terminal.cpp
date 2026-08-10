@@ -31,6 +31,35 @@
 
 namespace toe {
 
+namespace {
+// Decode a UTF-8 string into codepoints for the word-separator set. Malformed
+// bytes are skipped rather than rejected — a bad config char must never break
+// selection. Shared by Session::set_word_separators and Terminal::create.
+std::u32string decode_word_seps(std::string_view utf8) {
+    std::u32string cps;
+    for (std::size_t i = 0; i < utf8.size();) {
+        const auto b0 = static_cast<unsigned char>(utf8[i]);
+        char32_t cp = 0;
+        int n = 1;
+        if (b0 < 0x80) { cp = b0; n = 1; }
+        else if ((b0 >> 5) == 0x6) { cp = b0 & 0x1F; n = 2; }
+        else if ((b0 >> 4) == 0xE) { cp = b0 & 0x0F; n = 3; }
+        else if ((b0 >> 3) == 0x1E) { cp = b0 & 0x07; n = 4; }
+        else { ++i; continue; } // stray continuation / invalid lead
+        if (i + static_cast<std::size_t>(n) > utf8.size()) break;
+        bool ok = true;
+        for (int k = 1; k < n; ++k) {
+            const auto bc = static_cast<unsigned char>(utf8[i + static_cast<std::size_t>(k)]);
+            if ((bc >> 6) != 0x2) { ok = false; break; }
+            cp = (cp << 6) | (bc & 0x3F);
+        }
+        if (ok) cps.push_back(cp);
+        i += static_cast<std::size_t>(n);
+    }
+    return cps;
+}
+} // namespace
+
 // ---------------------------------------------------------------------------
 // The live engine. Only reachable through a Session, which only exists while
 // the child is alive — so every field here is valid by construction.
@@ -203,6 +232,10 @@ void Session::set_cursor_animation(bool enabled, int time_ms, bool trail) noexce
 void Session::set_selection_color(Rgb c) noexcept {
     impl_->selection_bg_ = c;
     impl_->renderer.set_selection_color(c);
+}
+
+void Session::set_word_separators(std::string_view utf8) {
+    impl_->model.screen.set_word_separators_extra(decode_word_seps(utf8));
 }
 
 int Session::cursor_blink_ms() const noexcept { return impl_->cursor_blink_ms_; }
@@ -842,6 +875,8 @@ Result<Terminal> Terminal::create(const Config &cfg, PixelSize px) {
     impl->renderer.set_cursor_animation(cfg.cursor_anim.enabled, cfg.cursor_anim.time_ms,
                                         cfg.cursor_anim.trail);
     impl->renderer.set_selection_color(cfg.selection_bg);
+    if (!cfg.word_separators.empty())
+        impl->model.screen.set_word_separators_extra(decode_word_seps(cfg.word_separators));
     // Query replies (DA1/DSR/…) no longer need a wired sink: the pure reducer
     // returns them as WriteChild Cmds, which Impl::interpret writes to the PTY.
     return Terminal{Session{std::move(impl)}};

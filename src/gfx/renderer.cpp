@@ -453,9 +453,28 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
                     break;
                 }
             } else if (hovered) {
-                // Hover underline (link not otherwise underlined): a plain
-                // single line in the text colour.
-                bar(dc, static_cast<float>(ascent) + thick, 0, fcw);
+                // Hover underline (link not otherwise underlined): a single line
+                // in the text colour, with ROUNDED CAPS at the ends of the
+                // hovered run so a link reads as one pill-shaped underline
+                // instead of a chain of flat bars. A cap rounds only where the
+                // adjacent cell isn't part of the same link.
+                const bool left_hov =
+                    c > 0 && cells[static_cast<std::size_t>(c - 1)].link == hover_link_;
+                const bool right_hov = c + 1 < cache_cols_ &&
+                                       cells[static_cast<std::size_t>(c + 1)].link == hover_link_;
+                const float hy = static_cast<float>(ascent) + thick;
+                // Underline bar is `thick` tall; a radius up to ~thick rounds it
+                // into a semicircular cap at the run ends.
+                const std::uint8_t hrad = static_cast<std::uint8_t>(std::max(1.0f, thick));
+                std::uint8_t mask = 0;
+                if (!left_hov) mask |= kCornerTL | kCornerBL;
+                if (!right_hov) mask |= kCornerTR | kCornerBR;
+                if (mask == 0) {
+                    bar(dc, hy, 0, fcw);
+                } else {
+                    rc.bg.push_back(rect_round_inst(cx, ry + hy, fcw, thick, dc.r, dc.g, dc.b,
+                                                    hrad, mask));
+                }
             }
             if (has_st) bar(dc, static_cast<float>(ascent) * 0.62f, 0, fcw); // strike ~mid-x-height
             if (has_ol) bar(dc, 0.0f, 0, fcw);                               // overline at cell top
@@ -636,6 +655,11 @@ bool Renderer::animating() const noexcept {
 // cursor_in_flight_ while still moving so the host keeps animating.
 void Renderer::animate_cursor(float tgt_x, float tgt_y, float cw, float ch, Rgb col, Rgb bg,
                               std::vector<Instance> &out) {
+    // Corner radius scaled to the cell (like the selection highlight) so the
+    // block cursor reads as a soft rounded chip at any font size, not a hard
+    // rectangle. Capped so tiny cells stay sensible.
+    const std::uint8_t crad = static_cast<std::uint8_t>(
+        std::clamp(static_cast<int>(std::min(cw, ch) * 0.22f), 2, 6));
     const std::int64_t now = std::chrono::duration_cast<std::chrono::microseconds>(
                                  std::chrono::steady_clock::now().time_since_epoch())
                                  .count();
@@ -645,7 +669,7 @@ void Renderer::animate_cursor(float tgt_x, float tgt_y, float cw, float ch, Rgb 
     if (cur_anim_x_ < 0.0f || !cursor_anim_enabled_) {
         cur_anim_x_ = tgt_x; cur_anim_y_ = tgt_y; cur_last_us_ = now;
         cursor_in_flight_ = false;
-        out.push_back(rect_inst(tgt_x, tgt_y, cw, ch, col.r, col.g, col.b, 2));
+        out.push_back(rect_inst(tgt_x, tgt_y, cw, ch, col.r, col.g, col.b, crad));
         return;
     }
     float dt = static_cast<float>(now - cur_last_us_) / 1e6f;
@@ -683,7 +707,7 @@ void Renderer::animate_cursor(float tgt_x, float tgt_y, float cw, float ch, Rgb 
                                     r, g, b, 3));
         }
     }
-    out.push_back(rect_inst(cur_anim_x_, cur_anim_y_, cw, ch, col.r, col.g, col.b, 2));
+    out.push_back(rect_inst(cur_anim_x_, cur_anim_y_, cw, ch, col.r, col.g, col.b, crad));
 }
 
 DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_on, bool blink_on) {

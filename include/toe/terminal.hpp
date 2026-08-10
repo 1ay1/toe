@@ -94,6 +94,9 @@ struct Config {
     bool scroll_on_keystroke = true;
     // Auto-copy a selection to the clipboard as soon as it's made.
     bool copy_on_select = false;
+    // Extra codepoints (UTF-8) that count as part of a word for double-click
+    // selection, beyond the built-in alnum + path/URL set. Empty by default.
+    std::string word_separators{};
     // Inner window padding in pixels (grid inset on every edge). Live-settable.
     int padding = 0;
     // Window opacity in [0,1]; 1 = opaque. Live-settable.
@@ -171,6 +174,8 @@ public:
     void set_cursor_animation(bool enabled, int time_ms = 55, bool trail = true) noexcept;
     // Live-set the selection highlight colour.
     void set_selection_color(Rgb c) noexcept;
+    // Live-set extra word-joining codepoints (UTF-8) for double-click select.
+    void set_word_separators(std::string_view utf8);
     // Cursor blink half-period (ms); 0 = steady. Read by the host run loop to
     // pace the blink; live-settable from the settings panel.
     [[nodiscard]] int cursor_blink_ms() const noexcept;
