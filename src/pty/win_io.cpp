@@ -74,6 +74,13 @@ Slot *at(int fd) noexcept {
 // The reader thread body: block in ReadFile, append, signal readiness. This is
 // the ONLY place that blocks on the pty; the main loop never does.
 void reader_body(Slot *s) {
+    // The reader is latency-critical and almost always BLOCKED: it wakes, copies
+    // a burst, and sleeps again. At normal priority its wakeup can queue behind
+    // whatever background work the machine is doing, which shows up directly as
+    // input->echo lag. ABOVE_NORMAL is enough to get scheduled promptly without
+    // the starvation risk of TIME_CRITICAL.
+    ::SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+
     // Diagnostic: set HAND_PTY_DUMP=<path> to tee the raw child stream to a
     // file. Invaluable for VT-level bugs (spurious blank lines, stray repaints)
     // where the question is "what did ConPTY actually send?".

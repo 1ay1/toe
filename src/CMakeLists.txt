@@ -140,7 +140,13 @@ else()
 endif()
 
 target_compile_features(toe PUBLIC cxx_std_23)
+# Warnings are private; the ISA baseline is PUBLIC so a host (hand) compiles its
+# own TUs against the same instruction set — mixing baselines across an inlined
+# header boundary is how you get a binary that works here and SIGILLs elsewhere.
 target_compile_options(toe PRIVATE ${TOE_WARNINGS})
+if(TOE_ARCH_FLAGS)
+  target_compile_options(toe PUBLIC ${TOE_ARCH_FLAGS})
+endif()
 
 # stb_truetype is vendored third-party C: don't hold it to our strict warnings.
 set_source_files_properties(gfx/stb_impl.cpp PROPERTIES

@@ -66,3 +66,19 @@ add_executable(font_fallback_test font_fallback_test.cpp)
 target_link_libraries(font_fallback_test PRIVATE toe::toe)
 add_test(NAME font_fallback COMMAND font_fallback_test)
 set_tests_properties(font_fallback PROPERTIES SKIP_RETURN_CODE 77)
+
+# The SIMD printable-ASCII scanner must agree with the scalar reference on every
+# input. Header-only, so it compiles against whatever ISA the build selected --
+# run it after changing TOE_ARCH. (An AVX2 bug caught here was returning "no
+# control byte found" for ESC, which would have corrupted every escape sequence.)
+add_executable(simd_scan_test simd_scan_test.cpp)
+target_include_directories(simd_scan_test PRIVATE "${PROJECT_SOURCE_DIR}/include")
+add_test(NAME simd_scan COMMAND simd_scan_test)
+
+# Throughput benchmarks. NOT tests (they assert nothing) -- built so a change
+# can be measured rather than guessed at. Best-of-N internally, because
+# run-to-run noise on a laptop exceeds most real wins.
+add_executable(throughput_bench EXCLUDE_FROM_ALL throughput_bench.cpp)
+target_link_libraries(throughput_bench PRIVATE toe::toe)
+add_executable(scroll_bench EXCLUDE_FROM_ALL scroll_bench.cpp)
+target_link_libraries(scroll_bench PRIVATE toe::toe)

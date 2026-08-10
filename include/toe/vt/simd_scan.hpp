@@ -31,6 +31,13 @@
 #elif defined(__aarch64__) || defined(__ARM_NEON)
 #include <arm_neon.h>
 #define TOE_SIMD_NEON 1
+#elif defined(__AVX2__)
+// AVX2 doubles the window to 32 bytes per compare and, unlike SSE2, has a
+// direct unsigned min/max so the range test needs no sign-bias trick. Gated on
+// __AVX2__ so the binary still runs on pre-2015 CPUs when built at the plain
+// x86-64 baseline (see TOE_ARCH in the top-level CMakeLists).
+#include <immintrin.h>
+#define TOE_SIMD_AVX2 1
 #elif defined(__x86_64__) || defined(__SSE2__)
 #include <emmintrin.h>
 #define TOE_SIMD_SSE2 1
@@ -68,6 +75,31 @@ namespace toe::vt {
             return i + (static_cast<std::size_t>(__builtin_ctzll(mask)) >> 2);
         }
     }
+#elif defined(TOE_SIMD_AVX2)
+    // AVX2: 32 bytes/iter, using the same sign-bias trick as the SSE2 path.
+    //
+    // NOTE the tempting shortcut that does NOT work: `subs_epu8(b, 0x20)` then
+    // a range compare. Saturating subtract maps every byte below 0x20 to the
+    // SAME value (0) as 0x20 itself, so the low bound is destroyed and control
+    // bytes like ESC are misread as printable. AVX2 has no unsigned byte
+    // compare, so bias into signed space and use two signed compares.
+    const __m256i bias = _mm256_set1_epi8(static_cast<char>(0x80));
+    const __m256i lo = _mm256_set1_epi8(static_cast<char>(0x20 ^ 0x80));
+    const __m256i hi = _mm256_set1_epi8(static_cast<char>(0x7E ^ 0x80));
+    for (; i + 32 <= n; i += 32) {
+        __m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(p + i));
+        v = _mm256_xor_si256(v, bias); // unsigned compare == signed compare
+        // bad = (v < lo) | (v > hi). AVX2 has only cmpgt, so `v < lo` is
+        // spelled `lo > v`.
+        const __m256i lt = _mm256_cmpgt_epi8(lo, v);
+        const __m256i gt = _mm256_cmpgt_epi8(v, hi);
+        const __m256i bad = _mm256_or_si256(lt, gt);
+        const std::uint32_t mask = static_cast<std::uint32_t>(_mm256_movemask_epi8(bad));
+        if (mask != 0) {
+            return i + static_cast<std::size_t>(__builtin_ctz(mask));
+        }
+    }
+    // Fall through to the scalar tail for the final <32 bytes.
 #elif defined(TOE_SIMD_SSE2)
     // SSE2 has no unsigned compare, so shift the range into signed space: a byte
     // is printable iff (int8)(b ^ 0x80) is within [0x20^0x80 .. 0x7E^0x80], i.e.
