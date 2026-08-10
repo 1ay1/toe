@@ -88,9 +88,25 @@ template <App A>
     // "instant" a TUI feels, which almost no terminal reports.
     LatencyMeter latency;
     const bool latency_hud = [] {
-        const char *e = std::getenv("HAND_LATENCY_HUD");
-        return e && *e && *e != '0';
+        const char *v = std::getenv("HAND_LATENCY_HUD");
+        return v && *v;
     }();
+    // Where the HUD writes. stderr is useless for a GUI-subsystem build on
+    // Windows (no console attached, output silently discarded), so
+    // HAND_LATENCY_HUD may name a FILE instead of just being a flag: set it to
+    // any path containing a separator or ending in .log/.txt to capture there.
+    std::FILE *hud_out = stderr;
+    if (latency_hud) {
+        const char *v = std::getenv("HAND_LATENCY_HUD");
+        const std::string_view sv{v};
+        if (sv.find('/') != std::string_view::npos || sv.find('\\') != std::string_view::npos ||
+            sv.ends_with(".log") || sv.ends_with(".txt")) {
+            if (std::FILE *f = std::fopen(v, "w")) {
+                hud_out = f;
+                std::setvbuf(f, nullptr, _IOLBF, 0); // line-buffered: readable live
+            }
+        }
+    }
 
     // Optionally let the App bind to the live Terminal once (e.g. to install a
     // live-resize render hook that draws mid-drag, when AppKit's modal resize
@@ -152,7 +168,8 @@ template <App A>
         // 3. Zero-latency local echo: after sending input, flush and give the
         //    PTY a few ms to echo, draining what returns so the typed glyph
         //    lands in THIS frame instead of a vsync later.
-        if (router.take_wrote_input()) {
+        const bool just_typed = router.take_wrote_input();
+        if (just_typed) {
             latency.mark_input(LatencyMeter::now_us());
             toe::flush(surf);
             const Readiness echo =
@@ -183,7 +200,16 @@ template <App A>
         // child produces output at all, cap presents to ~kFloodPresentMs and
         // don't drop to the idle poll — loop straight back to keep draining.
         const bool streaming = pumped || session.output_pending();
-        const bool rate_ok = !streaming || (now.value - last_present_ms) >= kFloodPresentMs;
+        // The flood cap must NOT apply to a keystroke's own echo. Typing makes
+        // the PTY produce output, so `streaming` goes true on the very turn we
+        // are trying to answer the user — and the present that carries the
+        // echoed glyph was then held back until the cap expired, adding up to a
+        // whole kFloodPresentMs to input->photon latency (measured: p99 31 ms
+        // against a 33 ms cap). `just_typed` exempts that frame. It cannot
+        // cause a present storm: keystrokes arrive at human rate, and a genuine
+        // flood (no input) is still capped.
+        const bool rate_ok =
+            !streaming || just_typed || (now.value - last_present_ms) >= kFloodPresentMs;
         // The overlay animates + responds to input every frame, so force a
         // repaint while it's active (the terminal grid may be unchanged). ALSO
         // force ONE repaint on the frame it CLOSES (overlay_on just went false):
@@ -228,9 +254,10 @@ template <App A>
                 static std::uint64_t last_report_ms = 0;
                 if (latency.has_samples() && now.value - last_report_ms >= 500) {
                     const auto s = latency.stats();
-                    std::fprintf(stderr,
+                    std::fprintf(hud_out,
                                  "[hand latency] n=%zu  min=%.1f  avg=%.1f  p99=%.1f  max=%.1f ms\n",
                                  s.n, s.min_ms, s.avg_ms, s.p99_ms, s.max_ms);
+                    std::fflush(hud_out);
                     last_report_ms = now.value;
                 }
             }
@@ -259,6 +286,17 @@ template <App A>
             // through to the idle wait next turn (pumped will be false).
             toe::wait_readable(surf, session.pty_fd(), WaitDeadline::millis(kStreamWaitMs));
         }
+    }
+    // Final summary, so a short session (or one that never crossed a reporting
+    // interval) still yields its numbers instead of an empty log.
+    if (latency_hud && latency.has_samples()) {
+        const auto s = latency.stats();
+        std::fprintf(hud_out,
+                     "[hand latency FINAL] n=%zu total=%llu  min=%.1f  avg=%.1f  p99=%.1f  "
+                     "max=%.1f ms\n",
+                     s.n, static_cast<unsigned long long>(latency.total_samples()), s.min_ms,
+                     s.avg_ms, s.p99_ms, s.max_ms);
+        std::fflush(hud_out);
     }
     return 0;
 }
