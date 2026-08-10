@@ -38,17 +38,42 @@ struct ColorBE {
     }
 };
 
-// The CBDT/CBLC colour-emoji decoder. Full definition lives in face_color.cpp
-// via its methods, but the DATA layout is here so the type is complete in both
-// TUs. Method bodies are out-of-line in face_color.cpp.
+// The colour-emoji decoder. Two formats are supported, because the platforms
+// disagree:
+//
+//   * CBDT/CBLC - embedded PNG bitmap strikes. Used by Noto Color Emoji, i.e.
+//     most Linux installs.
+//   * COLR/CPAL - LAYERED VECTOR: each colour glyph is a list of (base glyph,
+//     palette index) layers, each an ordinary outline the normal rasteriser can
+//     draw. Used by Segoe UI Emoji, i.e. EVERY Windows install. Without it,
+//     Windows emoji fall back to a flat monochrome outline.
+//
+// Full definition lives in face_color.cpp via its methods, but the DATA layout
+// is here so the type is complete in both TUs.
 struct Face::ColorBackend {
     ColorBE r;                 // over the owned blob
     std::size_t cmap = 0;      // chosen unicode cmap subtable
     std::uint16_t cmap_fmt = 0;
+
+    // --- CBDT/CBLC (bitmap) ---
     std::size_t cbdt = 0;              // CBDT table offset
     std::size_t best_strike = 0;       // chosen CBLC bitmapSizeTable offset
     std::size_t strike_table_base_ = 0; // CBLC table start (for array offsets)
     std::uint16_t ppem = 0;            // pixels-per-em of the chosen strike
+
+    // --- COLR/CPAL (layered vector) ---
+    // When colr_ is set this face draws emoji as stacked outlines instead, and
+    // the host rasterises each layer with the normal glyph path.
+    std::size_t colr = 0;          // COLR table offset (0 = not present)
+    std::size_t colr_base_recs = 0; // BaseGlyphRecord array
+    std::uint16_t colr_num_base = 0;
+    std::size_t colr_layer_recs = 0; // LayerRecord array
+    std::uint16_t colr_num_layers = 0;
+    std::size_t cpal_colors = 0;    // first palette's BGRA colour array
+    std::uint16_t cpal_num_colors = 0;
+
+    [[nodiscard]] bool is_bitmap() const noexcept { return cbdt != 0; }
+    [[nodiscard]] bool is_layered() const noexcept { return colr != 0; }
 
     [[nodiscard]] std::uint32_t glyph_of(char32_t cp) const noexcept;
 
@@ -57,6 +82,15 @@ struct Face::ColorBackend {
         std::uint16_t fmt = 0;
     };
     [[nodiscard]] Loc locate(std::uint32_t gid) const noexcept;
+
+    // One COLR layer: an outline glyph id plus the palette colour to fill it.
+    struct Layer {
+        std::uint16_t gid = 0;
+        std::uint8_t r = 0, g = 0, b = 0, a = 255;
+    };
+    // Resolve `gid` into its colour layers. Empty when the glyph has no COLR
+    // entry (the caller then draws it as a normal monochrome glyph).
+    [[nodiscard]] std::vector<Layer> layers_of(std::uint32_t gid) const;
 };
 
 } // namespace toe::gfx

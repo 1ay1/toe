@@ -122,6 +122,34 @@ struct BE {
     return false;
 }
 
+// Does this codepoint default to EMOJI presentation? A pragmatic subset of
+// Unicode's Emoji_Presentation property: the ranges that are emoji-by-default
+// and that a monochrome symbol font is also likely to cover. Text-presentation
+// characters (←↑→, ✓, †) are deliberately excluded so they keep using the
+// text font, which is what a terminal wants.
+[[nodiscard]] bool is_emoji_presentation(char32_t cp) noexcept {
+    return (cp >= 0x1F300 && cp <= 0x1FAFF) || // pictographs, faces, symbols, extended-A
+           (cp >= 0x1F000 && cp <= 0x1F0FF) || // mahjong / dominoes / cards
+           (cp >= 0x2600 && cp <= 0x27BF) ||   // misc symbols + dingbats (❤, ⚡, ✨)
+           (cp >= 0x2B00 && cp <= 0x2BFF) ||   // misc symbols and arrows (⭐)
+           cp == 0x203C || cp == 0x2049 ||     // ‼ ⁉
+           cp == 0xFE0F;                       // VS16 (emoji presentation selector)
+}
+
+// Cheap check for colour tables, without parsing the whole font: look for
+// CBDT/CBLC (bitmap) or COLR/CPAL (layered vector) in the table directory.
+[[nodiscard]] bool file_is_color(const std::string &path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+    // sfnt header + table directory is enough; read a bounded prefix.
+    std::vector<char> head(64 * 1024);
+    f.read(head.data(), static_cast<std::streamsize>(head.size()));
+    const std::size_t n = static_cast<std::size_t>(f.gcount());
+    const std::string_view sv{head.data(), n};
+    return sv.find("CBDT") != std::string_view::npos ||
+           sv.find("COLR") != std::string_view::npos;
+}
+
 } // namespace
 
 FontDiscovery::FontDiscovery() = default;
@@ -286,6 +314,24 @@ std::optional<std::string> FontDiscovery::resolve(char32_t cp,
                                                   const std::vector<std::string> &exclude) {
     load_cache();
     const std::uint32_t block = block_of(cp);
+
+    // Emoji-presentation codepoints get a COLOUR font wherever one exists.
+    //
+    // Several emoji (U+2764 heart, U+26A1 voltage, the arrows and dingbats)
+    // live in blocks that a monochrome symbol font also covers — on Windows,
+    // Segoe UI Symbol. Plain "first font that has the glyph" then wins the
+    // whole block for the mono font, and those characters render as flat
+    // outlines beside neighbours that are full colour. Checking colour first
+    // for these ranges is what makes emoji look right out of the box.
+    if (is_emoji_presentation(cp)) {
+        ensure_candidates();
+        for (const std::string &path : candidates_) {
+            if (std::find(exclude.begin(), exclude.end(), path) != exclude.end()) continue;
+            if (!file_is_color(path)) continue;
+            if (file_covers(path, cp)) return path; // NOT block-cached: per-cp
+        }
+        // No colour font covers it; fall through to the normal search.
+    }
 
     // 1. Cached block hit — instant, and the common case after warm-up.
     if (auto it = block_font_.find(block); it != block_font_.end()) {

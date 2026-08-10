@@ -96,6 +96,87 @@ Face::ColorBackend::Loc Face::ColorBackend::locate(std::uint32_t gid) const noex
 }
 
 // --- construction hook + free helpers used by face.cpp ---------------------
+
+// COLR v0 + CPAL v0: enough to draw every emoji in Segoe UI Emoji and the other
+// layered-vector fonts. COLR maps a base glyph to a run of (glyph, palette
+// index) layers; CPAL holds the actual BGRA colours. We deliberately ignore
+// COLR v1's gradients/transforms — v1 fonts still carry a v0 layer list, so
+// this renders them correctly, just without gradient fills.
+static bool build_colr(ColorBE r, std::size_t sfnt, Face::ColorBackend &cb) {
+    const auto [colrOff, colrLen] = find_table(r, 0x434f4c52u, sfnt); // 'COLR'
+    const auto [cpalOff, cpalLen] = find_table(r, 0x4350414cu, sfnt); // 'CPAL'
+    (void)colrLen;
+    (void)cpalLen;
+    if (!colrOff || !cpalOff) return false;
+
+    // COLR header: version(2) numBaseGlyphRecords(2) baseGlyphRecordsOffset(4)
+    //              layerRecordsOffset(4) numLayerRecords(2)
+    cb.colr_num_base = r.u16(colrOff + 2);
+    cb.colr_base_recs = colrOff + r.u32(colrOff + 4);
+    cb.colr_layer_recs = colrOff + r.u32(colrOff + 8);
+    cb.colr_num_layers = r.u16(colrOff + 12);
+    if (!cb.colr_num_base || !cb.colr_num_layers) return false;
+
+    // CPAL header: version(2) numPaletteEntries(2) numPalettes(2)
+    //              numColorRecords(2) colorRecordsArrayOffset(4)
+    //              colorRecordIndices[numPalettes](2 each)
+    cb.cpal_num_colors = r.u16(cpalOff + 6); // total colour records
+    const std::size_t recsOff = cpalOff + r.u32(cpalOff + 8);
+    const std::uint16_t firstIdx = r.u16(cpalOff + 12); // palette 0's first record
+    cb.cpal_colors = recsOff + static_cast<std::size_t>(firstIdx) * 4u;
+    if (!cb.cpal_num_colors) return false;
+
+    cb.colr = colrOff;
+    return true;
+}
+
+std::vector<Face::ColorBackend::Layer> Face::ColorBackend::layers_of(std::uint32_t gid) const {
+    std::vector<Layer> out;
+    if (!colr || gid > 0xFFFFu) return out;
+
+    // BaseGlyphRecord[]: glyphID(2) firstLayerIndex(2) numLayers(2), sorted by
+    // glyphID — so binary search rather than a scan over ~1400 emoji.
+    std::uint32_t lo = 0, hi = colr_num_base;
+    std::size_t rec = 0;
+    while (lo < hi) {
+        const std::uint32_t mid = (lo + hi) / 2;
+        const std::size_t e = colr_base_recs + 6u * mid;
+        const std::uint16_t g = r.u16(e);
+        if (g == gid) { rec = e; break; }
+        if (g < gid) lo = mid + 1;
+        else hi = mid;
+    }
+    if (!rec) return out; // not a colour glyph: caller draws it monochrome
+
+    const std::uint16_t first = r.u16(rec + 2);
+    const std::uint16_t n = r.u16(rec + 4);
+    out.reserve(n);
+    for (std::uint16_t i = 0; i < n; ++i) {
+        const std::uint32_t li = static_cast<std::uint32_t>(first) + i;
+        if (li >= colr_num_layers) break;
+        // LayerRecord: glyphID(2) paletteIndex(2)
+        const std::size_t le = colr_layer_recs + 4u * li;
+        Layer L;
+        L.gid = r.u16(le);
+        const std::uint16_t pi = r.u16(le + 2);
+        if (pi == 0xFFFFu) {
+            // 0xFFFF means "use the text foreground colour". Encode that as
+            // opaque white so the caller can tint it with the cell's fg.
+            L.r = L.g = L.b = 0xFF;
+            L.a = 0xFF;
+        } else if (pi < cpal_num_colors) {
+            // CPAL colour records are BGRA byte order.
+            const std::size_t c = cpal_colors + 4u * pi;
+            L.b = r.u8(c);
+            L.g = r.u8(c + 1);
+            L.r = r.u8(c + 2);
+            L.a = r.u8(c + 3);
+        }
+        out.push_back(L);
+    }
+    return out;
+}
+
 static std::unique_ptr<Face::ColorBackend>
 build_backend(const std::vector<std::uint8_t> &blob, std::size_t sfnt) {
     ColorBE r{blob.data(), blob.size()};
@@ -103,25 +184,33 @@ build_backend(const std::vector<std::uint8_t> &blob, std::size_t sfnt) {
     const auto [cbdtOff, cbdtLen] = find_table(r, 0x43424454u, sfnt); // 'CBDT'
     (void)cblcLen;
     (void)cbdtLen;
-    if (!cblcOff || !cbdtOff) return nullptr;
 
     auto cb = std::make_unique<Face::ColorBackend>();
     cb->r = r;
-    cb->cbdt = cbdtOff;
-    cb->strike_table_base_ = cblcOff;
 
-    // Largest strike by ppemX (bitmapSizeTable is 48 bytes; ppemX at +44).
-    const std::uint32_t numSizes = r.u32(cblcOff + 4);
-    std::size_t best = 0;
-    std::uint16_t bestPpem = 0;
-    for (std::uint32_t i = 0; i < numSizes; ++i) {
-        const std::size_t bst = cblcOff + 8 + 48u * i;
-        const std::uint16_t ppem = r.u8(bst + 44);
-        if (ppem >= bestPpem) { bestPpem = ppem; best = bst; }
+    // Prefer the bitmap strikes when present (they carry full-detail artwork);
+    // otherwise try the layered-vector format. A font with neither is not a
+    // colour face at all.
+    const bool have_bitmap = cblcOff && cbdtOff;
+    if (have_bitmap) {
+        cb->cbdt = cbdtOff;
+        cb->strike_table_base_ = cblcOff;
+
+        // Largest strike by ppemX (bitmapSizeTable is 48 bytes; ppemX at +44).
+        const std::uint32_t numSizes = r.u32(cblcOff + 4);
+        std::size_t best = 0;
+        std::uint16_t bestPpem = 0;
+        for (std::uint32_t i = 0; i < numSizes; ++i) {
+            const std::size_t bst = cblcOff + 8 + 48u * i;
+            const std::uint16_t ppem = r.u8(bst + 44);
+            if (ppem >= bestPpem) { bestPpem = ppem; best = bst; }
+        }
+        if (!best) return nullptr;
+        cb->best_strike = best;
+        cb->ppem = bestPpem ? bestPpem : 1;
+    } else if (!build_colr(r, sfnt, *cb)) {
+        return nullptr;
     }
-    if (!best) return nullptr;
-    cb->best_strike = best;
-    cb->ppem = bestPpem ? bestPpem : 1;
 
     // Unicode cmap (prefer format 12).
     const auto [cmapOff, cmapLen] = find_table(r, 0x636d6170u, sfnt); // 'cmap'
@@ -155,6 +244,11 @@ std::unique_ptr<Face::ColorBackend> try_load_color_face(const std::vector<std::u
 }
 
 void color_metrics(const Face::ColorBackend &cb, FaceMetrics &m) {
+    // Only a BITMAP face dictates its own metrics (its strike ppem is the whole
+    // glyph box). A COLR face is drawn from ordinary outlines, so it keeps the
+    // face's real hhea/OS2 metrics that the caller already computed — clobbering
+    // them with ppem=0 would collapse the cell to nothing.
+    if (!cb.is_bitmap()) return;
     m.ascent = cb.ppem;
     m.descent = 0;
     m.line_gap = 0;
@@ -168,6 +262,9 @@ std::uint32_t color_glyph_index(const Face::ColorBackend &cb, char32_t cp) {
 GlyphBitmap color_rasterize(const Face::ColorBackend &cb, std::uint32_t gid, int target_px) {
     GlyphBitmap out;
     out.is_color = true;
+    // A layered (COLR) face has no bitmap to decode here: the caller composites
+    // its outline layers via layers_of(). Returning empty tells it to do that.
+    if (!cb.is_bitmap()) return out;
     const Face::ColorBackend::Loc loc = cb.locate(gid);
     if (!loc.off || loc.len < 8) return out;
 

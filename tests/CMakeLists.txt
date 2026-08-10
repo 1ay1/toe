@@ -67,6 +67,15 @@ target_link_libraries(font_fallback_test PRIVATE toe::toe)
 add_test(NAME font_fallback COMMAND font_fallback_test)
 set_tests_properties(font_fallback PROPERTIES SKIP_RETURN_CODE 77)
 
+# Emoji must render in COLOUR, not as flat monochrome outlines. Guards both
+# colour formats (CBDT/CBLC bitmaps on Linux, COLR/CPAL layered vector on
+# Windows) and the discovery rule that prefers a colour font for emoji
+# codepoints a monochrome symbol font also covers.
+add_executable(emoji_color_test emoji_color_test.cpp)
+target_link_libraries(emoji_color_test PRIVATE toe::toe)
+add_test(NAME emoji_color COMMAND emoji_color_test)
+set_tests_properties(emoji_color PROPERTIES SKIP_RETURN_CODE 77)
+
 # The SIMD printable-ASCII scanner must agree with the scalar reference on every
 # input. Header-only, so it compiles against whatever ISA the build selected --
 # run it after changing TOE_ARCH. (An AVX2 bug caught here was returning "no
