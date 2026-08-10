@@ -35,6 +35,27 @@ const std::array<float, 256> &fr_table() {
 }
 inline float fr(std::uint8_t v) noexcept { return fr_table()[v]; }
 
+// Relative luminance (WCAG-ish, cheap linear approximation — good enough for a
+// contrast decision, no need for the full sRGB gamma curve per cell).
+inline float luma(Rgb c) noexcept {
+    return (0.2126f * static_cast<float>(c.r) + 0.7152f * static_cast<float>(c.g) +
+            0.0722f * static_cast<float>(c.b)) /
+           255.0f;
+}
+
+// Guarantee selected text stays readable: keep the cell's own foreground when
+// it already contrasts with the selection background, otherwise flip it to
+// black or white — whichever the selection bg is farther from. This is what
+// makes selection "look good ALWAYS", independent of the theme or of colours
+// the running program picks for individual cells.
+inline Rgb contrast_fg(Rgb fg, Rgb sel_bg) noexcept {
+    const float lf = luma(fg), lb = luma(sel_bg);
+    // Contrast ratio numerator/denominator on luminance (＋0.05 like WCAG).
+    const float hi = std::max(lf, lb) + 0.05f, lo = std::min(lf, lb) + 0.05f;
+    if (hi / lo >= 2.2f) return fg; // already legible — leave the cell's colour
+    return lb > 0.5f ? rgb(0, 0, 0) : rgb(255, 255, 255);
+}
+
 // Procedural block-element and box-drawing rendering. The Unicode block
 // characters (U+2580–259F) and line-drawing characters (U+2500–257F) are exact
 // geometric shapes on the cell — but a font's bitmaps for them are usually a
@@ -326,6 +347,16 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
 
         const char32_t cp = cell.cp;
 
+        // Selected text must stay legible no matter what colour the running
+        // program picked for this cell. Compute the fg override once per cell:
+        // an explicit selection_fg_ wins; otherwise auto-contrast against the
+        // selection background. Applied to glyphs, decorations, SDF and block
+        // fills below so EVERYTHING under the highlight reads well.
+        const auto sel_adjust = [&](Rgb fg) -> Rgb {
+            if (!selected) return fg;
+            if (selection_fg_) return *selection_fg_;
+            return contrast_fg(fg, selection_bg_);
+        };
         // Blink (SGR 5): during the OFF phase the glyph is hidden. Track that
         // the row has blinking cells so the phase flip forces a rebuild.
         const bool blink = term::has(cell.pen.attr, term::Attr::Blink);
@@ -352,11 +383,12 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
                 };
                 dc = {dim(dc.r, bg.r), dim(dc.g, bg.g), dim(dc.b, bg.b)};
             }
+            dc = sel_adjust(dc); // keep underlines/strikes legible under selection
             // Underline gets its own colour (SGR 58) when set; strike/overline
             // always use the text colour above.
             Rgb ulc = dc;
             if (!std::holds_alternative<term::DefaultColor>(cell.pen.underline_color)) {
-                ulc = palette_.resolve(cell.pen.underline_color, /*is_fg=*/true);
+                ulc = sel_adjust(palette_.resolve(cell.pen.underline_color, /*is_fg=*/true));
             }
             const float cx = static_cast<float>(c * cw);
             const float fcw = static_cast<float>(cw);
@@ -422,6 +454,9 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
             };
             fgcol = {dim(fgcol.r, bg.r), dim(fgcol.g, bg.g), dim(fgcol.b, bg.b)};
         }
+        // Contrast-guarantee the glyph colour against the selection highlight
+        // (after faint, so dimmed selected text is still lifted to legible).
+        fgcol = sel_adjust(fgcol);
 
         // Analytic SDF glyphs (Powerline separators, rounded corners) render
         // as a single distance-field cell — crisp and antialiased at ANY size,

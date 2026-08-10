@@ -143,9 +143,14 @@ private:
 
     void handle(const win::MouseMove &e) {
         const auto [col, vrow] = cell_of(e.x, e.y);
-        if (s_.wants_mouse() &&
+        // Shift always forces LOCAL selection — including the drag. Without this
+        // check a Shift+drag inside a mouse-tracking app (vim/tmux/htop) would
+        // start a selection on mouse-down (which does honour Shift) but then
+        // freeze, because motion got forwarded to the app. Selection must be
+        // extendable at ALL times, so gate motion-forwarding on app_owns_mouse.
+        if (app_owns_mouse(e.mods.shift) &&
             (s_.wants_mouse_motion() || (e.button_down && s_.wants_mouse_drag()))) {
-            report(toe::Session::MouseEvent::motion, e.button_down ? 0 : 3, col, vrow, {});
+            report(toe::Session::MouseEvent::motion, e.button_down ? 0 : 3, col, vrow, e.mods);
         } else if (e.button_down) {
             s_.select_extend(vrow, col);
         } else {

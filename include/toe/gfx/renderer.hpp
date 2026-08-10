@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <chrono>
+#include <optional>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -205,6 +206,10 @@ private:
     bool cursor_trail_{true};                     // draw the comet trail on jumps
     std::size_t base_instance_n_{0};              // instances_ size before the anim caret
     Rgb selection_bg_{rgb(66, 84, 112)};          // selection highlight (config-set)
+    // Optional forced selection foreground. When unset (the default) the
+    // renderer keeps each cell's own fg but GUARANTEES it stays readable
+    // against selection_bg_ by flipping low-contrast text to black/white.
+    std::optional<Rgb> selection_fg_{};
     std::int64_t bell_until_us_{0};               // visual-bell flash end (us), 0 = idle
     static constexpr std::int64_t kBellFlashUs = 150000; // ~150ms fade
     int pad_{0};                                  // inner window padding (px per edge)
@@ -224,8 +229,20 @@ public:
     // True while EITHER the caret is gliding or a bell flash is fading — the one
     // signal the host polls to decide whether to keep presenting frames.
     [[nodiscard]] bool animating() const noexcept;
-    // The selection highlight colour (from colors.selection).
-    void set_selection_color(Rgb c) noexcept { selection_bg_ = c; }
+    // The selection highlight colour (from colors.selection). Rebuilds the row
+    // cache so an on-screen selection recolours immediately (and its
+    // auto-contrasted text follows) instead of keeping the stale highlight.
+    void set_selection_color(Rgb c) noexcept {
+        if (c.r == selection_bg_.r && c.g == selection_bg_.g && c.b == selection_bg_.b) return;
+        selection_bg_ = c;
+        for (auto &rc : rows_) rc.valid = false;
+    }
+    // Force a specific selected-text colour (from colors.selection_fg). Pass
+    // nullopt to keep each cell's own fg (auto-contrasted). Rebuilds the cache.
+    void set_selection_fg(std::optional<Rgb> c) noexcept {
+        selection_fg_ = c;
+        for (auto &rc : rows_) rc.valid = false;
+    }
     // Inner window padding in pixels: the grid is inset by this on every edge.
     // cells_for() reserves 2*pad, and the vertex shader shifts by the origin.
     void set_padding(int px) noexcept { pad_ = px < 0 ? 0 : px; }

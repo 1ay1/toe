@@ -101,6 +101,7 @@ struct MouseUp {
 struct MouseMove {
     std::int32_t x, y;
     bool button_down;    // true while a button is held (a drag)
+    Modifiers mods{};    // live keyboard modifiers (Shift forces local selection)
 };
 struct MouseWheel {
     std::int32_t dx, dy; // discrete steps; dy>0 = up
