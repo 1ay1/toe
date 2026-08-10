@@ -4,7 +4,14 @@
 # dependency. The compiler enforces the API contract (the RenderContext token);
 # CMake enforces the DEPENDENCY contract.
 
-find_package(PkgConfig REQUIRED)
+# PNG is a private content decoder. Windows has no pkg-config in the usual case,
+# so allow the standard find_package path there.
+if(WIN32)
+  find_package(PNG REQUIRED)
+else()
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(PNG        REQUIRED IMPORTED_TARGET libpng)
+endif()
 
 # ===========================================================================
 # toe — the terminal engine: pty · vt · screen · update · graphics · renderer ·
@@ -17,7 +24,6 @@ find_package(PkgConfig REQUIRED)
 # is a content decoder (png) or the GL loader (epoxy). epoxy is PRIVATE: no
 # public header names a GL type.
 # ===========================================================================
-pkg_check_modules(PNG        REQUIRED IMPORTED_TARGET libpng)
 
 # --- shader generation: sokol-shdc compiles shaders.glsl -> shaders.glsl.h ----
 # The generated header is committed (so a fresh checkout builds without the
@@ -28,10 +34,15 @@ pkg_check_modules(PNG        REQUIRED IMPORTED_TARGET libpng)
 # matches the build host.
 if(APPLE)
   set(_shdc "${PROJECT_SOURCE_DIR}/tools/bin/sokol-shdc-osx-arm64")
+elseif(WIN32)
+  set(_shdc "${PROJECT_SOURCE_DIR}/tools/bin/sokol-shdc.exe")
 else()
   set(_shdc "${PROJECT_SOURCE_DIR}/tools/bin/sokol-shdc-linux")
 endif()
-set(_slang "glsl410:metal_macos")
+# Every backend's shader variant is emitted from whichever host regenerates, so
+# the single committed header serves Linux (GL), macOS (Metal) and Windows
+# (D3D11/HLSL) alike — regenerating on one host must never break another.
+set(_slang "glsl410:hlsl5:metal_macos")
 if(EXISTS "${_shdc}")
   add_custom_command(
     OUTPUT  "${CMAKE_CURRENT_SOURCE_DIR}/gfx/shaders.glsl.h"
@@ -42,8 +53,9 @@ if(EXISTS "${_shdc}")
     COMMENT "sokol-shdc: compiling shaders" VERBATIM)
 endif()
 
-# The single SOKOL_IMPL TU. On Apple it's Objective-C (Metal); on Linux a .c
-# with the GL backend.
+# The single SOKOL_IMPL TU. On Apple it's Objective-C (Metal); elsewhere a .c
+# with the GL backend on Linux and the D3D11 backend on Windows (selected by
+# the SOKOL_* define set on that TU below).
 if(APPLE)
   set(_sokol_impl gfx/sokol_impl.m)
   set_source_files_properties(gfx/sokol_impl.m PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
@@ -51,10 +63,17 @@ else()
   set(_sokol_impl gfx/sokol_impl.c)
 endif()
 
+# The PTY layer is the one genuinely OS-specific part of the engine: POSIX gets
+# fork/ioctl in pty.cpp, Windows adds the overlapped-ConPTY fd registry that
+# gives the fd-shaped API real asynchronous I/O with no reader thread.
+set(_toe_pty pty/pty.cpp pty/child.cpp)
+if(WIN32)
+  list(APPEND _toe_pty pty/win_io.cpp)
+endif()
+
 add_library(toe
   terminal.cpp
-  pty/pty.cpp
-  pty/child.cpp
+  ${_toe_pty}
   gfx/font.cpp
   gfx/face.cpp
   gfx/face_color.cpp
@@ -97,10 +116,19 @@ target_include_directories(toe PRIVATE
 
 # PNG stays a private decoder dep. On Apple, sokol's Metal backend needs the
 # Metal + QuartzCore frameworks (the host still owns the CAMetalLayer/device).
-target_link_libraries(toe PRIVATE PkgConfig::PNG)
+if(WIN32)
+  target_link_libraries(toe PRIVATE PNG::PNG)
+else()
+  target_link_libraries(toe PRIVATE PkgConfig::PNG)
+endif()
 if(APPLE)
   target_link_libraries(toe PRIVATE
     "-framework Metal" "-framework MetalKit" "-framework QuartzCore" "-framework Foundation")
+elseif(WIN32)
+  # Windows: sokol's D3D11 backend. Fully native GPU — no GL, no ANGLE, no
+  # translation layer. d3dcompiler is what sokol uses to compile the HLSL the
+  # shader header carries; the ConPTY entry points live in kernel32.
+  target_link_libraries(toe PRIVATE d3d11 dxgi d3dcompiler)
 else()
   # Linux: sokol GLCORE is fully native — it includes <GL/gl.h> with
   # GL_GLEXT_PROTOTYPES and calls the gl* entry points directly, so the real

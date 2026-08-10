@@ -102,6 +102,22 @@ const GlyphInfo *pack_bitmap(const unsigned char *src, int w, int h, int off_x, 
 
 } // namespace
 
+PixelSize FontAtlas::probe_cell_size(const std::string &font_path, int pixel_size) {
+    if (font_path.empty()) return PixelSize{0, 0};
+    auto data = read_file(font_path);
+    if (data.empty()) return PixelSize{0, 0};
+    auto primary = Face::load(std::move(data), pixel_size);
+    if (!primary) return PixelSize{0, 0};
+
+    // Must stay in lockstep with create() below — same metrics, same fallbacks.
+    const FaceMetrics &m = primary->metrics();
+    int w = m.advance;
+    int h = m.ascent + m.descent + m.line_gap;
+    if (w <= 0) w = pixel_size / 2 + 1;
+    if (h <= 0) h = pixel_size + 2;
+    return PixelSize{w, h};
+}
+
 Result<FontAtlas> FontAtlas::create(std::string font_path, int pixel_size,
                                     std::string fallback_path, bool ligatures,
                                     StyleFiles styles) {

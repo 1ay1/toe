@@ -22,7 +22,7 @@
 
 #include <optional>
 
-#include <sys/types.h>
+#include "toe/pty/pty_source.hpp" // toe::pid_type
 
 namespace toe {
 
@@ -35,12 +35,12 @@ struct ExitCode {
 class Child {
 public:
     // A child we own the reap for. try_reap() consumes the zombie via waitpid.
-    [[nodiscard]] static Child spawned(::pid_t pid) noexcept;
+    [[nodiscard]] static Child spawned(pid_type pid) noexcept;
 
     // A host-managed child (AdoptFd). `pid` may be -1 (host owns the lifetime,
     // no exit detection here) or a real pid we merely OBSERVE with WNOWAIT so we
     // can report the exit without stealing the reap from the host.
-    [[nodiscard]] static Child adopted(::pid_t pid) noexcept;
+    [[nodiscard]] static Child adopted(pid_type pid) noexcept;
 
     // No child at all (an adopted fd with pid == -1).
     [[nodiscard]] static Child none() noexcept { return Child{}; }
@@ -52,17 +52,21 @@ public:
     ~Child() = default;
 
     // The child pid, or -1 if unknown/none.
-    [[nodiscard]] ::pid_t pid() const noexcept { return pid_; }
+    [[nodiscard]] pid_type pid() const noexcept { return pid_; }
 
     // Non-blocking: if the child has exited, reap it (if we own the reap) and
     // return its ExitCode; otherwise std::nullopt. Idempotent after exit.
-    [[nodiscard]] std::optional<ExitCode> try_reap() noexcept;
+    //
+    // On Windows there are no zombies and no waitpid: `pty_fd` names the ConPTY
+    // registry slot holding the child's process handle, and the check is a
+    // zero-timeout WaitForSingleObject. The parameter is ignored on POSIX.
+    [[nodiscard]] std::optional<ExitCode> try_reap(int pty_fd = -1) noexcept;
 
 private:
     Child() = default;
-    Child(::pid_t pid, bool reap) noexcept : pid_(pid), reap_(reap) {}
+    Child(pid_type pid, bool reap) noexcept : pid_(pid), reap_(reap) {}
 
-    ::pid_t pid_{-1};
+    pid_type pid_{-1};
     bool reap_{false};   // do WE reap (spawned), or does the host (adopted)?
     bool reaped_{false}; // exit already observed + reaped
     ExitCode code_{};    // cached once reaped

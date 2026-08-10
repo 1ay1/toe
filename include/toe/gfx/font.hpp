@@ -67,6 +67,17 @@ public:
                                                   bool ligatures = true,
                                                   StyleFiles styles = StyleFiles{});
 
+    // The cell geometry `create()` WOULD produce for this font+size, computed
+    // WITHOUT a GPU context or an atlas allocation — it only parses the face's
+    // metrics. Returns {0,0} if the file can't be loaded.
+    //
+    // This exists so a host can size the child's terminal grid BEFORE opening a
+    // window. That matters on Windows: ConPTY repaints its entire viewport on
+    // every resize, so a pty spawned at a placeholder size and corrected later
+    // makes the shell paint everything twice. Computing the real grid up front
+    // makes that first resize a no-op.
+    [[nodiscard]] static PixelSize probe_cell_size(const std::string &font_path, int pixel_size);
+
     FontAtlas(const FontAtlas &) = delete;
     FontAtlas &operator=(const FontAtlas &) = delete;
     FontAtlas(FontAtlas &&) noexcept;

@@ -19,14 +19,24 @@
 #ifndef TOE_PTY_PTY_SOURCE_HPP
 #define TOE_PTY_PTY_SOURCE_HPP
 
+#if defined(_WIN32)
+// Windows has no pid_t and no fork; the host creates the child with ConPTY and
+// registers it (toe/pty/win_io.hpp), so `child` here is simply an opaque id the
+// engine never interprets. Kept in the struct so the type is identical on both
+// platforms and no host code needs an #ifdef.
+#include "toe/pty/win_io.hpp"
+namespace toe { using pid_type = int; }
+#else
 #include <sys/types.h>
+namespace toe { using pid_type = ::pid_t; }
+#endif
 
 namespace toe {
 
 // The bring-your-own-fd terminal source — the sole way to obtain the child.
 struct AdoptFd {
     int master_fd = -1;      // an open PTY master. Must be >= 0.
-    ::pid_t child = -1;      // the child pid (for exit detection / reaping), or
+    pid_type child = -1;     // the child pid (for exit detection / reaping), or
                              // -1 if the host manages the child's lifetime.
     bool owns_fd = true;     // toe close()s the fd on teardown when true.
 };

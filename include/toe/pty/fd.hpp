@@ -22,7 +22,14 @@
 
 #include <utility>
 
+#if defined(_WIN32)
+// On Windows an `Fd` is not a kernel descriptor but an index into toe's ConPTY
+// registry (toe/pty/win_io.hpp) — see that header for why the fd-shaped API is
+// preserved. Closing therefore means releasing the registry slot, not close(2).
+#include "toe/pty/win_io.hpp"
+#else
 #include <unistd.h>
+#endif
 
 namespace toe {
 
@@ -75,7 +82,13 @@ public:
 
     // Close now (if owned) and become null.
     void reset() noexcept {
-        if (owns_ && fd_ >= 0) ::close(fd_);
+        if (owns_ && fd_ >= 0) {
+#if defined(_WIN32)
+            win::close(fd_);
+#else
+            ::close(fd_);
+#endif
+        }
         fd_ = -1;
         owns_ = false;
     }

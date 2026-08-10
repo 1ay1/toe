@@ -8,8 +8,10 @@
 #include "toe/input/keymap.hpp"
 
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <thread>
 #include <vector>
 #include <cctype>
 #include <ctime>
@@ -855,10 +857,12 @@ Terminal::Poll Terminal::poll() {
             // The child closed the pty. It is terminating; give the zombie a
             // brief window to appear so we capture the real exit code rather
             // than racing waitpid (EOF on the master can precede the zombie).
+            // On Windows the exit lives on the child's process HANDLE, reached
+            // through the pty fd's registry slot — hence passing the fd.
             std::optional<ExitCode> ec;
-            for (int i = 0; i < 200 && !(ec = session->impl_->pty.child().try_reap()); ++i) {
-                struct timespec ts{0, 500'000}; // 0.5ms
-                ::nanosleep(&ts, nullptr);
+            const int pty_fd = session->impl_->pty.fd();
+            for (int i = 0; i < 200 && !(ec = session->impl_->pty.child().try_reap(pty_fd)); ++i) {
+                std::this_thread::sleep_for(std::chrono::microseconds(500));
             }
             state_ = Exited{ec.value_or(ExitCode{0}).value};
             result.exited = &std::get<Exited>(state_);

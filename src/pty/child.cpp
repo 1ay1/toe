@@ -4,10 +4,15 @@
 
 #include <cerrno>
 
+#if defined(_WIN32)
+#include "toe/pty/win_io.hpp"
+#else
 #include <sys/wait.h>
+#endif
 
 namespace toe {
 
+#if !defined(_WIN32)
 namespace {
 
 // Normalise a waitpid status into the shell's exit-code convention.
@@ -18,11 +23,29 @@ namespace {
 }
 
 } // namespace
+#endif
 
-Child Child::spawned(::pid_t pid) noexcept { return Child{pid, /*reap=*/true}; }
-Child Child::adopted(::pid_t pid) noexcept { return Child{pid, /*reap=*/false}; }
+Child Child::spawned(pid_type pid) noexcept { return Child{pid, /*reap=*/true}; }
+Child Child::adopted(pid_type pid) noexcept { return Child{pid, /*reap=*/false}; }
 
-std::optional<ExitCode> Child::try_reap() noexcept {
+#if defined(_WIN32)
+
+// Windows: no zombies, no waitpid. The child's process HANDLE lives in the
+// ConPTY registry slot, so exit detection is a zero-timeout wait on it. There
+// is nothing to "reap" — the handle is closed with the rest of the slot.
+std::optional<ExitCode> Child::try_reap(int pty_fd) noexcept {
+    if (reaped_) return code_;
+    if (pty_fd < 0) return std::nullopt;
+    int code = 0;
+    if (!win::try_exit_code(pty_fd, code)) return std::nullopt;
+    code_ = ExitCode{code};
+    reaped_ = true;
+    return code_;
+}
+
+#else
+
+std::optional<ExitCode> Child::try_reap(int) noexcept {
     if (reaped_) return code_; // idempotent: exit already observed
     if (pid_ <= 0) return std::nullopt;
 
@@ -43,5 +66,7 @@ std::optional<ExitCode> Child::try_reap() noexcept {
     }
     return std::nullopt; // still running
 }
+
+#endif // _WIN32
 
 } // namespace toe
