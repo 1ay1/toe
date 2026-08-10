@@ -5,6 +5,7 @@
 
 #include "toe/gfx/face.hpp"
 
+#include <climits>
 #include <cmath>
 #include <fstream>
 
