@@ -44,9 +44,17 @@ static std::string find_primary() {
         "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
         "/usr/share/fonts/liberation/LiberationMono-Regular.ttf",
         "/usr/share/fonts/TTF/LiberationMono-Regular.ttf",
+        // Windows: Consolas ships on every install; Cascadia Mono on modern
+        // ones. Without these the test skipped on every Windows machine, so the
+        // fallback chain was never actually exercised there.
+        "C:\\Windows\\Fonts\\consola.ttf",
+        "C:\\Windows\\Fonts\\CascadiaMono.ttf",
+        "C:\\Windows\\Fonts\\CascadiaCode.ttf",
+        "C:\\Windows\\Fonts\\lucon.ttf",
+        "C:\\Windows\\Fonts\\cour.ttf",
     };
     for (const char *c : cands) {
-        std::ifstream f(c);
+        std::ifstream f(c, std::ios::binary);
         if (f) return c;
     }
     return {};

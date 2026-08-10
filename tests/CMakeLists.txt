@@ -53,3 +53,16 @@ add_test(NAME box_glyphs COMMAND box_glyphs_test)
 add_executable(coverage_test coverage_test.cpp)
 target_link_libraries(coverage_test PRIVATE toe::toe)
 add_test(NAME coverage COMMAND coverage_test)
+# Both font tests exit 77 when the machine has no usable fonts. Without this
+# property CTest reports that as a FAILURE rather than a skip.
+set_tests_properties(coverage PROPERTIES SKIP_RETURN_CODE 77)
+
+# Per-script fallback resolution: asserts FontDiscovery finds a real system font
+# for Latin/Greek/Cyrillic/CJK/Hangul/box-drawing/symbols on THIS platform. This
+# is what catches a port whose font roots or priority list are wrong (e.g. the
+# POSIX-only roots that made every fallback glyph render as tofu on Windows).
+# SKIPs (77) when no fonts are discoverable at all.
+add_executable(font_fallback_test font_fallback_test.cpp)
+target_link_libraries(font_fallback_test PRIVATE toe::toe)
+add_test(NAME font_fallback COMMAND font_fallback_test)
+set_tests_properties(font_fallback PROPERTIES SKIP_RETURN_CODE 77)

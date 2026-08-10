@@ -132,6 +132,15 @@ std::string FontDiscovery::cache_path() const {
     std::string dir;
     if (xdg && *xdg) dir = std::string{xdg} + "/toe";
     else if (home && *home) dir = std::string{home} + "/.cache/toe";
+#if defined(_WIN32)
+    // Windows has no HOME in a bare cmd session; LOCALAPPDATA is the correct
+    // per-user cache root. Without this the block->font map can't persist and
+    // every launch re-scans the font tree on the first CJK/emoji glyph.
+    else if (const char *lad = std::getenv("LOCALAPPDATA"); lad && *lad)
+        dir = std::string{lad} + "/toe/cache";
+    else if (const char *up = std::getenv("USERPROFILE"); up && *up)
+        dir = std::string{up} + "/.cache/toe";
+#endif
     else return {};
     std::error_code ec;
     fs::create_directories(dir, ec);
@@ -172,7 +181,20 @@ void FontDiscovery::ensure_candidates() {
     candidates_ready_ = true;
 
     const char *home = std::getenv("HOME");
-    std::vector<fs::path> roots = {"/usr/share/fonts", "/usr/local/share/fonts"};
+    std::vector<fs::path> roots;
+#if defined(_WIN32)
+    // Windows keeps fonts in the system store plus a per-user store (fonts
+    // installed without admin rights, which is the default in modern Windows).
+    if (const char *win = std::getenv("SystemRoot"); win && *win)
+        roots.emplace_back(std::string{win} + "\\Fonts");
+    else
+        roots.emplace_back("C:\\Windows\\Fonts");
+    if (const char *lad = std::getenv("LOCALAPPDATA"); lad && *lad)
+        roots.emplace_back(std::string{lad} + "\\Microsoft\\Windows\\Fonts");
+#else
+    roots.emplace_back("/usr/share/fonts");
+    roots.emplace_back("/usr/local/share/fonts");
+#endif
     if (home) {
         roots.emplace_back(std::string{home} + "/.local/share/fonts");
         roots.emplace_back(std::string{home} + "/.fonts");
@@ -180,10 +202,33 @@ void FontDiscovery::ensure_candidates() {
 
     // Broad-coverage families, best first — a scan usually hits on one of these
     // so we rarely walk the whole tree. Noto alone covers nearly all of Unicode.
+    //
+    // The Windows names matter: a stock Windows install has NO Noto and NO
+    // DejaVu, so a POSIX-only list degrades to "scan every file in
+    // C:\Windows\Fonts alphabetically", which is both slow and likely to pick a
+    // decorative face. These are the system fonts that actually carry the
+    // coverage: Segoe UI Emoji/Symbol (emoji + symbols), the CJK faces, Nirmala
+    // UI (Indic), and Arial/Segoe UI for general scripts.
     static const char *prefer[] = {
+        // Cross-platform broad-coverage families (present if the user installed them).
         "notosansmono", "notosans", "notoserif", "notonaskh", "notosanscjk", "notoserifcjk",
         "notocoloremoji", "notoemoji", "notosanssymbols", "notosanssymbols2", "notosansmath",
-        "dejavusans", "dejavusansmono", "freefont", "freeserif", "freesans", "unifont",
+        "dejavusans", "dejavusansmono",
+#if defined(_WIN32)
+        // Windows stock coverage, in the order that resolves most glyphs first.
+        "seguiemj",  // Segoe UI Emoji  — colour emoji
+        "seguisym",  // Segoe UI Symbol — arrows, box drawing, dingbats
+        "segoeui",   // Segoe UI        — broad Latin/Greek/Cyrillic
+        "cascadiamono", "cascadiacode", // shipped monospace, good symbol coverage
+        "consola",   // Consolas
+        "msgothic", "meiryo", "yugothic",   // Japanese
+        "malgun",                            // Korean
+        "msyh", "simsun", "simhei",          // Chinese (Yahei / Song / Hei)
+        "nirmala",                           // Indic scripts
+        "gadugi",                            // additional scripts
+        "arial", "tahoma", "lucon",
+#endif
+        "freefont", "freeserif", "freesans", "unifont",
         "symbola", "twemoji", "opensansemoji",
     };
     auto rank = [](const std::string &lower) -> int {
