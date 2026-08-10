@@ -311,7 +311,8 @@ template <class T> inline void hash_val(std::uint64_t &h, const T &v) noexcept {
 // row was rebuilt.
 bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
                          bool row_has_cursor, bool cursor_block, int cur_col, std::int64_t abs_row,
-                         bool any_selection, bool blink_on, term::Screen::LineAttr la) {
+                         bool any_selection, bool any_search, bool blink_on,
+                         term::Screen::LineAttr la) {
     RowCache &rc = rows_[static_cast<std::size_t>(r)];
     // Clean row: reuse the shadow — unless it holds blinking cells and the
     // blink phase just flipped, which needs a rebuild to hide/show them.
@@ -331,6 +332,9 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
     for (int c = 0; c < cache_cols_; ++c) {
         const auto &cell = cells[static_cast<std::size_t>(c)];
         const bool selected = any_selection && screen.is_selected(abs_row, c);
+        const bool searched = any_search && screen.is_search_match(abs_row, c);
+        const bool search_cur = searched && screen.is_current_search_match(abs_row, c);
+        const Rgb match_bg = search_cur ? search_cur_bg_ : search_bg_;
         const bool reverse = term::has(cell.pen.attr, term::Attr::Reverse);
         const bool on_cursor = row_has_cursor && cursor_block && c == cur_col;
 
@@ -360,6 +364,32 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
                     static_cast<float>(c * cw), ry, static_cast<float>(cw), static_cast<float>(ch),
                     selection_bg_.r, selection_bg_.g, selection_bg_.b, rad, corners));
             }
+        } else if (searched) {
+            // Search-match highlight: same rounded-outer-corner treatment as the
+            // selection region, but the current match uses the brighter colour.
+            // Corners round against OTHER cells in the SAME kind of match run
+            // (a current match sits inside the all-match run, so it rounds
+            // against non-current cells too — keep it simple: round against any
+            // match neighbour).
+            const bool up = screen.is_search_match(abs_row - 1, c);
+            const bool dn = screen.is_search_match(abs_row + 1, c);
+            const bool lf = c > 0 && screen.is_search_match(abs_row, c - 1);
+            const bool rt = c + 1 < cache_cols_ && screen.is_search_match(abs_row, c + 1);
+            std::uint8_t corners = 0;
+            if (!up && !lf) corners |= kCornerTL;
+            if (!up && !rt) corners |= kCornerTR;
+            if (!dn && !rt) corners |= kCornerBR;
+            if (!dn && !lf) corners |= kCornerBL;
+            const std::uint8_t rad = static_cast<std::uint8_t>(std::min({cw, ch, 8}) * 4 / 10);
+            if (corners == 0 || rad == 0) {
+                rc.bg.push_back(rect_inst(static_cast<float>(c * cw), ry, static_cast<float>(cw),
+                                          static_cast<float>(ch), match_bg.r, match_bg.g,
+                                          match_bg.b, /*radius=*/0));
+            } else {
+                rc.bg.push_back(rect_round_inst(
+                    static_cast<float>(c * cw), ry, static_cast<float>(cw), static_cast<float>(ch),
+                    match_bg.r, match_bg.g, match_bg.b, rad, corners));
+            }
         } else if (reverse || !std::holds_alternative<term::DefaultColor>(cell.pen.bg)) {
             const term::Color bg = reverse ? cell.pen.fg : cell.pen.bg;
             const Rgb col = palette_.resolve(bg, /*is_fg=*/reverse);
@@ -375,6 +405,7 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
         // selection background. Applied to glyphs, decorations, SDF and block
         // fills below so EVERYTHING under the highlight reads well.
         const auto sel_adjust = [&](Rgb fg) -> Rgb {
+            if (searched) return contrast_fg(fg, match_bg);
             if (!selected) return fg;
             if (selection_fg_) return *selection_fg_;
             return contrast_fg(fg, selection_bg_);
@@ -740,6 +771,10 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
     const Extent grid = screen.size();
     const Pos cur = screen.cursor();
     const bool any_selection = screen.has_selection();
+    const bool any_search = screen.searching();
+    // Either overlay needs absolute row coords + disables the fast epoch path,
+    // because neither selection nor search is part of the per-row cell epoch.
+    const bool any_overlay = any_selection || any_search;
 
     const bool cursor_visible =
         cursor_on && screen.cursor_shown() && screen.cursor_visible() && cur.row.get() >= 0 &&
@@ -799,10 +834,10 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
         screen.cursor_style().shape == term::Screen::CursorShape::block;
     for (int r = 0; r < grid.rows; ++r) {
         const bool row_has_cursor = cursor_visible && r == cur_row;
-        const std::int64_t abs_row = any_selection ? screen.viewport_to_abs(r) : 0;
+        const std::int64_t abs_row = any_overlay ? screen.viewport_to_abs(r) : 0;
 
         std::uint64_t key;
-        const std::uint64_t ver = any_selection ? 0 : screen.row_version(r);
+        const std::uint64_t ver = any_overlay ? 0 : screen.row_version(r);
         if (ver != 0) {
             // Fast path: fold the cursor column into the epoch token so a cursor
             // move on this row still invalidates it. Tag the high bit so an
@@ -833,6 +868,14 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
                     if (screen.is_selected(abs_row + 1, c)) hash_val(h, 0x20000 | c);
                 }
             }
+            if (any_search) {
+                // Fold match + current-match membership so highlighting (and a
+                // current-match change from n/N) repaints the affected rows.
+                for (int c = 0; c < grid.cols; ++c) {
+                    if (screen.is_search_match(abs_row, c)) hash_val(h, 0x40000 | c);
+                    if (screen.is_current_search_match(abs_row, c)) hash_val(h, 0x80000 | c);
+                }
+            }
             key = mix(h) & 0x7fffffffffffffffULL; // clear tag bit: distinct from epoch keys
         }
 
@@ -843,7 +886,7 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
         key ^= (static_cast<std::uint64_t>(la) * 0x9E3779B1u) & 0x00000000FFFFFFFFULL;
 
         const bool row_rebuilt = build_row(screen, r, key, row_has_cursor, cursor_block, cur_col,
-                                            abs_row, any_selection, blink_on, la);
+                                            abs_row, any_selection, any_search, blink_on, la);
         if (row_rebuilt) {
             any_row_dirty = true;
             dirty_top = std::min(dirty_top, r * cache_ch_);

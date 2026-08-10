@@ -547,6 +547,18 @@ void Session::select_clear() { impl_->model.screen.selection_clear(); }
 bool Session::has_selection() const noexcept { return impl_->model.screen.has_selection(); }
 std::string Session::selected_text() const { return impl_->model.screen.selected_text(); }
 
+std::size_t Session::search(std::string_view query, bool case_sensitive) {
+    return impl_->model.screen.search(query, case_sensitive);
+}
+void Session::search_next() { impl_->model.screen.search_next(); }
+void Session::search_prev() { impl_->model.screen.search_prev(); }
+void Session::search_clear() { impl_->model.screen.search_clear(); }
+bool Session::searching() const noexcept { return impl_->model.screen.searching(); }
+std::size_t Session::search_count() const noexcept { return impl_->model.screen.search_count(); }
+std::size_t Session::search_current() const noexcept {
+    return impl_->model.screen.search_current();
+}
+
 std::string_view Session::link_at(int vrow, int col) const noexcept {
     return impl_->model.screen.link_at(vrow, col);
 }

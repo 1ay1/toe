@@ -201,6 +201,33 @@ public:
     // Extract the selected text as UTF-8 (trailing blanks trimmed per line).
     [[nodiscard]] std::string selected_text() const;
 
+    // --- scrollback search -------------------------------------------------
+    // One match: a run of `len` cells starting at an absolute position.
+    struct SearchMatch {
+        AbsPos start{};
+        std::int32_t len{0};
+    };
+    // Scan the whole ring (history + live) for `query` (UTF-8, case-insensitive
+    // unless `case_sensitive`). Rebuilds the match list, keeps the current
+    // index near the previous position when possible, and scrolls the current
+    // match into view. Returns the number of matches (0 clears highlighting).
+    std::size_t search(std::string_view query, bool case_sensitive = false);
+    // Advance/retreat the current match (wraps around) and scroll it into view.
+    void search_next();
+    void search_prev();
+    // Drop all search state (query, matches, highlighting).
+    void search_clear();
+    [[nodiscard]] bool searching() const noexcept { return !search_matches_.empty(); }
+    [[nodiscard]] std::size_t search_count() const noexcept { return search_matches_.size(); }
+    // 1-based index of the current match (0 when none), for a "3/17" readout.
+    [[nodiscard]] std::size_t search_current() const noexcept {
+        return search_matches_.empty() ? 0 : search_cur_ + 1;
+    }
+    // Highlight predicates for the renderer (parallel to is_selected).
+    [[nodiscard]] bool is_search_match(std::int64_t abs_row, std::int32_t col) const noexcept;
+    [[nodiscard]] bool is_current_search_match(std::int64_t abs_row,
+                                               std::int32_t col) const noexcept;
+
     // Total rows in the ring (history + live). An absolute row is valid in
     // [0, total_rows()). Used to clamp CommandBlock coordinates before slicing.
     [[nodiscard]] std::int64_t total_rows() const noexcept;
@@ -526,6 +553,13 @@ private:
 
     // Extra word-joining codepoints from config (see set_word_separators_extra).
     std::u32string word_extra_{};
+
+    // Scrollback search state. Matches are in absolute coords, sorted by row
+    // then col. search_cur_ indexes the "current" (strongly highlighted) match.
+    std::vector<SearchMatch> search_matches_{};
+    std::size_t search_cur_{0};
+    std::u32string search_query_{}; // decoded query, retained for re-scan on new output
+    bool search_case_{false};
 
     // Normalized [begin, end] of the current selection (begin <= end).
     [[nodiscard]] std::pair<AbsPos, AbsPos> selection_span() const noexcept;

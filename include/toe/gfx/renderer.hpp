@@ -115,7 +115,7 @@ private:
     // row was rebuilt (its key changed).
     bool build_row(const term::Screen &screen, int r, std::uint64_t key,
                    bool row_has_cursor, bool cursor_block, int cur_col, std::int64_t abs_row,
-                   bool any_selection, bool blink_on, term::Screen::LineAttr la);
+                   bool any_selection, bool any_search, bool blink_on, term::Screen::LineAttr la);
 
     FontAtlas atlas_;
     Palette palette_{};
@@ -217,6 +217,10 @@ private:
     bool cursor_trail_{true};                     // draw the comet trail on jumps
     std::size_t base_instance_n_{0};              // instances_ size before the anim caret
     Rgb selection_bg_{rgb(66, 84, 112)};          // selection highlight (config-set)
+    // Search-match highlight colours. `search_bg_` tints every match; the
+    // CURRENT match gets `search_cur_bg_` (brighter). Sensible amber defaults.
+    Rgb search_bg_{rgb(120, 96, 40)};
+    Rgb search_cur_bg_{rgb(210, 160, 40)};
     // Optional forced selection foreground. When unset (the default) the
     // renderer keeps each cell's own fg but GUARANTEES it stays readable
     // against selection_bg_ by flipping low-contrast text to black/white.
@@ -252,6 +256,12 @@ public:
     // nullopt to keep each cell's own fg (auto-contrasted). Rebuilds the cache.
     void set_selection_fg(std::optional<Rgb> c) noexcept {
         selection_fg_ = c;
+        for (auto &rc : rows_) rc.valid = false;
+    }
+    // Search-match highlight colours (all matches / the current match).
+    void set_search_colors(Rgb all, Rgb current) noexcept {
+        search_bg_ = all;
+        search_cur_bg_ = current;
         for (auto &rc : rows_) rc.valid = false;
     }
     // Inner window padding in pixels: the grid is inset by this on every edge.

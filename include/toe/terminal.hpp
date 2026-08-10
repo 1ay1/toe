@@ -296,6 +296,17 @@ public:
     [[nodiscard]] bool has_selection() const noexcept;
     [[nodiscard]] std::string selected_text() const;
 
+    // --- scrollback search -------------------------------------------------
+    // Set/refresh the search query; scans the whole buffer, highlights matches,
+    // scrolls the current match into view. Returns the match count.
+    std::size_t search(std::string_view query, bool case_sensitive = false);
+    void search_next();   // jump to the next match (wraps)
+    void search_prev();   // jump to the previous match (wraps)
+    void search_clear();  // drop the query + highlighting
+    [[nodiscard]] bool searching() const noexcept;
+    [[nodiscard]] std::size_t search_count() const noexcept;   // total matches
+    [[nodiscard]] std::size_t search_current() const noexcept; // 1-based, 0 = none
+
     // The OSC 8 hyperlink URI under a viewport cell, or empty if none. The host
     // opens it (browser / xdg-open) on click.
     [[nodiscard]] std::string_view link_at(int vrow, int col) const noexcept;

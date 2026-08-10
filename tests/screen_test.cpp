@@ -416,6 +416,37 @@ int main() {
         expect(s.selected_text() == "foo,bar", "extra separator joins the word");
     }
 
+    // ---- scrollback search -------------------------------------------------
+    {
+        term::Screen s{Extent{20, 3}};
+        feed(s, "the cat sat\r\non the mat\r\nCAT scan");
+        // Case-insensitive: 'cat' matches row0 col4 and row2 col0 (CAT).
+        expect(s.search("cat") == 2, "search finds all case-insensitive matches");
+        expect(s.search_count() == 2, "match count");
+        expect(s.search_current() == 1, "first match is current");
+        // Highlight predicates.
+        const std::int64_t r0 = s.viewport_to_abs(0);
+        const std::int64_t r2 = s.viewport_to_abs(2);
+        expect(s.is_search_match(r0, 4) && s.is_search_match(r0, 6), "row0 'cat' cells matched");
+        expect(!s.is_search_match(r0, 3) && !s.is_search_match(r0, 7), "match bounds tight");
+        expect(s.is_current_search_match(r0, 4), "row0 match is the current one");
+        expect(!s.is_current_search_match(r2, 0), "row2 match not current yet");
+        s.search_next();
+        expect(s.search_current() == 2, "next advances current");
+        expect(s.is_current_search_match(r2, 0), "current moved to row2 CAT");
+        s.search_next();
+        expect(s.search_current() == 1, "next wraps to first");
+        s.search_prev();
+        expect(s.search_current() == 2, "prev wraps to last");
+        // Case-sensitive: only lowercase 'cat' on row0.
+        expect(s.search("cat", /*case_sensitive=*/true) == 1, "case-sensitive narrows matches");
+        s.search_clear();
+        expect(!s.searching() && s.search_count() == 0, "clear drops all search state");
+        // Empty query clears.
+        s.search("cat");
+        expect(s.search("") == 0 && !s.searching(), "empty query clears search");
+    }
+
 
     // Custom tab stops: HTS sets, TBC clears, tab honors them.
     {

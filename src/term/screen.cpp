@@ -2201,6 +2201,116 @@ std::int64_t Screen::total_rows() const noexcept {
     return static_cast<std::int64_t>(ring_.total());
 }
 
+// --- scrollback search -----------------------------------------------------
+namespace {
+char32_t lower_cp(char32_t c) {
+    if (c >= U'A' && c <= U'Z') return c + 32;
+    // Latin-1 supplement upper -> lower (covers accented Latin common in logs).
+    if (c >= 0xC0 && c <= 0xDE && c != 0xD7) return c + 32;
+    return c;
+}
+} // namespace
+
+std::size_t Screen::search(std::string_view query, bool case_sensitive) {
+    // Decode the UTF-8 query to codepoints (reuse the word-sep decoder shape).
+    std::u32string q;
+    for (std::size_t i = 0; i < query.size();) {
+        const auto b0 = static_cast<unsigned char>(query[i]);
+        char32_t cp = 0; int n = 1;
+        if (b0 < 0x80) { cp = b0; n = 1; }
+        else if ((b0 >> 5) == 0x6) { cp = b0 & 0x1F; n = 2; }
+        else if ((b0 >> 4) == 0xE) { cp = b0 & 0x0F; n = 3; }
+        else if ((b0 >> 3) == 0x1E) { cp = b0 & 0x07; n = 4; }
+        else { ++i; continue; }
+        if (i + static_cast<std::size_t>(n) > query.size()) break;
+        bool ok = true;
+        for (int k = 1; k < n; ++k) {
+            const auto bc = static_cast<unsigned char>(query[i + static_cast<std::size_t>(k)]);
+            if ((bc >> 6) != 0x2) { ok = false; break; }
+            cp = (cp << 6) | (bc & 0x3F);
+        }
+        if (ok) q.push_back(case_sensitive ? cp : lower_cp(cp));
+        i += static_cast<std::size_t>(n);
+    }
+
+    // Remember the current match's row so we can keep the cursor near it.
+    const std::int64_t anchor_row =
+        search_matches_.empty() ? viewport_to_abs(0)
+                                : search_matches_[search_cur_].start.row;
+    search_matches_.clear();
+    search_query_ = q;
+    search_case_ = case_sensitive;
+    if (q.empty()) { search_cur_ = 0; touch(); return 0; }
+
+    const std::int64_t total = total_rows();
+    const std::int32_t cols = size_.cols;
+    const std::size_t qn = q.size();
+    // Linear scan. A match may not cross a row boundary (matches the visible
+    // grid; soft-wrapped continuations are separate physical rows, which is the
+    // pragmatic behaviour every terminal ships).
+    for (std::int64_t r = 0; r < total; ++r) {
+        for (std::int32_t c = 0; c + static_cast<std::int32_t>(qn) <= cols; ++c) {
+            bool hit = true;
+            for (std::size_t k = 0; k < qn; ++k) {
+                const Cell *cell = cell_at_abs(r, c + static_cast<std::int32_t>(k));
+                char32_t cc = cell ? cell->cp : U' ';
+                if (!case_sensitive) cc = lower_cp(cc);
+                if (cc != q[k]) { hit = false; break; }
+            }
+            if (hit) {
+                search_matches_.push_back({AbsPos{r, c}, static_cast<std::int32_t>(qn)});
+                c += static_cast<std::int32_t>(qn) - 1; // non-overlapping
+            }
+        }
+    }
+
+    // Pick the current match: the first at/after the anchor row, else the last.
+    search_cur_ = 0;
+    for (std::size_t i = 0; i < search_matches_.size(); ++i) {
+        if (search_matches_[i].start.row >= anchor_row) { search_cur_ = i; break; }
+        search_cur_ = i;
+    }
+    if (!search_matches_.empty()) scroll_to_abs_row(search_matches_[search_cur_].start.row);
+    touch();
+    return search_matches_.size();
+}
+
+void Screen::search_next() {
+    if (search_matches_.empty()) return;
+    search_cur_ = (search_cur_ + 1) % search_matches_.size();
+    scroll_to_abs_row(search_matches_[search_cur_].start.row);
+    touch();
+}
+
+void Screen::search_prev() {
+    if (search_matches_.empty()) return;
+    search_cur_ = (search_cur_ + search_matches_.size() - 1) % search_matches_.size();
+    scroll_to_abs_row(search_matches_[search_cur_].start.row);
+    touch();
+}
+
+void Screen::search_clear() {
+    if (search_matches_.empty() && search_query_.empty()) return;
+    search_matches_.clear();
+    search_query_.clear();
+    search_cur_ = 0;
+    touch();
+}
+
+bool Screen::is_search_match(std::int64_t abs_row, std::int32_t col) const noexcept {
+    for (const auto &m : search_matches_) {
+        if (m.start.row != abs_row) continue;
+        if (col >= m.start.col && col < m.start.col + m.len) return true;
+    }
+    return false;
+}
+
+bool Screen::is_current_search_match(std::int64_t abs_row, std::int32_t col) const noexcept {
+    if (search_matches_.empty()) return false;
+    const auto &m = search_matches_[search_cur_];
+    return m.start.row == abs_row && col >= m.start.col && col < m.start.col + m.len;
+}
+
 std::string Screen::text_between_abs(std::int64_t row0, std::int64_t row1,
                                      std::int32_t col0) const {
     const std::int64_t total = total_rows();
