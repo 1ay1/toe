@@ -174,16 +174,26 @@ public:
 
     // Begin a selection at an absolute position (e.g. mouse-down).
     void selection_begin(AbsPos p, SelectMode mode);
-    // Extend the active selection to p (e.g. mouse-drag).
+    // Extend the active selection to p (e.g. mouse-drag). Honours the
+    // granularity set by the last begin/word/line: a drag after a double-click
+    // extends by whole WORDS and after a triple-click by whole LINES, snapping
+    // both ends outward — exactly like iTerm2/kitty. A plain drag is per-cell.
     void selection_extend(AbsPos p);
-    // Select the whole word under an absolute position (double-click).
+    // Select the whole word under an absolute position (double-click). The span
+    // follows soft-wrapped continuation rows so a wrapped word/URL selects whole.
     void selection_word(AbsPos p);
-    // Select the whole line at an absolute position (triple-click).
+    // Select the whole line at an absolute position (triple-click). Spans the
+    // full logical (soft-wrapped) line, not just the one physical row.
     void selection_line(AbsPos p);
     // Clear the selection.
     void selection_clear();
     [[nodiscard]] bool has_selection() const noexcept { return sel_mode_ != SelectMode::none; }
     [[nodiscard]] SelectMode selection_mode() const noexcept { return sel_mode_; }
+
+    // Extra codepoints (beyond the built-in alnum + path/URL set) that count as
+    // part of a word for double-click selection. Host wires this from config so
+    // e.g. "'" or "," can be made word-joining. Empty by default.
+    void set_word_separators_extra(std::u32string_view cps) { word_extra_ = cps; }
 
     // True if the cell at absolute (row,col) is within the current selection.
     [[nodiscard]] bool is_selected(std::int64_t abs_row, std::int32_t col) const noexcept;
@@ -505,8 +515,26 @@ private:
     AbsPos sel_anchor_{};
     AbsPos sel_active_{};
 
+    // Drag granularity: after a double/triple click the drag snaps to whole
+    // words / lines. `sel_pivot_lo_`/`sel_pivot_hi_` hold the ORIGINAL clicked
+    // word (or line) span so extension pins the far edge to it as the pointer
+    // sweeps past the anchor in either direction.
+    enum class Grain { cell, word, line };
+    Grain sel_grain_{Grain::cell};
+    AbsPos sel_pivot_lo_{};
+    AbsPos sel_pivot_hi_{};
+
+    // Extra word-joining codepoints from config (see set_word_separators_extra).
+    std::u32string word_extra_{};
+
     // Normalized [begin, end] of the current selection (begin <= end).
     [[nodiscard]] std::pair<AbsPos, AbsPos> selection_span() const noexcept;
+
+    // Compute the soft-wrap-aware word span containing p. Returns {p,p} when p
+    // is not on a word codepoint. Shared by double-click and word-drag.
+    [[nodiscard]] std::pair<AbsPos, AbsPos> word_bounds_at(AbsPos p) const noexcept;
+    // The full logical (soft-wrap-joined) line span containing absolute row.
+    [[nodiscard]] std::pair<AbsPos, AbsPos> line_bounds_at(std::int64_t abs_row) const noexcept;
     // Fetch the cell at an absolute row/col (history or live), or nullptr.
     [[nodiscard]] const Cell *cell_at_abs(std::int64_t abs_row, std::int32_t col) const noexcept;
 

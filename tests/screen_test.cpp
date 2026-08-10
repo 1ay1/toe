@@ -335,6 +335,88 @@ int main() {
         expect(s.selected_text() == "hello there", "line select grabs whole row");
     }
 
+    // ---- state-of-the-art selection upgrades ------------------------------
+
+    // Double-click on a word that SOFT-WRAPS across the physical row boundary
+    // selects the whole word, not just the fragment on one row. Here a 12-char
+    // token in a 8-wide grid spans row0 cols 0..7 + row1 cols 0..3.
+    {
+        term::Screen s{Extent{8, 3}};
+        feed(s, "abcdefghijkl"); // wraps: 'abcdefgh' | 'ijkl'
+        using AbsPos = term::Screen::AbsPos;
+        s.selection_word(AbsPos{0, 3}); // click on row0
+        expect(s.selected_text() == "abcdefghijkl", "word select follows soft-wrap");
+        s.selection_word(AbsPos{1, 1}); // click on the continuation row
+        expect(s.selected_text() == "abcdefghijkl", "word select joins from continuation row");
+    }
+
+    // Triple-click on a soft-wrapped logical line selects ALL its physical rows.
+    {
+        term::Screen s{Extent{8, 3}};
+        feed(s, "one two three"); // 'one two ' | 'three'
+        using AbsPos = term::Screen::AbsPos;
+        s.selection_line(AbsPos{1, 0});
+        // Copy joins the wrapped rows with no newline in the middle.
+        expect(s.selected_text() == "one two three", "line select spans the whole wrapped line");
+    }
+
+    // Copy across a soft-wrap boundary must NOT insert a newline (a wrapped URL
+    // pastes as one line); a HARD newline still separates real lines.
+    {
+        term::Screen s{Extent{8, 3}};
+        feed(s, "abcdefghij\r\nZZ"); // 'abcdefgh' | 'ij' (soft), then hard 'ZZ'
+        using AbsPos = term::Screen::AbsPos;
+        s.selection_begin(AbsPos{0, 0}, term::Screen::SelectMode::character);
+        s.selection_extend(AbsPos{2, 1});
+        expect(s.selected_text() == "abcdefghij\nZZ",
+               "soft-wrap join has no newline; hard break keeps one");
+    }
+
+    // Word-granularity drag: after a double-click, extending snaps to whole
+    // words as the pointer sweeps (iTerm2/kitty feel), not per character.
+    {
+        term::Screen s{Extent{20, 1}};
+        feed(s, "foo bar baz");
+        using AbsPos = term::Screen::AbsPos;
+        s.selection_word(AbsPos{0, 1});   // grab 'foo'
+        s.selection_extend(AbsPos{0, 9}); // drag into 'baz'
+        expect(s.selected_text() == "foo bar baz", "word-drag extends by whole words");
+        // Dragging back past the anchor selects the leading word whole too.
+        s.selection_word(AbsPos{0, 5});   // grab 'bar'
+        s.selection_extend(AbsPos{0, 0}); // drag left into 'foo'
+        expect(s.selected_text() == "foo bar", "word-drag leftward keeps far word whole");
+    }
+
+    // Line-granularity drag: after a triple-click, extending snaps to whole
+    // lines.
+    {
+        term::Screen s{Extent{10, 3}};
+        feed(s, "aaa\r\nbbb\r\nccc");
+        using AbsPos = term::Screen::AbsPos;
+        s.selection_line(AbsPos{0, 1});   // grab line 0
+        s.selection_extend(AbsPos{2, 0}); // drag to line 2
+        expect(s.selected_text() == "aaa\nbbb\nccc", "line-drag extends by whole lines");
+    }
+
+    // A double-click between CJK and ASCII punctuation must break at the class
+    // boundary — each ideograph is its own word.
+    {
+        term::Screen s{Extent{20, 1}};
+        feed(s, "\xe4\xb8\xad\xe6\x96\x87"); // 中文 (two wide ideographs)
+        s.selection_word(term::Screen::AbsPos{0, 0});
+        expect(s.selected_text() == "\xe4\xb8\xad", "ideograph is its own word");
+    }
+
+    // Config-supplied word separators make a normally-splitting char joining.
+    {
+        term::Screen s{Extent{20, 1}};
+        feed(s, "foo,bar baz");
+        s.set_word_separators_extra(U",");
+        s.selection_word(term::Screen::AbsPos{0, 1});
+        expect(s.selected_text() == "foo,bar", "extra separator joins the word");
+    }
+
+
     // Custom tab stops: HTS sets, TBC clears, tab honors them.
     {
         term::Screen s{Extent{40, 1}};

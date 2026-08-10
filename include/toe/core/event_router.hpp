@@ -133,7 +133,9 @@ private:
         } else if (e.button == MouseButton::left) {
             if (e.click_count >= 3) s_.select_line(vrow, col);
             else if (e.click_count == 2) s_.select_word(vrow, col);
-            else s_.select_begin(vrow, col, 0);
+            // Alt (Option) + drag = rectangular/column selection, the kitty /
+            // iTerm2 convention. mode 2 == block; a plain click is mode 0.
+            else s_.select_begin(vrow, col, e.mods.alt ? 2 : 0);
         } else if (e.button == MouseButton::middle) {
             paste_clipboard(); // primary-selection paste
         }

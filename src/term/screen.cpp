@@ -1909,24 +1909,54 @@ void Screen::selection_begin(AbsPos p, SelectMode mode) {
     sel_mode_ = mode;
     sel_anchor_ = p;
     sel_active_ = p;
+    sel_grain_ = Grain::cell;
+    sel_pivot_lo_ = p;
+    sel_pivot_hi_ = p;
     touch();
 }
 
 void Screen::selection_extend(AbsPos p) {
     if (sel_mode_ == SelectMode::none) return;
-    sel_active_ = p;
+
+    // Cell granularity (plain drag): the anchor stays put, the free end tracks
+    // the pointer exactly.
+    if (sel_grain_ == Grain::cell || sel_mode_ == SelectMode::block) {
+        sel_active_ = p;
+        touch();
+        return;
+    }
+
+    // Word/line granularity (drag after a double/triple click): snap the span so
+    // it always covers the ORIGINAL clicked word/line PLUS the word/line under
+    // the pointer, whichever side the pointer is on. This is the iTerm2/kitty
+    // feel where sweeping selects whole words at a time.
+    std::pair<AbsPos, AbsPos> tgt =
+        (sel_grain_ == Grain::word) ? word_bounds_at(p) : line_bounds_at(p.row);
+
+    // Union the pivot span with the target span, then orient anchor/active so
+    // the anchor is the edge farther from the pointer (keeps drag reversible).
+    const bool forward = !(p < sel_pivot_lo_); // pointer at/after the pivot start
+    if (forward) {
+        sel_anchor_ = sel_pivot_lo_;
+        sel_active_ = (sel_pivot_hi_ < tgt.second) ? tgt.second : sel_pivot_hi_;
+    } else {
+        sel_anchor_ = sel_pivot_hi_;
+        sel_active_ = (tgt.first < sel_pivot_lo_) ? tgt.first : sel_pivot_lo_;
+    }
     touch();
 }
 
 namespace {
-// A codepoint that counts as part of a "word" for double-click selection:
-// alphanumerics plus a few path/URL-ish punctuation characters.
-bool is_word_cp(char32_t cp) {
-    if (cp == U' ' || cp == 0) return false;
-    if ((cp >= U'0' && cp <= U'9') || (cp >= U'A' && cp <= U'Z') ||
-        (cp >= U'a' && cp <= U'z') || cp >= 0x80) {
-        return true;
-    }
+// Character class for double-click word selection. State-of-the-art terminals
+// treat a "word" as a maximal run of codepoints of the SAME class, so that a
+// boundary falls between e.g. CJK text and ASCII punctuation, or between a
+// number and a symbol — not "everything ≥ 0x80 is one blob".
+enum class CharClass { space, word, wide, punct };
+
+// Codepoints that glue a word together even though ASCII would call them
+// punctuation — the path/URL/identifier set. Double-clicking a file path or a
+// URL grabs the whole thing.
+constexpr bool is_word_punct(char32_t cp) {
     switch (cp) {
     case U'_': case U'-': case U'.': case U'/': case U'~': case U':':
     case U'@': case U'+': case U'=': case U'%': case U'#':
@@ -1935,32 +1965,141 @@ bool is_word_cp(char32_t cp) {
         return false;
     }
 }
+
+// True for CJK / fullwidth ideographic ranges where every glyph is its own
+// "word" (double-click selects one character, matching native editors).
+constexpr bool is_ideographic(char32_t cp) {
+    return (cp >= 0x1100 && cp <= 0x115F) ||   // Hangul Jamo
+           (cp >= 0x2E80 && cp <= 0x2FDF) ||   // CJK radicals / Kangxi
+           (cp >= 0x3040 && cp <= 0x30FF) ||   // Hiragana + Katakana
+           (cp >= 0x3400 && cp <= 0x4DBF) ||   // CJK Ext A
+           (cp >= 0x4E00 && cp <= 0x9FFF) ||   // CJK Unified
+           (cp >= 0xAC00 && cp <= 0xD7A3) ||   // Hangul syllables
+           (cp >= 0xF900 && cp <= 0xFAFF) ||   // CJK compatibility
+           (cp >= 0xFF00 && cp <= 0xFF60) ||   // Fullwidth forms
+           (cp >= 0x20000 && cp <= 0x3FFFD);   // CJK Ext B..
+}
+
+CharClass classify(char32_t cp, std::u32string_view extra) {
+    if (cp == 0 || cp == U' ' || cp == U'\t' || cp == 0xA0) return CharClass::space;
+    if (is_ideographic(cp)) return CharClass::wide;
+    if ((cp >= U'0' && cp <= U'9') || (cp >= U'A' && cp <= U'Z') ||
+        (cp >= U'a' && cp <= U'z') || is_word_punct(cp)) {
+        return CharClass::word;
+    }
+    // User-configured joiners are word-class.
+    if (extra.find(cp) != std::u32string_view::npos) return CharClass::word;
+    // Remaining non-ASCII (accented letters, symbols in other scripts) count as
+    // word too — they're overwhelmingly letters; ASCII punctuation stays punct.
+    if (cp >= 0x80) return CharClass::word;
+    return CharClass::punct;
+}
 } // namespace
 
+
 void Screen::selection_word(AbsPos p) {
-    auto word_at = [&](std::int32_t col) {
-        const Cell *c = cell_at_abs(p.row, col);
-        return c && is_word_cp(c->cp);
-    };
-    if (!word_at(p.col)) {
-        // Not on a word: fall back to a single-cell character selection.
+    const Cell *hit = cell_at_abs(p.row, p.col);
+    if (!hit || classify(hit->cp, word_extra_) == CharClass::space) {
+        // Not on a word: fall back to a single-cell character selection, but
+        // still arm word-granularity drag so sweeping picks up whole words.
         selection_begin(p, SelectMode::character);
+        sel_grain_ = Grain::word;
         return;
     }
-    std::int32_t lo = p.col, hi = p.col;
-    while (lo > 0 && word_at(lo - 1)) --lo;
-    while (hi < size_.cols - 1 && word_at(hi + 1)) ++hi;
+    const auto [lo, hi] = word_bounds_at(p);
     sel_mode_ = SelectMode::character;
-    sel_anchor_ = AbsPos{p.row, lo};
-    sel_active_ = AbsPos{p.row, hi};
+    sel_anchor_ = lo;
+    sel_active_ = hi;
+    sel_grain_ = Grain::word;
+    sel_pivot_lo_ = lo;
+    sel_pivot_hi_ = hi;
     touch();
 }
 
 void Screen::selection_line(AbsPos p) {
+    const auto [lo, hi] = line_bounds_at(p.row);
     sel_mode_ = SelectMode::line;
-    sel_anchor_ = AbsPos{p.row, 0};
-    sel_active_ = AbsPos{p.row, size_.cols - 1};
+    sel_anchor_ = lo;
+    sel_active_ = hi;
+    sel_grain_ = Grain::line;
+    sel_pivot_lo_ = lo;
+    sel_pivot_hi_ = hi;
     touch();
+}
+
+// Soft-wrap-aware word span. Walks left/right across the row, and — when the
+// row is a soft-wrap continuation and the run reaches a physical edge — carries
+// on into the adjacent physical row so a wrapped word or URL selects whole.
+std::pair<Screen::AbsPos, Screen::AbsPos> Screen::word_bounds_at(AbsPos p) const noexcept {
+    const Cell *hit = cell_at_abs(p.row, p.col);
+    if (!hit) return {p, p};
+    const CharClass want = classify(hit->cp, word_extra_);
+    if (want == CharClass::space) return {p, p};
+
+    // Each ideograph/fullwidth glyph is its own "word" (matches native editors
+    // and CJK IME behaviour): select just the lead cell + its spacer.
+    if (want == CharClass::wide) {
+        AbsPos lo{p.row, p.col};
+        // Land on the lead cell if the click hit a wide spacer.
+        if (hit->width == 0 && lo.col > 0) --lo.col;
+        AbsPos hi = lo;
+        const Cell *sp = cell_at_abs(hi.row, hi.col + 1);
+        if (sp && sp->width == 0 && sp->cp == U' ' && hi.col + 1 <= size_.cols - 1) ++hi.col;
+        return {lo, hi};
+    }
+
+    auto same = [&](std::int64_t r, std::int32_t c) {
+        const Cell *cc = cell_at_abs(r, c);
+        // A wide glyph's trailing spacer (width 0, cp space) belongs to the
+        // lead cell — treat it as continuing the same word, not a break.
+        if (cc && cc->width == 0 && cc->cp == U' ') return true;
+        return cc && classify(cc->cp, word_extra_) == want;
+    };
+
+    const std::int64_t total = total_rows();
+    const std::int32_t last = size_.cols - 1;
+
+    AbsPos lo{p.row, p.col};
+    while (true) {
+        if (lo.col > 0) {
+            if (!same(lo.row, lo.col - 1)) break;
+            --lo.col;
+        } else if (lo.row > 0 && ring_.wrapped_abs(static_cast<std::size_t>(lo.row - 1))) {
+            // Previous physical row soft-wrapped INTO this one: continue there.
+            if (!same(lo.row - 1, last)) break;
+            lo = AbsPos{lo.row - 1, last};
+        } else {
+            break;
+        }
+    }
+
+    AbsPos hi{p.row, p.col};
+    while (true) {
+        if (hi.col < last) {
+            if (!same(hi.row, hi.col + 1)) break;
+            ++hi.col;
+        } else if (hi.row + 1 < total &&
+                   ring_.wrapped_abs(static_cast<std::size_t>(hi.row))) {
+            // This row soft-wraps into the next: continue at its column 0.
+            if (!same(hi.row + 1, 0)) break;
+            hi = AbsPos{hi.row + 1, 0};
+        } else {
+            break;
+        }
+    }
+    return {lo, hi};
+}
+
+// The full logical line: extend up while the previous row wrapped into this one
+// and down while this row wraps into the next, so triple-click grabs a wrapped
+// command line as one unit.
+std::pair<Screen::AbsPos, Screen::AbsPos> Screen::line_bounds_at(std::int64_t abs_row) const noexcept {
+    const std::int64_t total = total_rows();
+    if (total == 0) return {AbsPos{abs_row, 0}, AbsPos{abs_row, size_.cols - 1}};
+    std::int64_t top = abs_row, bot = abs_row;
+    while (top > 0 && ring_.wrapped_abs(static_cast<std::size_t>(top - 1))) --top;
+    while (bot + 1 < total && ring_.wrapped_abs(static_cast<std::size_t>(bot))) ++bot;
+    return {AbsPos{top, 0}, AbsPos{bot, size_.cols - 1}};
 }
 
 void Screen::selection_clear() {
@@ -2036,10 +2175,24 @@ std::string Screen::selected_text() const {
                 line.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
             }
         }
-        // Trim trailing spaces on each line.
-        while (!line.empty() && line.back() == ' ') line.pop_back();
+        // Trim trailing spaces on each line — but NOT when this row soft-wraps
+        // into the next and we're copying through its right edge in character
+        // mode: there the line logically continues, so trailing padding (if
+        // any) is kept minimal and we suppress the newline below.
+        const bool soft_wrap_join =
+            sel_mode_ != SelectMode::block && r < b.row &&
+            end >= size_.cols - 1 &&
+            r >= 0 && r < total_rows() &&
+            ring_.wrapped_abs(static_cast<std::size_t>(r));
+        // Trim trailing blanks on a real (hard-terminated) line; a soft-wrapped
+        // row keeps them — the space at the wrap point is a genuine word gap and
+        // dropping it would glue two words together on paste.
+        if (!soft_wrap_join)
+            while (!line.empty() && line.back() == ' ') line.pop_back();
         out += line;
-        if (r != b.row) out.push_back('\n');
+        // Emit a newline only at a REAL line break. A soft-wrapped row joins the
+        // next with no separator, so a wrapped URL/command pastes as one line.
+        if (r != b.row && !soft_wrap_join) out.push_back('\n');
     }
     return out;
 }
