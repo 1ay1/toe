@@ -65,9 +65,14 @@ public:
     }
     [[nodiscard]] std::size_t total() const noexcept { return count_; }
 
-    // Physical slot backing absolute row `abs` (0 = oldest). Ring arithmetic.
+    // Physical slot backing absolute row `abs` (0 = oldest). Ring arithmetic
+    // WITHOUT a modulo: head_ and abs are each < cap_slots_, so head_+abs is
+    // < 2*cap and one conditional subtract wraps it — far cheaper than the div
+    // a `% cap_slots_` compiles to, and slot_of() is on EVERY cell read/write.
+    // (This is the trick alacritty's Storage::compute_index uses.)
     [[nodiscard]] std::size_t slot_of(std::size_t abs) const noexcept {
-        return (head_ + abs) % cap_slots_;
+        std::size_t s = head_ + abs;
+        return s >= cap_slots_ ? s - cap_slots_ : s;
     }
     // Pointer to the `cols` cells of absolute row `abs`.
     [[nodiscard]] Cell *abs_row(std::size_t abs) noexcept {
@@ -174,7 +179,7 @@ public:
         // At capacity (or alt screen): recycle the oldest slot as the new bottom.
         // Advancing head_ drops the oldest scrollback line; count_ is unchanged,
         // so the view (last `rows`) shifts to include the recycled slot.
-        head_ = (head_ + 1) % cap_slots_;
+        head_ = head_ + 1 == cap_slots_ ? 0 : head_ + 1;
         const std::size_t newbot = count_ - 1; // last absolute row = new bottom
         blank_row(newbot);
         return newbot;
