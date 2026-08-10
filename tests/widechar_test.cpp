@@ -4,6 +4,7 @@
 // either half must dissolve the whole pair, or an orphan lead/spacer lingers and
 // renders as a gap or stale glyph ("missing second column", "weird text").
 #include "toe/term/screen.hpp"
+#include "toe/term/width.hpp"
 #include "toe/vt/parser.hpp"
 #include <cstdio>
 #include <string>
@@ -20,7 +21,28 @@ static void feed(Screen &s, vt::Parser &p, const std::string &d) {
 }
 static const Cell &at(const Screen &s, int r, int c) { return s.row(Row{r})[static_cast<std::size_t>(c)]; }
 
+// codepoint_width correctness for the characters that commonly break alignment.
+static void width_table_checks() {
+    auto w = [](char32_t c) { return codepoint_width(c); };
+    // ASCII + Latin: width 1.
+    ck(w('A') == 1 && w('~') == 1 && w(0x00E9) == 1, "ascii/latin width 1");
+    // Combining marks + ZWJ + VS16: width 0.
+    ck(w(0x0301) == 0 && w(0x200D) == 0 && w(0xFE0F) == 0, "combining/zwj/vs16 width 0");
+    // Symbols / dingbats that are NARROW (were wrongly wide): check/cross/star/
+    // arrow/bullet/ellipsis/box-drawing/powerline must be width 1.
+    for (char32_t c : {U'\u2713', U'\u2717', U'\u2605', U'\u2794', U'\u2022',
+                       U'\u2026', U'\u2500', U'\u2502', U'\u256d', U'\u25b6',
+                       U'\u2699', U'\u26a0'})
+        ck(w(c) == 1, "narrow symbol/dingbat width 1");
+    // Genuinely wide: CJK, Hangul, fullwidth, and emoji.
+    for (char32_t c : {U'\u6f22', U'\uac00', U'\uff21', U'\U0001F600', U'\U0001F680',
+                       U'\u26a1', U'\u2705', U'\u2728', U'\u2b50'})
+        ck(w(c) == 2, "wide CJK/emoji width 2");
+}
+
 int main() {
+    width_table_checks();
+
     const std::string CSI = "\x1b[";
 
     // 1) A wide char lays down lead(width2)+spacer(width0).

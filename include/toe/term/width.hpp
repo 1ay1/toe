@@ -41,13 +41,41 @@ inline constexpr std::array<WRange, 27> kZeroWidth = {{
     {0xFE00, 0xFE0F},   // variation selectors
 }};
 
-// Wide (width 2): East-Asian Wide + Fullwidth + emoji presentation ranges.
-// Sorted, non-overlapping.
-inline constexpr std::array<WRange, 30> kWide = {{
+// Wide (width 2): East-Asian Wide + Fullwidth + emoji-presentation ranges,
+// following Unicode EastAsianWidth (W + F) as alacritty/kitty do. NOTE: the
+// Misc-Symbols (2600-26FF), Dingbats (2700-27BF) and similar BMP symbol blocks
+// are "Ambiguous"/"Neutral" width 1 — marking them wide (a common bug) makes
+// ✓ ✗ ★ ➔ • … etc. double-width and shoves every following cell right, which
+// shows as gaps / misaligned columns. Only ranges that are unambiguously wide
+// (or emoji-presentation-by-default) are listed. Sorted, non-overlapping.
+inline constexpr WRange kWideRanges[] = {
     {0x1100, 0x115F},   // Hangul Jamo (leading)
+    {0x231A, 0x231B},   // ⌚⌛ watch/hourglass (emoji, wide)
     {0x2329, 0x232A},   // angle brackets
-    {0x2600, 0x26FF},   // misc symbols (many emoji-presentation)
-    {0x2700, 0x27BF},   // dingbats
+    {0x23E9, 0x23EC},   // ⏩⏬ media (emoji, wide)
+    {0x23F0, 0x23F0}, {0x23F3, 0x23F3},
+    {0x25FD, 0x25FE},   // ◽◾ (emoji, wide)
+    {0x2614, 0x2615},   // ☔☕ umbrella/coffee (emoji, wide)
+    {0x2648, 0x2653},   // zodiac (emoji, wide)
+    {0x267F, 0x267F},   // ♿ wheelchair (emoji, wide)
+    {0x2693, 0x2693},   // ⚓ anchor (emoji, wide)
+    {0x26A1, 0x26A1},   // ⚡ high voltage (emoji, wide)
+    {0x26AA, 0x26AB},   // circles (emoji, wide)
+    {0x26BD, 0x26BE},   // soccer/baseball (emoji, wide)
+    {0x26C4, 0x26C5},   // snowman (emoji, wide)
+    {0x26CE, 0x26CE},   // ophiuchus (emoji, wide)
+    {0x26D4, 0x26D4},   // no entry (emoji, wide)
+    {0x26EA, 0x26EA},   // church (emoji, wide)
+    {0x26F2, 0x26F3},   // fountain/golf (emoji, wide)
+    {0x26F5, 0x26F5}, {0x26FA, 0x26FA}, {0x26FD, 0x26FD},
+    {0x2705, 0x2705},   // ✅ check mark button (emoji, wide)
+    {0x270A, 0x270B},   // raised fist/hand (emoji, wide)
+    {0x2728, 0x2728},   // ✨ sparkles (emoji, wide)
+    {0x274C, 0x274C}, {0x274E, 0x274E},
+    {0x2753, 0x2755}, {0x2757, 0x2757},
+    {0x2795, 0x2797},   // heavy +/-/÷ (emoji, wide)
+    {0x27B0, 0x27B0}, {0x27BF, 0x27BF},
+    {0x2B1B, 0x2B1C}, {0x2B50, 0x2B50}, {0x2B55, 0x2B55},
     {0x2E80, 0x303E},   // CJK radicals, Kangxi, symbols
     {0x3041, 0x33FF},   // Hiragana, Katakana, CJK symbols, etc.
     {0x3400, 0x4DBF},   // CJK Ext-A
@@ -74,7 +102,23 @@ inline constexpr std::array<WRange, 30> kWide = {{
     {0x1FA70, 0x1FAFF}, // symbols & pictographs extended-A
     {0x20000, 0x2FFFD}, // CJK Ext-B..F
     {0x30000, 0x3FFFD}, // CJK Ext-G
-}};
+};
+inline constexpr std::array<WRange, sizeof(kWideRanges) / sizeof(kWideRanges[0])> kWide = [] {
+    std::array<WRange, sizeof(kWideRanges) / sizeof(kWideRanges[0])> a{};
+    for (std::size_t i = 0; i < a.size(); ++i) a[i] = kWideRanges[i];
+    return a;
+}();
+
+// The tables MUST be sorted + non-overlapping for the binary search to be
+// correct; guard that at compile time so a future edit can't silently break it.
+constexpr bool is_sorted_ranges(const WRange *r, std::size_t n) {
+    for (std::size_t i = 1; i < n; ++i)
+        if (r[i].lo <= r[i - 1].hi || r[i].hi < r[i].lo) return false;
+    return true;
+}
+static_assert(is_sorted_ranges(kWide.data(), kWide.size()), "kWide not sorted/disjoint");
+static_assert(is_sorted_ranges(kZeroWidth.data(), kZeroWidth.size()),
+              "kZeroWidth not sorted/disjoint");
 
 // Binary-search a sorted, non-overlapping range table.
 [[nodiscard]] inline bool in_ranges(char32_t cp, const WRange *r, std::size_t n) noexcept {
