@@ -901,7 +901,7 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
             }
             case term::Screen::CursorShape::block:
             default:
-                instances_.push_back(rect_inst(ci.x, ci.y, ci.w, ci.h, ci.r, ci.g, ci.b, 2));
+                instances_.push_back(rect_inst(ci.x, ci.y, ci.w, ci.h, ci.r, ci.g, ci.b, ci.radius));
                 break;
             }
         }
@@ -1001,26 +1001,50 @@ void Renderer::draw_preedit(const term::Screen &screen, PixelSize px) {
     int col = cur.col.get();
     const int row = cur.row.get();
     const float ry = static_cast<float>(row * ch);
+    // Radius scaled to the cell, consistent with the selection region + cursor.
+    const std::uint8_t prad = static_cast<std::uint8_t>(std::clamp(std::min(cw, ch) * 4 / 10, 2, 8));
+    const float uthick = std::max(1.0f, static_cast<float>(ch) / 12.0f);
+    // First pass: how many cells the composition actually occupies (so we can
+    // round only the OUTER corners of the whole run, not each cell).
+    struct Seg { float cx; int w; };
+    std::vector<Seg> segs;
+    {
+        int probe = col;
+        for (char32_t cp : cps) {
+            const bool wide = (cp >= 0x1100 && cp <= 0x115F) || (cp >= 0x2E80 && cp <= 0xA4CF) ||
+                              (cp >= 0xAC00 && cp <= 0xD7A3) || (cp >= 0xF900 && cp <= 0xFAFF) ||
+                              (cp >= 0xFF00 && cp <= 0xFF60) || (cp >= 0x1F300 && cp <= 0x1FAFF);
+            const int w = wide ? 2 : 1;
+            if (probe + w > grid.cols) break;
+            segs.push_back({static_cast<float>(probe * cw), w});
+            probe += w;
+        }
+    }
 
-    for (char32_t cp : cps) {
-        // Best-effort double-width for the common CJK/fullwidth blocks.
-        const bool wide = (cp >= 0x1100 && cp <= 0x115F) ||   // Hangul Jamo
-                          (cp >= 0x2E80 && cp <= 0xA4CF) ||   // CJK, Kana, ...
-                          (cp >= 0xAC00 && cp <= 0xD7A3) ||   // Hangul syllables
-                          (cp >= 0xF900 && cp <= 0xFAFF) ||   // CJK compat
-                          (cp >= 0xFF00 && cp <= 0xFF60) ||   // Fullwidth forms
-                          (cp >= 0x1F300 && cp <= 0x1FAFF);   // emoji
-        const int w = wide ? 2 : 1;
-        if (col + w > grid.cols) break; // don't spill past the right edge
-        const float cx = static_cast<float>(col * cw);
+    for (std::size_t si = 0; si < segs.size(); ++si) {
+        const float cx = segs[si].cx;
+        const int w = segs[si].w;
+        const float bw = static_cast<float>(cw * w);
+        // Outer-corner mask: round the run's left edge on the first cell and its
+        // right edge on the last cell, so the box is a single rounded chip.
+        std::uint8_t bmask = 0, umask = 0;
+        if (si == 0) { bmask |= kCornerTL | kCornerBL; umask |= kCornerBL; }
+        if (si + 1 == segs.size()) { bmask |= kCornerTR | kCornerBR; umask |= kCornerBR; }
         // Background box behind the composing cells.
-        bg.push_back(rect_inst(cx, ry, static_cast<float>(cw * w), static_cast<float>(ch),
-                               boxbg.r, boxbg.g, boxbg.b, 0));
-        // Underline across the full cell width.
-        const float thick = std::max(1.0f, static_cast<float>(ch) / 12.0f);
-        bg.push_back(rect_inst(cx, ry + static_cast<float>(ch) - thick,
-                               static_cast<float>(cw * w), thick, fg.r, fg.g, fg.b, 0));
+        if (bmask == 0)
+            bg.push_back(rect_inst(cx, ry, bw, static_cast<float>(ch), boxbg.r, boxbg.g, boxbg.b, 0));
+        else
+            bg.push_back(rect_round_inst(cx, ry, bw, static_cast<float>(ch), boxbg.r, boxbg.g,
+                                         boxbg.b, prad, bmask));
+        // Underline across the cell width, with rounded caps at the run ends.
+        const float uy = ry + static_cast<float>(ch) - uthick;
+        const std::uint8_t urad = static_cast<std::uint8_t>(std::max(1.0f, uthick));
+        if (umask == 0)
+            bg.push_back(rect_inst(cx, uy, bw, uthick, fg.r, fg.g, fg.b, 0));
+        else
+            bg.push_back(rect_round_inst(cx, uy, bw, uthick, fg.r, fg.g, fg.b, urad, umask));
         // The glyph.
+        const char32_t cp = cps[si];
         if (const GlyphInfo *gi = atlas_.glyph(cp); gi && gi->width && gi->height) {
             const float gx = cx + static_cast<float>(gi->bearing_x);
             const float gy = static_cast<float>(row * ch + ascent - gi->bearing_y);
@@ -1030,7 +1054,6 @@ void Renderer::draw_preedit(const term::Screen &screen, PixelSize px) {
                                       /*is_glyph=*/static_cast<std::uint8_t>(gi->is_color ? 2 : 1),
                                       0, 0, 0});
         }
-        col += w;
     }
 
     // Draw the box+underline layer, then the glyphs, via the normal pipeline.
