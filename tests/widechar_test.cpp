@@ -38,6 +38,18 @@ static void width_table_checks() {
     for (char32_t c : {U'\u6f22', U'\uac00', U'\uff21', U'\U0001F600', U'\U0001F680',
                        U'\u26a1', U'\u2705', U'\u2728', U'\u2b50'})
         ck(w(c) == 2, "wide CJK/emoji width 2");
+    // More scripts + planes (robustness across the whole range):
+    ck(w(0x0000) == 0 && w(0x001B) == 0 && w(0x007F) == 0, "controls width 0");
+    ck(w(0x00AD) == 1, "soft hyphen width 1");
+    ck(w(0x200B) == 0 && w(0x200D) == 0 && w(0x2060) == 0, "zwsp/zwj/wj width 0");
+    ck(w(0x0301) == 0 && w(0x064B) == 0 && w(0x0E31) == 0, "combining marks (latin/arabic/thai) width 0");
+    ck(w(0x1100) == 2 && w(0x11A8) == 0, "hangul jamo lead wide, tail zero");
+    ck(w(0x2E80) == 2 && w(0x3000) == 2, "CJK radicals + ideographic space wide");
+    ck(w(0x1F1E6) == 2, "regional indicator (flag) wide");
+    ck(w(0x1F3FB) == 2, "emoji skin-tone modifier wide");
+    ck(w(0x20000) == 2 && w(0x2FA1D) == 2, "CJK ext-B/compat astral wide");
+    ck(w(0xE0000) == 0 || w(0xE0000) == 1, "tag chars (0-or-1, not garbage)");
+    ck(w(0x0041) == 1 && w(0x05D0) == 1 && w(0x0905) == 1, "latin/hebrew/devanagari base width 1");
 }
 
 int main() {
