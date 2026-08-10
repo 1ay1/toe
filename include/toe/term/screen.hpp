@@ -255,6 +255,13 @@ private:
     [[nodiscard]] std::size_t index(Row r, Col c) const noexcept;
     [[nodiscard]] Cell *cell_ptr(Row r, Col c) noexcept; // ring row pointer for bulk writes
 
+    // Before overwriting a cell, dissolve any double-width PAIR it belongs to:
+    // a wide glyph is a LEAD (width 2) + a SPACER (width 0). Overwriting either
+    // half must blank the other, or an orphan lead/spacer lingers and renders as
+    // a gap or a stale half-glyph. Cheap: touches at most one neighbour, only
+    // when the target is actually part of a pair.
+    void clean_wide_at(Row r, std::int32_t c) noexcept;
+
     // --- primitive operations the Actions decompose into ---
     void put(char32_t cp);
     // Fast bulk write of a printable-ASCII run at the cursor (the flood hot

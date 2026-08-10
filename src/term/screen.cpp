@@ -51,6 +51,22 @@ Cell *Screen::cell_ptr(Row r, Col c) noexcept {
     return ring_.view_row(r.get()) + c.get();
 }
 
+void Screen::clean_wide_at(Row r, std::int32_t c) noexcept {
+    if (c < 0 || c >= size_.cols) return;
+    Cell *row = ring_.view_row(r.get());
+    if (row[c].width == 2) {           // a wide lead: blank its trailing spacer
+        if (c + 1 < size_.cols && row[c + 1].width == 0) {
+            row[c + 1] = blank_cell();
+            ring_.note_used(r.get(), c + 2);
+        }
+    } else if (row[c].width == 0) {    // a spacer: blank its wide lead to the left
+        if (c - 1 >= 0 && row[c - 1].width == 2) {
+            row[c - 1] = blank_cell();
+            ring_.note_used(r.get(), c + 1);
+        }
+    }
+}
+
 Cell &Screen::at(Row r, Col c) {
     assert(r.get() >= 0 && r.get() < size_.rows);
     assert(c.get() >= 0 && c.get() < size_.cols);
@@ -476,10 +492,24 @@ void Screen::put_ascii_run(std::string_view ascii) {
         if (take > 0) {
             stamp(r);
             Cell *base = cell_ptr(cursor_.row, Col{col});
+            // Boundary wide-pair cleanup (the run writes width-1 over [col,
+            // col+take)): if it STARTS on a spacer, blank the orphaned wide lead
+            // just left of it; if the cell just PAST the run is a spacer, blank
+            // it (its lead is being overwritten). Otherwise a prompt redrawing
+            // ASCII over old CJK leaves half-glyph orphans (gaps / stale cells).
+            if (base[0].width == 0 && col > 0) {
+                Cell *lead = cell_ptr(cursor_.row, Col{col - 1});
+                if (lead->width == 2) *lead = blank_cell();
+            }
+            const std::int32_t endc = col + static_cast<std::int32_t>(take);
+            if (endc < size_.cols) {
+                Cell *after = cell_ptr(cursor_.row, Col{endc});
+                if (after->width == 0) *after = blank_cell();
+            }
             for (std::size_t k = 0; k < take; ++k) {
                 base[k] = Cell{static_cast<char32_t>(ascii[i + k]), pen_, 1, cur_link_};
             }
-            ring_.note_used(r, col + static_cast<std::int32_t>(take));
+            ring_.note_used(r, endc + (endc < size_.cols ? 1 : 0));
             last_char_ = static_cast<char32_t>(ascii[i + take - 1]);
             i += take;
             cursor_.col = Col{col + static_cast<std::int32_t>(take)};
@@ -544,6 +574,14 @@ void Screen::put(char32_t cp) {
         }
     }
 
+    // Dissolve any wide pair the target cell(s) belong to before overwriting,
+    // so a half-overwritten CJK/emoji never leaves an orphan (gap / stale glyph).
+    // A wide write occupies two cells, so clean both.
+    {
+        const std::int32_t c0 = cursor_.col.get();
+        clean_wide_at(cursor_.row, c0);
+        if (w == 2) clean_wide_at(cursor_.row, c0 + 1);
+    }
     at(cursor_.row, cursor_.col) = Cell{cp, pen_, static_cast<std::uint8_t>(w), cur_link_};
     last_char_ = cp; // remember for REP (CSI Ps b)
     if (w == 2) {
