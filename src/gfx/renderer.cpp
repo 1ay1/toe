@@ -864,13 +864,17 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
     // IME composition string, overlaid at the cursor on top of everything.
     if (!screen.preedit().empty()) draw_preedit(screen, px);
 
-    // Report damage. Images/preedit/palette changes are hard to bound tightly,
-    // so those force full-surface damage; a pure text change damages only the
-    // rebuilt rows (spanning the full width).
-    if (has_any_image || !screen.preedit().empty() || dirty_bot < 0) {
-        return DamageRect::full(px);
-    }
-    return DamageRect{0, dirty_top, px.w, dirty_bot - dirty_top};
+    // Report damage. We CLEAR + redraw the ENTIRE frame into the back buffer
+    // every dirty frame, so the whole surface is authoritative. Reporting only
+    // the rebuilt-row sub-rect made the compositor keep the rest from its last
+    // composite of THIS surface — which is stale for any row whose content
+    // changed without its render key changing (the "some rows get missed" bug).
+    // A full-surface damage is correct and, since the draw is already full,
+    // effectively free. (The old dirty_top/dirty_bot bounds are kept computed
+    // above for potential future buffer-age-aware partial damage.)
+    (void)dirty_top;
+    (void)dirty_bot;
+    return DamageRect::full(px);
 }
 
 // Draw the IME composition string inline at the cursor: a background box, the
