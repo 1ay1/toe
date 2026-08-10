@@ -974,6 +974,33 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
         }
     }
 
+    // Scrollbar: a thin rounded thumb on the right edge indicating the viewport
+    // position within history. Shown only when there IS history and only while
+    // scrolled up OR briefly — here we show it whenever scrolled away from the
+    // bottom (the common "where am I" cue) plus always when history exists but
+    // keep it subtle. Overlay instance, appended every frame like the caret.
+    {
+        const std::int32_t hist = screen.history_rows();
+        const std::int32_t off = screen.scroll_offset();
+        if (hist > 0) {
+            const float total = static_cast<float>(hist + grid.rows); // scrollable extent
+            const float view = static_cast<float>(grid.rows);
+            const float track_h = static_cast<float>(px.h);
+            const float thumb_h = std::max(24.0f, track_h * (view / total));
+            // off=0 is the BOTTOM (live); off=hist is the top. Map to y.
+            const float frac = static_cast<float>(hist - off) / static_cast<float>(hist);
+            const float thumb_y = frac * (track_h - thumb_h);
+            const float w = 6.0f;
+            const float x = static_cast<float>(px.w) - w - 2.0f;
+            // Brighter while actively scrolled, faint at the bottom.
+            const Rgb fg = palette_.default_fg();
+            const std::uint8_t a = off != 0 ? 150 : 70;
+            instances_.push_back(
+                rect_round_inst(x, thumb_y + 2.0f, w, thumb_h - 4.0f, fg.r, fg.g, fg.b,
+                                static_cast<std::uint8_t>(w / 2.0f), 0, a));
+        }
+    }
+
     const bool has_images = !screen.graphics().placements().empty();
     // Placeholder cells reference transmitted images that may have no placement,
     // so draw them whenever the graphics store holds any image.

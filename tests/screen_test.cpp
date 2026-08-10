@@ -726,6 +726,20 @@ int main() {
         expect(s.hover_link() == 0, "no link hovered off the link run");
     }
 
+    // Bare-URL auto-detection (no OSC 8): link_at scans the row for a URL.
+    {
+        term::Screen s{Extent{40, 2}};
+        feed(s, "see https://ex.com/p?q=1 now.");
+        // Cursor anywhere in the URL returns the whole URL.
+        expect(s.link_at(0, 4) == "https://ex.com/p?q=1", "bare URL detected at its start");
+        expect(s.link_at(0, 15) == "https://ex.com/p?q=1", "bare URL detected mid-run");
+        // Trailing sentence punctuation is trimmed.
+        expect(s.link_at(0, 0).empty(), "plain word 'see' is not a URL");
+        // A non-scheme word isn't a URL.
+        feed(s, "\r\njust text here");
+        expect(s.link_at(1, 2).empty(), "non-URL text returns empty");
+    }
+
     // DEC 2026 synchronized output: while active, the reported damage counter
     // is frozen so the host doesn't draw a partial frame; it jumps once when
     // the batch ends, presenting the whole update atomically.

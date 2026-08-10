@@ -679,8 +679,82 @@ std::string_view Screen::link_at(std::int32_t vrow, std::int32_t col) const noex
     if (vrow < 0 || vrow >= size_.rows || col < 0 || col >= size_.cols) return {};
     const auto cells = row(Row{vrow});
     const std::uint16_t id = cells[static_cast<std::size_t>(col)].link;
-    if (id == 0 || id - 1u >= links_.size()) return {};
-    return links_[id - 1u];
+    if (id != 0 && id - 1u < links_.size()) return links_[id - 1u];
+    // No explicit OSC 8 link: fall back to auto-detecting a bare URL under the
+    // cursor by scanning the row's text. The result is cached in detected_url_
+    // so the returned view stays valid until the next link_at call.
+    return detect_url_at(vrow, col);
+}
+
+namespace {
+// A codepoint that can appear in a URL body (RFC 3986 unreserved + sub-delims +
+// path/query punctuation). Deliberately excludes whitespace and a few trailing
+// punctuation chars handled separately.
+bool url_body_cp(char32_t c) {
+    if ((c >= U'a' && c <= U'z') || (c >= U'A' && c <= U'Z') || (c >= U'0' && c <= U'9'))
+        return true;
+    switch (c) {
+    case U'-': case U'.': case U'_': case U'~': case U':': case U'/': case U'?':
+    case U'#': case U'[': case U']': case U'@': case U'!': case U'$': case U'&':
+    case U'\'': case U'(': case U')': case U'*': case U'+': case U',': case U';':
+    case U'=': case U'%': case U'|':
+        return true;
+    default:
+        return false;
+    }
+}
+} // namespace
+
+std::string_view Screen::detect_url_at(std::int32_t vrow, std::int32_t col) const noexcept {
+    const auto cells = row(Row{vrow});
+    if (!url_body_cp(cells[static_cast<std::size_t>(col)].cp)) return {};
+    // Expand to the maximal URL-char run on this row.
+    std::int32_t lo = col, hi = col;
+    while (lo > 0 && url_body_cp(cells[static_cast<std::size_t>(lo - 1)].cp)) --lo;
+    while (hi + 1 < size_.cols && url_body_cp(cells[static_cast<std::size_t>(hi + 1)].cp)) ++hi;
+
+    // Build the run text.
+    std::string run;
+    run.reserve(static_cast<std::size_t>(hi - lo + 1));
+    for (std::int32_t c = lo; c <= hi; ++c) {
+        const char32_t cp = cells[static_cast<std::size_t>(c)].cp;
+        if (cp == 0) break;
+        // Encode back to UTF-8 (URLs are ASCII in practice, but be safe).
+        if (cp < 0x80) run.push_back(static_cast<char>(cp));
+        else if (cp < 0x800) {
+            run.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+            run.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else {
+            run.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+            run.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            run.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        }
+    }
+
+    // Require a known scheme prefix; find it within the run and clip to it (the
+    // run may start before the scheme if surrounded by url_body punctuation).
+    static constexpr std::string_view schemes[] = {"https://", "http://", "ftp://",
+                                                    "file://", "mailto:"};
+    std::size_t best = std::string::npos;
+    for (auto sv : schemes) {
+        const std::size_t p = run.find(sv);
+        if (p != std::string::npos && p < best) best = p;
+    }
+    if (best == std::string::npos) return {};
+    std::string_view url{run};
+    url.remove_prefix(best);
+    // Trim trailing punctuation that's usually sentence/markup, not URL.
+    while (!url.empty()) {
+        const char b = url.back();
+        if (b == '.' || b == ',' || b == ';' || b == ':' || b == ')' || b == ']' ||
+            b == '\'' || b == '!' || b == '?')
+            url.remove_suffix(1);
+        else
+            break;
+    }
+    if (url.size() < 8) return {}; // shorter than "http://x" isn't worth it
+    detected_url_.assign(url);
+    return detected_url_;
 }
 
 bool Screen::set_hover(std::int32_t vrow, std::int32_t col) noexcept {

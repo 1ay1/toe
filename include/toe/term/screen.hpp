@@ -569,6 +569,12 @@ private:
     [[nodiscard]] std::pair<AbsPos, AbsPos> word_bounds_at(AbsPos p) const noexcept;
     // The full logical (soft-wrap-joined) line span containing absolute row.
     [[nodiscard]] std::pair<AbsPos, AbsPos> line_bounds_at(std::int64_t abs_row) const noexcept;
+    // Auto-detect a bare URL (http/https/ftp/file/mailto) under a viewport
+    // cell, for click-to-open when there's no OSC 8 link. Result cached in
+    // detected_url_ (the returned view is valid until the next link_at call).
+    [[nodiscard]] std::string_view detect_url_at(std::int32_t vrow,
+                                                 std::int32_t col) const noexcept;
+    mutable std::string detected_url_{};
     // Fetch the cell at an absolute row/col (history or live), or nullptr.
     [[nodiscard]] const Cell *cell_at_abs(std::int64_t abs_row, std::int32_t col) const noexcept;
 
