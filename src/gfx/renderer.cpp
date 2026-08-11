@@ -368,6 +368,14 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
             Rgb selbg = selection_bg_;
             if (selection_invert_) {
                 selbg = palette_.resolve(reverse ? cell.pen.bg : cell.pen.fg, !reverse);
+                // If the cell's fg (now the highlight block) barely differs from
+                // the terminal background — a dark comment on a dark bg, a small
+                // word in a dim colour — the selection would be INVISIBLE. Lift
+                // it toward the configured selection colour so every selected
+                // word shows a clear block.
+                const Rgb dbg = palette_.default_bg();
+                const float lb = luma(selbg), ld = luma(dbg);
+                if (std::abs(lb - ld) < 0.12f) selbg = selection_bg_;
             }
             if (corners == 0 || rad == 0) {
                 rc.bg.push_back(rect_inst(static_cast<float>(c * cw), ry, static_cast<float>(cw),
@@ -423,9 +431,22 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
             if (searched) return contrast_fg(fg, match_bg);
             if (!selected) return fg;
             // Reverse-video: the glyph takes the cell's own BACKGROUND colour so
-            // it sits legibly on the inverted (fg-coloured) highlight.
-            if (selection_invert_)
-                return palette_.resolve(reverse ? cell.pen.fg : cell.pen.bg, reverse);
+            // it sits legibly on the inverted (fg-coloured) highlight. But if the
+            // cell's fg≈bg (a coloured token, an already-reversed cell) the
+            // inverted glyph would vanish — so contrast-guarantee it against the
+            // inverted highlight bg (the cell's fg), flipping to black/white when
+            // needed. This is what makes EVERY selected word visible.
+            if (selection_invert_) {
+                Rgb inv_bg = palette_.resolve(reverse ? cell.pen.bg : cell.pen.fg, !reverse);
+                Rgb inv_fg = palette_.resolve(reverse ? cell.pen.fg : cell.pen.bg, reverse);
+                // Mirror the bg block's fallback: when the inverted block would
+                // be invisible against the terminal bg, the block was lifted to
+                // selection_bg_, so contrast the glyph against THAT instead.
+                const Rgb dbg = palette_.default_bg();
+                if (std::abs(luma(inv_bg) - luma(dbg)) < 0.12f)
+                    return contrast_fg(fg, selection_bg_);
+                return contrast_fg(inv_fg, inv_bg);
+            }
             if (selection_fg_) return *selection_fg_;
             return contrast_fg(fg, selection_bg_);
         };
