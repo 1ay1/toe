@@ -1014,11 +1014,14 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
             const float segw = railw - 2.0f;
             const float segx = x + 1.0f;
             const std::uint8_t segr = static_cast<std::uint8_t>(segw / 2.0f);
+            const std::int64_t foc0 = screen.focused_span_start();
+            const std::int64_t foc1 = screen.focused_span_end();
             for (const auto &m : marks) {
                 const float y0 = row_to_y(m.start);
                 const float y1 = std::max(y0 + 4.0f, row_to_y(m.end));
                 const bool hov = screen.rail_hover_row() >= m.start &&
                                  screen.rail_hover_row() < m.end;
+                const bool focused = foc0 >= 0 && m.start < foc1 && m.end > foc0;
                 Rgb c;
                 std::uint8_t a = 210;
                 switch (m.status) {
@@ -1030,6 +1033,14 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
                     a = 235;
                     break;
                 }
+                // Focused (jumped-to) command: a bright white outline halo so
+                // it's unmistakable which command you're viewing.
+                if (focused) {
+                    const Rgb w = rgb(245, 247, 255);
+                    instances_.push_back(rect_round_inst(segx - 3.0f, y0 - 2.0f, segw + 6.0f,
+                                                         (y1 - y0) + 4.0f, w.r, w.g, w.b,
+                                                         segr + 3, 0, 200));
+                }
                 // Hovered = full alpha + slightly wider so it reads as the
                 // command under the pointer. A gentle halo only on hover.
                 if (hov) {
@@ -1037,11 +1048,11 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
                                                          (y1 - y0) + 2.0f, c.r, c.g, c.b,
                                                          segr + 2, 0, 90));
                 }
-                const float sw = hov ? segw + 3.0f : segw;
-                const float sx = hov ? segx - 1.5f : segx;
-                if (hov) a = 255;
+                const float sw = (hov || focused) ? segw + 3.0f : segw;
+                const float sx = (hov || focused) ? segx - 1.5f : segx;
+                if (hov || focused) a = 255;
                 instances_.push_back(rect_round_inst(sx, y0, sw, y1 - y0, c.r, c.g, c.b,
-                                                     hov ? segr + 1 : segr, 0, a));
+                                                     (hov || focused) ? segr + 1 : segr, 0, a));
             }
             // Viewport indicator: a BRACKET framing the current view — thin caps
             // at the top & bottom of the viewport plus faint side rails — so it
@@ -1068,6 +1079,26 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
                 instances_.push_back(rect_inst(capx, ty, 1.5f, thumb_h, fg.r, fg.g, fg.b, 0, side));
                 instances_.push_back(rect_inst(capx + capw - 1.5f, ty, 1.5f, thumb_h,
                                                fg.r, fg.g, fg.b, 0, side));
+            }
+        }
+    }
+
+    // Focused-block gutter: when the command you JUMPED to (via the flyout,
+    // rail click, or keyboard block-nav) is on-screen, paint a bright bar down
+    // the left edge over its rows — an unmistakable "you are here" marker tying
+    // the click to the terminal. viewport_to_abs tracks it as you scroll.
+    {
+        const std::int64_t f0 = screen.focused_span_start();
+        const std::int64_t f1 = screen.focused_span_end();
+        if (f0 >= 0 && f1 > f0) {
+            const Rgb acc = rgb(120, 170, 255);
+            for (int r = 0; r < grid.rows; ++r) {
+                const std::int64_t ar = screen.viewport_to_abs(r);
+                if (ar < f0 || ar >= f1) continue;
+                const float ry = static_cast<float>(r * ch);
+                instances_.push_back(rect_round_inst(1.0f, ry + 1.0f, 3.0f,
+                                                     static_cast<float>(ch) - 2.0f,
+                                                     acc.r, acc.g, acc.b, 1, 0, 235));
             }
         }
     }

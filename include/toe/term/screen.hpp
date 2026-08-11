@@ -70,6 +70,7 @@ public:
         std::int64_t start = 0;
         std::int64_t end = 0;
         MarkStatus status = MarkStatus::ok;
+        bool focused = false; // the command the block-nav / flyout jumped to
         constexpr bool operator==(const ScrollMark &) const = default;
     };
     void set_scroll_marks(std::vector<ScrollMark> marks) {
@@ -78,6 +79,16 @@ public:
     [[nodiscard]] const std::vector<ScrollMark> &scroll_marks() const noexcept {
         return scroll_marks_;
     }
+    // The focused command block's absolute-row span [start,end) (from a jump),
+    // so the renderer can draw a gutter bar on those rows marking "you are
+    // here". {-1,-1} = no focus. The Model sets this alongside the marks.
+    void set_focused_span(std::int64_t start, std::int64_t end) noexcept {
+        if (focused_start_ != start || focused_end_ != end) {
+            focused_start_ = start; focused_end_ = end; touch();
+        }
+    }
+    [[nodiscard]] std::int64_t focused_span_start() const noexcept { return focused_start_; }
+    [[nodiscard]] std::int64_t focused_span_end() const noexcept { return focused_end_; }
     // The absolute row the pointer is hovering on the rail (-1 = none). The
     // renderer brightens the segment under it. Host sets it from mouse-move.
     void set_rail_hover(std::int64_t abs_row) noexcept {
@@ -609,6 +620,7 @@ private:
     std::size_t max_history_{10000};                // ring-buffer cap
     std::vector<ScrollMark> scroll_marks_{};        // command minimap segments
     std::int64_t rail_hover_row_{-1};               // rail hover row (-1 = none)
+    std::int64_t focused_start_{-1}, focused_end_{-1}; // jumped-to block span
 
     // Rewrap all content (history + live) from old_cols to the new width when a
     // resize changes the column count. Preserves logical lines + the cursor.

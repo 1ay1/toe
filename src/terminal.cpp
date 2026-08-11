@@ -541,7 +541,15 @@ bool Session::jump_to_command(std::uint64_t id) {
                                    : b.input_row >= 0  ? b.input_row
                                                        : b.output_row;
             if (row < 0) return false;
-            impl_->model.screen.scroll_to_abs_row(row, 1);
+            // Land the prompt at the viewport top (margin 0), same as the
+            // keyboard block-nav, and MARK IT FOCUSED so the renderer can show
+            // which command you jumped to (rail badge + gutter bar).
+            const std::int64_t end = b.end_row >= 0 ? b.end_row
+                                   : b.output_row >= 0 ? b.output_row + 1
+                                                       : row + 1;
+            impl_->model.screen.scroll_to_abs_row(row, /*margin=*/0);
+            impl_->model.screen.set_focused_span(row, end);
+            impl_->focused_block = id;
             return true;
         }
     }
@@ -565,6 +573,8 @@ bool Session::jump_to_prev_command() {
     }
     if (!target) return false;
     scr.scroll_to_abs_row(target->prompt_row, /*margin=*/0);
+    scr.set_focused_span(target->prompt_row,
+                         target->end_row >= 0 ? target->end_row : target->prompt_row + 1);
     impl_->focused_block = target->id;
     return true;
 }
@@ -580,10 +590,13 @@ bool Session::jump_to_next_command() {
     }
     if (!target) { // past the newest block -> return to the live view
         scr.scroll_to_bottom();
+        scr.set_focused_span(-1, -1);
         impl_->focused_block = 0;
         return scr.scroll_offset() == 0;
     }
     scr.scroll_to_abs_row(target->prompt_row, /*margin=*/0);
+    scr.set_focused_span(target->prompt_row,
+                         target->end_row >= 0 ? target->end_row : target->prompt_row + 1);
     impl_->focused_block = target->id;
     return true;
 }
@@ -596,6 +609,8 @@ bool Session::jump_to_last_failed() {
     }
     if (!target) return false;
     impl_->model.screen.scroll_to_abs_row(target->prompt_row, /*margin=*/0);
+    impl_->model.screen.set_focused_span(
+        target->prompt_row, target->end_row >= 0 ? target->end_row : target->prompt_row + 1);
     impl_->focused_block = target->id;
     return true;
 }
