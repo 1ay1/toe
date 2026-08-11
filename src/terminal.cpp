@@ -508,6 +508,24 @@ void Session::rail_hover(int x, int y, PixelSize px) {
     scr.set_rail_hover(row);
 }
 
+bool Session::rail_scrub(int x, int y, PixelSize px) {
+    // Live scrollbar drag: unlike rail_click (which SNAPS to the command block
+    // under a click), scrub continuously scrolls so the pointer's rail row sits
+    // at the top of the viewport. Y may run past the rail vertically while
+    // dragging, so we DON'T gate on on_rail(x) here — the host arms scrubbing on
+    // a rail mouse-down and drives it from every subsequent move. Also updates
+    // the hover row so the command flyout tracks the drag.
+    auto &scr = impl_->model.screen;
+    if (px.h <= 0) return false;
+    const std::int64_t total = scr.total_rows();
+    if (total <= 0) return false;
+    const std::int64_t row =
+        std::clamp<std::int64_t>(static_cast<std::int64_t>(y) * total / px.h, 0, total - 1);
+    scr.set_rail_hover(row);
+    scr.scroll_to_abs_row(row, /*margin=*/0);
+    return true;
+}
+
 std::int64_t Session::rail_hover_row() const noexcept {
     return impl_->model.screen.rail_hover_row();
 }

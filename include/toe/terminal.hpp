@@ -289,6 +289,11 @@ public:
     // Update the rail hover highlight from a pointer at (x,y); clears it when
     // the pointer isn't on the rail. Cheap; call from mouse-move.
     void rail_hover(int x, int y, PixelSize px);
+    // Live scrollbar drag: scroll so the pointer's rail row is at the viewport
+    // top (a smooth scrub, distinct from rail_click's snap-to-command). The
+    // host arms this on a rail mouse-down and calls it on each drag move (y may
+    // leave the rail vertically). Returns true if it scrolled.
+    bool rail_scrub(int x, int y, PixelSize px);
 
     // --- command-block navigation (OSC 133) --------------------------------
     // Jump the scroll view to a shell command's prompt. These power a
