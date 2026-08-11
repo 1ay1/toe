@@ -230,6 +230,25 @@ void Session::set_cursor_animation(bool enabled, int time_ms, bool trail) noexce
 }
 
 void Session::set_selection_color(Rgb c) noexcept {
+    // "Looks good no matter what": some of the 602 themes ship a selection
+    // colour nearly identical to their background, which would make a selection
+    // invisible. If the requested colour doesn't stand off the default bg
+    // enough, nudge it toward a visible tint (lighten on dark themes, darken on
+    // light ones) so a selection is ALWAYS distinguishable.
+    const Rgb bg = impl_->renderer.default_bg();
+    auto lum = [](Rgb x) {
+        return (0.2126f * x.r + 0.7152f * x.g + 0.0722f * x.b) / 255.0f;
+    };
+    const float d = std::abs(lum(c) - lum(bg));
+    if (d < 0.10f) {
+        const bool dark = lum(bg) < 0.5f;
+        auto mix = [&](std::uint8_t v, std::uint8_t t) {
+            return static_cast<std::uint8_t>(v + (static_cast<int>(t) - v) * 45 / 100);
+        };
+        // Blend 45% toward light-slate (dark theme) or a deep slate (light).
+        c = dark ? rgb(mix(c.r, 120), mix(c.g, 145), mix(c.b, 190))
+                 : rgb(mix(c.r, 60), mix(c.g, 78), mix(c.b, 120));
+    }
     impl_->selection_bg_ = c;
     impl_->renderer.set_selection_color(c);
 }

@@ -44,16 +44,20 @@ inline float luma(Rgb c) noexcept {
 }
 
 // Guarantee selected text stays readable: keep the cell's own foreground when
-// it already contrasts with the selection background, otherwise flip it to
+// it CLEARLY contrasts with the selection background, otherwise flip it to
 // black or white — whichever the selection bg is farther from. This is what
 // makes selection "look good ALWAYS", independent of the theme or of colours
 // the running program picks for individual cells.
 inline Rgb contrast_fg(Rgb fg, Rgb sel_bg) noexcept {
     const float lf = luma(fg), lb = luma(sel_bg);
-    // Contrast ratio numerator/denominator on luminance (＋0.05 like WCAG).
+    // WCAG contrast ratio on luminance (+0.05). Require a solid ratio so text
+    // never looks muddy on the highlight — 3.0:1 is the AA large-text floor and
+    // a good perceptual threshold for a monospaced grid. Below it we don't try
+    // to nudge the cell colour; we go straight to pure black/white (whichever
+    // is farther from the selection bg) for MAXIMUM legibility.
     const float hi = std::max(lf, lb) + 0.05f, lo = std::min(lf, lb) + 0.05f;
-    if (hi / lo >= 2.2f) return fg; // already legible — leave the cell's colour
-    return lb > 0.5f ? rgb(0, 0, 0) : rgb(255, 255, 255);
+    if (hi / lo >= 3.0f) return fg; // already clearly legible — keep the colour
+    return lb > 0.45f ? rgb(16, 18, 24) : rgb(244, 246, 250);
 }
 
 // Procedural block-element and box-drawing rendering. The Unicode block
@@ -352,9 +356,12 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
             if (!up && !rt) corners |= kCornerTR;
             if (!dn && !rt) corners |= kCornerBR;
             if (!dn && !lf) corners |= kCornerBL;
-            // Radius scaled to the cell but capped so thin cells stay sane.
+            // Radius scaled to the cell so the selection reads as a smooth,
+            // rounded region at ANY font size (a fixed small cap looked like a
+            // hard rectangle on large fonts). ~28% of the smaller cell extent,
+            // clamped to a sane pixel range — matches the rounded block cursor.
             const std::uint8_t rad = static_cast<std::uint8_t>(
-                std::min({cw, ch, 8}) * 4 / 10); // ~40% of the smaller extent
+                std::clamp(static_cast<int>(std::min(cw, ch) * 0.28f), 2, 10));
             if (corners == 0 || rad == 0) {
                 rc.bg.push_back(rect_inst(static_cast<float>(c * cw), ry, static_cast<float>(cw),
                                           static_cast<float>(ch), selection_bg_.r, selection_bg_.g,
@@ -380,7 +387,8 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
             if (!up && !rt) corners |= kCornerTR;
             if (!dn && !rt) corners |= kCornerBR;
             if (!dn && !lf) corners |= kCornerBL;
-            const std::uint8_t rad = static_cast<std::uint8_t>(std::min({cw, ch, 8}) * 4 / 10);
+            const std::uint8_t rad = static_cast<std::uint8_t>(
+                std::clamp(static_cast<int>(std::min(cw, ch) * 0.28f), 2, 10));
             if (corners == 0 || rad == 0) {
                 rc.bg.push_back(rect_inst(static_cast<float>(c * cw), ry, static_cast<float>(cw),
                                           static_cast<float>(ch), match_bg.r, match_bg.g,
