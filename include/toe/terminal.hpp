@@ -46,6 +46,11 @@ struct CommandView {
     std::int64_t duration_ms{0};    // C→D wall-clock, 0 if unknown
     std::int64_t output_lines{0};   // line count of `output`
     bool finished{false};           // has a D mark (exit code known)
+    // Absolute-row span of the block (for host UI: the command minimap flyout,
+    // click-to-jump). -1 when unknown. `prompt_row` is where the command line
+    // sits; `end_row` is exclusive (the live bottom while still running).
+    std::int64_t prompt_row{-1};
+    std::int64_t end_row{-1};
 
     [[nodiscard]] bool succeeded() const noexcept { return exit_code == 0; }
 };
@@ -295,6 +300,14 @@ public:
     bool jump_to_next_command();  // toward newer commands (down); at the newest, go live
     bool jump_to_last_failed();   // most recent non-zero-exit command
     [[nodiscard]] std::uint64_t focused_block() const noexcept; // 0 = none
+    // The absolute row the pointer is hovering on the rail (-1 = not on rail).
+    // Set by rail_hover(); a host reads it to drive a command-list flyout.
+    [[nodiscard]] std::int64_t rail_hover_row() const noexcept;
+    // Total rows in the buffer (history + live) — the rail's coordinate space.
+    [[nodiscard]] std::int64_t total_rows() const noexcept;
+    // Jump the view so the command block `id`'s prompt sits near the top.
+    // Returns true if the block exists. Powers flyout click-to-jump.
+    bool jump_to_command(std::uint64_t id);
 
     // --- selection ---------------------------------------------------------
     // Begin/extend a selection at a VISIBLE cell (viewport row/col). mode: 0
