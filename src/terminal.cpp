@@ -85,6 +85,7 @@ struct Session::Impl {
     int font_px_ = 0;
     Config::CursorAnim cursor_anim_{}; // retained so font rebuilds keep the setting
     Rgb selection_bg_{rgb(66, 84, 112)}; // retained selection colour
+    bool selection_invert_ = false;      // retained reverse-video selection flag
     int cursor_blink_ms_ = 530;          // cursor blink half-period (0 = steady)
     Behavior behavior_{};                // scroll/selection host policy
     int padding_ = 0;                    // window padding, retained across rebuilds
@@ -253,6 +254,11 @@ void Session::set_selection_color(Rgb c) noexcept {
     impl_->renderer.set_selection_color(c);
 }
 
+void Session::set_selection_invert(bool on) noexcept {
+    impl_->selection_invert_ = on;
+    impl_->renderer.set_selection_invert(on);
+}
+
 void Session::set_word_separators(std::string_view utf8) {
     impl_->model.screen.set_word_separators_extra(decode_word_seps(utf8));
 }
@@ -296,6 +302,7 @@ bool Session::set_font_pixel_size(int px, PixelSize surface_px) {
     impl_->renderer.set_cursor_animation(impl_->cursor_anim_.enabled, impl_->cursor_anim_.time_ms,
                                          impl_->cursor_anim_.trail);
     impl_->renderer.set_selection_color(impl_->selection_bg_);
+    impl_->renderer.set_selection_invert(impl_->selection_invert_);
     impl_->renderer.set_padding(impl_->padding_);
     impl_->renderer.set_opacity(impl_->opacity_);
     impl_->cell_w = cw;
@@ -353,6 +360,7 @@ bool Session::set_font(std::string_view family_or_file, PixelSize surface_px) {
     impl_->renderer.set_cursor_animation(impl_->cursor_anim_.enabled, impl_->cursor_anim_.time_ms,
                                          impl_->cursor_anim_.trail);
     impl_->renderer.set_selection_color(impl_->selection_bg_);
+    impl_->renderer.set_selection_invert(impl_->selection_invert_);
     impl_->renderer.set_padding(impl_->padding_);
     impl_->renderer.set_opacity(impl_->opacity_);
     impl_->cell_w = cw;
@@ -411,6 +419,7 @@ bool Session::set_ligatures(bool on, PixelSize surface_px) {
     impl_->renderer.set_cursor_animation(impl_->cursor_anim_.enabled, impl_->cursor_anim_.time_ms,
                                          impl_->cursor_anim_.trail);
     impl_->renderer.set_selection_color(impl_->selection_bg_);
+    impl_->renderer.set_selection_invert(impl_->selection_invert_);
     impl_->renderer.set_padding(impl_->padding_);
     impl_->renderer.set_opacity(impl_->opacity_);
     impl_->cell_w = cw;
@@ -986,6 +995,7 @@ Result<Terminal> Terminal::create(const Config &cfg, PixelSize px) {
     impl->font_px_ = cfg.font_pixel_size;
     impl->cursor_anim_ = cfg.cursor_anim;
     impl->selection_bg_ = cfg.selection_bg;
+    impl->selection_invert_ = cfg.selection_invert;
     impl->cursor_blink_ms_ = cfg.cursor_blink_ms;
     impl->behavior_ = {cfg.wheel_lines, cfg.scroll_on_output, cfg.scroll_on_keystroke,
                        cfg.copy_on_select};
@@ -1006,6 +1016,7 @@ Result<Terminal> Terminal::create(const Config &cfg, PixelSize px) {
     impl->renderer.set_cursor_animation(cfg.cursor_anim.enabled, cfg.cursor_anim.time_ms,
                                         cfg.cursor_anim.trail);
     impl->renderer.set_selection_color(cfg.selection_bg);
+    impl->renderer.set_selection_invert(cfg.selection_invert);
     if (!cfg.word_separators.empty())
         impl->model.screen.set_word_separators_extra(decode_word_seps(cfg.word_separators));
     // Query replies (DA1/DSR/…) no longer need a wired sink: the pure reducer

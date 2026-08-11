@@ -83,6 +83,9 @@ struct Config {
     Rgb default_fg = rgb(220, 220, 220);
     Rgb default_bg = rgb(23, 23, 28);
     Rgb selection_bg = rgb(66, 84, 112); // selection highlight colour
+    // Reverse-video selection: swap each selected cell's fg/bg instead of a
+    // coloured highlight bg (the classic terminal look). Off = coloured bg.
+    bool selection_invert = false;
     // Cursor blink half-period in ms; 0 = steady (no blink). Host policy, but
     // the engine's run loop reads it to pace the blink wave.
     int cursor_blink_ms = 530;
@@ -179,6 +182,9 @@ public:
     void set_cursor_animation(bool enabled, int time_ms = 55, bool trail = true) noexcept;
     // Live-set the selection highlight colour.
     void set_selection_color(Rgb c) noexcept;
+    // Reverse-video selection: swap each selected cell's fg/bg (classic terminal
+    // look) instead of a coloured highlight. Live-toggle; rebuilds the cache.
+    void set_selection_invert(bool on) noexcept;
     // Live-set extra word-joining codepoints (UTF-8) for double-click select.
     void set_word_separators(std::string_view utf8);
     // Cursor blink half-period (ms); 0 = steady. Read by the host run loop to

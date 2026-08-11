@@ -362,14 +362,21 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
             // clamped to a sane pixel range — matches the rounded block cursor.
             const std::uint8_t rad = static_cast<std::uint8_t>(
                 std::clamp(static_cast<int>(std::min(cw, ch) * 0.28f), 2, 10));
+            // Reverse-video selection: the highlight bg is the cell's OWN
+            // foreground colour (so the text, drawn in the cell's bg below,
+            // reads as inverted). Otherwise the configured selection colour.
+            Rgb selbg = selection_bg_;
+            if (selection_invert_) {
+                selbg = palette_.resolve(reverse ? cell.pen.bg : cell.pen.fg, !reverse);
+            }
             if (corners == 0 || rad == 0) {
                 rc.bg.push_back(rect_inst(static_cast<float>(c * cw), ry, static_cast<float>(cw),
-                                          static_cast<float>(ch), selection_bg_.r, selection_bg_.g,
-                                          selection_bg_.b, /*radius=*/0));
+                                          static_cast<float>(ch), selbg.r, selbg.g,
+                                          selbg.b, /*radius=*/0));
             } else {
                 rc.bg.push_back(rect_round_inst(
                     static_cast<float>(c * cw), ry, static_cast<float>(cw), static_cast<float>(ch),
-                    selection_bg_.r, selection_bg_.g, selection_bg_.b, rad, corners));
+                    selbg.r, selbg.g, selbg.b, rad, corners));
             }
         } else if (searched) {
             // Search-match highlight: same rounded-outer-corner treatment as the
@@ -415,6 +422,10 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
         const auto sel_adjust = [&](Rgb fg) -> Rgb {
             if (searched) return contrast_fg(fg, match_bg);
             if (!selected) return fg;
+            // Reverse-video: the glyph takes the cell's own BACKGROUND colour so
+            // it sits legibly on the inverted (fg-coloured) highlight.
+            if (selection_invert_)
+                return palette_.resolve(reverse ? cell.pen.fg : cell.pen.bg, reverse);
             if (selection_fg_) return *selection_fg_;
             return contrast_fg(fg, selection_bg_);
         };

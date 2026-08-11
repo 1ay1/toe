@@ -225,6 +225,7 @@ private:
     // renderer keeps each cell's own fg but GUARANTEES it stays readable
     // against selection_bg_ by flipping low-contrast text to black/white.
     std::optional<Rgb> selection_fg_{};
+    bool selection_invert_{false};                // reverse-video selection (swap fg/bg)
     std::int64_t bell_until_us_{0};               // visual-bell flash end (us), 0 = idle
     static constexpr std::int64_t kBellFlashUs = 150000; // ~150ms fade
     int pad_{0};                                  // inner window padding (px per edge)
@@ -258,6 +259,15 @@ public:
         selection_fg_ = c;
         for (auto &rc : rows_) rc.valid = false;
     }
+    // Reverse-video selection: instead of a coloured highlight bg, SWAP each
+    // selected cell's fg/bg (the classic terminal look). Overrides the
+    // selection_bg / selection_fg colours while on. Rebuilds the cache.
+    void set_selection_invert(bool on) noexcept {
+        if (selection_invert_ == on) return;
+        selection_invert_ = on;
+        for (auto &rc : rows_) rc.valid = false;
+    }
+    [[nodiscard]] bool selection_invert() const noexcept { return selection_invert_; }
     // Search-match highlight colours (all matches / the current match).
     void set_search_colors(Rgb all, Rgb current) noexcept {
         search_bg_ = all;
