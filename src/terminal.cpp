@@ -1019,6 +1019,9 @@ Result<Terminal> Terminal::create(const Config &cfg, PixelSize px) {
     impl->renderer.set_search_colors(cfg.search_match_bg, cfg.search_current_bg);
     impl->renderer.set_rail(cfg.rail_enabled, cfg.rail_width, cfg.rail_ok, cfg.rail_failed,
                             cfg.rail_running);
+    impl->renderer.set_rail_alpha(cfg.rail_alpha, cfg.rail_hover_halo);
+    impl->renderer.set_selection_tuning(cfg.selection_contrast, cfg.selection_radius,
+                                        cfg.selection_min_visibility);
     impl->renderer.set_selection_color(cfg.selection_bg);
     impl->renderer.set_selection_invert(cfg.selection_invert);
     if (!cfg.word_separators.empty())

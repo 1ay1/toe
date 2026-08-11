@@ -228,7 +228,13 @@ private:
     Rgb rail_ok_{rgb(80, 200, 130)};
     Rgb rail_failed_{rgb(235, 90, 90)};
     Rgb rail_running_{rgb(240, 190, 70)};
+    int rail_alpha_{210};
+    int rail_hover_halo_{90};
     int cursor_trail_len_{3};
+    // Selection tuning (host-set; sensible defaults).
+    float sel_contrast_{3.0f};
+    float sel_radius_{0.28f};
+    float sel_min_vis_{0.11f};
     // Optional forced selection foreground. When unset (the default) the
     // renderer keeps each cell's own fg but GUARANTEES it stays readable
     // against selection_bg_ by flipping low-contrast text to black/white.
@@ -289,6 +295,19 @@ public:
         rail_ok_ = ok;
         rail_failed_ = failed;
         rail_running_ = running;
+    }
+    // Rail segment opacities: resting body alpha + hovered halo alpha (0..255).
+    void set_rail_alpha(int body, int hover_halo) noexcept {
+        rail_alpha_ = body;
+        rail_hover_halo_ = hover_halo;
+    }
+    // Selection tuning: text-contrast floor, corner-radius fraction of the
+    // cell, and the min luma stand-off before a selection colour is nudged.
+    void set_selection_tuning(float contrast, float radius, float min_vis) noexcept {
+        sel_contrast_ = contrast;
+        sel_radius_ = radius;
+        sel_min_vis_ = min_vis;
+        for (auto &rc : rows_) rc.valid = false;
     }
     // Caret comet-trail length (number of fading ghosts on a long jump).
     void set_cursor_trail_len(int n) noexcept { cursor_trail_len_ = n; }

@@ -48,15 +48,14 @@ inline float luma(Rgb c) noexcept {
 // black or white — whichever the selection bg is farther from. This is what
 // makes selection "look good ALWAYS", independent of the theme or of colours
 // the running program picks for individual cells.
-inline Rgb contrast_fg(Rgb fg, Rgb sel_bg) noexcept {
+inline Rgb contrast_fg(Rgb fg, Rgb sel_bg, float min_ratio = 3.0f) noexcept {
     const float lf = luma(fg), lb = luma(sel_bg);
     // WCAG contrast ratio on luminance (+0.05). Require a solid ratio so text
-    // never looks muddy on the highlight — 3.0:1 is the AA large-text floor and
-    // a good perceptual threshold for a monospaced grid. Below it we don't try
-    // to nudge the cell colour; we go straight to pure black/white (whichever
-    // is farther from the selection bg) for MAXIMUM legibility.
+    // never looks muddy on the highlight. Below it we don't try to nudge the
+    // cell colour; we go straight to pure black/white (whichever is farther
+    // from the selection bg) for MAXIMUM legibility.
     const float hi = std::max(lf, lb) + 0.05f, lo = std::min(lf, lb) + 0.05f;
-    if (hi / lo >= 3.0f) return fg; // already clearly legible — keep the colour
+    if (hi / lo >= min_ratio) return fg; // already clearly legible — keep the colour
     return lb > 0.45f ? rgb(16, 18, 24) : rgb(244, 246, 250);
 }
 
@@ -361,7 +360,7 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
             // hard rectangle on large fonts). ~28% of the smaller cell extent,
             // clamped to a sane pixel range — matches the rounded block cursor.
             const std::uint8_t rad = static_cast<std::uint8_t>(
-                std::clamp(static_cast<int>(std::min(cw, ch) * 0.28f), 2, 10));
+                std::clamp(static_cast<int>(std::min(cw, ch) * sel_radius_), 1, 12));
             // Reverse-video selection: the highlight bg is the cell's OWN
             // foreground colour (so the text, drawn in the cell's bg below,
             // reads as inverted). Otherwise the configured selection colour.
@@ -375,7 +374,7 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
                 // word shows a clear block.
                 const Rgb dbg = palette_.default_bg();
                 const float lb = luma(selbg), ld = luma(dbg);
-                if (std::abs(lb - ld) < 0.12f) selbg = selection_bg_;
+                if (std::abs(lb - ld) < sel_min_vis_) selbg = selection_bg_;
             }
             if (corners == 0 || rad == 0) {
                 rc.bg.push_back(rect_inst(static_cast<float>(c * cw), ry, static_cast<float>(cw),
@@ -403,7 +402,7 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
             if (!dn && !rt) corners |= kCornerBR;
             if (!dn && !lf) corners |= kCornerBL;
             const std::uint8_t rad = static_cast<std::uint8_t>(
-                std::clamp(static_cast<int>(std::min(cw, ch) * 0.28f), 2, 10));
+                std::clamp(static_cast<int>(std::min(cw, ch) * sel_radius_), 1, 12));
             if (corners == 0 || rad == 0) {
                 rc.bg.push_back(rect_inst(static_cast<float>(c * cw), ry, static_cast<float>(cw),
                                           static_cast<float>(ch), match_bg.r, match_bg.g,
@@ -428,7 +427,7 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
         // selection background. Applied to glyphs, decorations, SDF and block
         // fills below so EVERYTHING under the highlight reads well.
         const auto sel_adjust = [&](Rgb fg) -> Rgb {
-            if (searched) return contrast_fg(fg, match_bg);
+            if (searched) return contrast_fg(fg, match_bg, sel_contrast_);
             if (!selected) return fg;
             // Reverse-video: the glyph takes the cell's own BACKGROUND colour so
             // it sits legibly on the inverted (fg-coloured) highlight. But if the
@@ -443,12 +442,12 @@ bool Renderer::build_row(const term::Screen &screen, int r, std::uint64_t key,
                 // be invisible against the terminal bg, the block was lifted to
                 // selection_bg_, so contrast the glyph against THAT instead.
                 const Rgb dbg = palette_.default_bg();
-                if (std::abs(luma(inv_bg) - luma(dbg)) < 0.12f)
-                    return contrast_fg(fg, selection_bg_);
-                return contrast_fg(inv_fg, inv_bg);
+                if (std::abs(luma(inv_bg) - luma(dbg)) < sel_min_vis_)
+                    return contrast_fg(fg, selection_bg_, sel_contrast_);
+                return contrast_fg(inv_fg, inv_bg, sel_contrast_);
             }
             if (selection_fg_) return *selection_fg_;
-            return contrast_fg(fg, selection_bg_);
+            return contrast_fg(fg, selection_bg_, sel_contrast_);
         };
         // Blink (SGR 5): during the OFF phase the glyph is hidden. Track that
         // the row has blinking cells so the phase flip forces a rebuild.
@@ -1064,14 +1063,14 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
                                  screen.rail_hover_row() < m.end;
                 const bool focused = foc0 >= 0 && m.start < foc1 && m.end > foc0;
                 Rgb c;
-                std::uint8_t a = 210;
+                std::uint8_t a = static_cast<std::uint8_t>(std::clamp(rail_alpha_, 0, 255));
                 switch (m.status) {
                 case term::Screen::MarkStatus::ok: c = rail_ok_; break;
                 case term::Screen::MarkStatus::failed: c = rail_failed_; break;
                 case term::Screen::MarkStatus::running:
                 default:
                     c = rail_running_; // amber; a running command in flight
-                    a = 235;
+                    a = static_cast<std::uint8_t>(std::clamp(rail_alpha_ + 25, 0, 255));
                     break;
                 }
                 // Focused (jumped-to) command: a bright white outline halo so
@@ -1087,7 +1086,9 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
                 if (hov) {
                     instances_.push_back(rect_round_inst(segx - 2.0f, y0 - 1.0f, segw + 4.0f,
                                                          (y1 - y0) + 2.0f, c.r, c.g, c.b,
-                                                         segr + 2, 0, 90));
+                                                         segr + 2, 0,
+                                                         static_cast<std::uint8_t>(
+                                                             std::clamp(rail_hover_halo_, 0, 255))));
                 }
                 const float sw = (hov || focused) ? segw + 3.0f : segw;
                 const float sx = (hov || focused) ? segx - 1.5f : segx;

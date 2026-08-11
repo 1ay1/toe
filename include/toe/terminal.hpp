@@ -134,6 +134,14 @@ struct Config {
     Rgb rail_ok = rgb(80, 200, 130);       // succeeded command segment
     Rgb rail_failed = rgb(235, 90, 90);    // failed command segment
     Rgb rail_running = rgb(240, 190, 70);  // in-flight command segment
+    int rail_alpha = 210;                  // resting segment opacity (0..255)
+    int rail_hover_halo = 90;              // hovered segment halo opacity
+
+    // Selection fine-tuning: text-contrast floor, corner rounding fraction, and
+    // the min luma stand-off before a selection colour is nudged to stay visible.
+    float selection_contrast = 3.0f;
+    float selection_radius = 0.28f;
+    float selection_min_visibility = 0.11f;
 
     // The child terminal, adopted from the host. toe NEVER forks: the host
     // opens the PTY master (forkpty/ConPTY/ssh/tmux) and hands the fd + child
