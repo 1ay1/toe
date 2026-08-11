@@ -1020,7 +1020,7 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
                 const bool hov = screen.rail_hover_row() >= m.start &&
                                  screen.rail_hover_row() < m.end;
                 Rgb c;
-                std::uint8_t a = 220;
+                std::uint8_t a = 210;
                 switch (m.status) {
                 case term::Screen::MarkStatus::ok: c = rgb(80, 200, 130); break;
                 case term::Screen::MarkStatus::failed: c = rgb(235, 90, 90); break;
@@ -1030,38 +1030,44 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
                     a = 235;
                     break;
                 }
-                // Soft outer halo so each command "glows" against the channel.
-                instances_.push_back(rect_round_inst(segx - 2.0f, y0 - 1.0f, segw + 4.0f,
-                                                     (y1 - y0) + 2.0f, c.r, c.g, c.b,
-                                                     segr + 2, 0, hov ? 90 : 45));
-                // The segment body. Hovered = full alpha + a touch wider so it
-                // reads as the clickable target under the pointer.
-                const float sw = hov ? segw + 4.0f : segw;
-                const float sx = hov ? segx - 2.0f : segx;
+                // Hovered = full alpha + slightly wider so it reads as the
+                // command under the pointer. A gentle halo only on hover.
+                if (hov) {
+                    instances_.push_back(rect_round_inst(segx - 2.0f, y0 - 1.0f, segw + 4.0f,
+                                                         (y1 - y0) + 2.0f, c.r, c.g, c.b,
+                                                         segr + 2, 0, 90));
+                }
+                const float sw = hov ? segw + 3.0f : segw;
+                const float sx = hov ? segx - 1.5f : segx;
                 if (hov) a = 255;
                 instances_.push_back(rect_round_inst(sx, y0, sw, y1 - y0, c.r, c.g, c.b,
-                                                     hov ? segr + 2 : segr, 0, a));
+                                                     hov ? segr + 1 : segr, 0, a));
             }
-            // Viewport thumb: where you're looking. Brighter while scrolled, with
-            // a bright inner highlight so it stands out over the segments.
+            // Viewport indicator: a BRACKET framing the current view — thin caps
+            // at the top & bottom of the viewport plus faint side rails — so it
+            // shows where you are WITHOUT covering the command segments beneath.
             if (total_rows > grid.rows) {
                 const float view_frac = static_cast<float>(grid.rows) /
                                         static_cast<float>(total_rows);
-                const float thumb_h = std::max(24.0f, track_h * view_frac);
-                // Top visible absolute row = (hist - off).
+                const float thumb_h = std::max(20.0f, track_h * view_frac);
                 const std::int64_t top_row = static_cast<std::int64_t>(hist) - off;
                 const float frac = static_cast<float>(top_row) /
                                    static_cast<float>(std::max<std::int64_t>(1, total_rows - grid.rows));
                 const float ty = frac * (track_h - thumb_h);
                 const Rgb fg = palette_.default_fg();
-                const std::uint8_t ta = off != 0 ? 170 : 70;
-                // Outer translucent thumb spanning the full rail width.
-                instances_.push_back(rect_round_inst(x - 1.0f, ty, railw + 2.0f, thumb_h,
-                                                     fg.r, fg.g, fg.b, rr + 1, 0, ta));
-                // Bright center bar so the current viewport is unmistakable.
-                instances_.push_back(rect_round_inst(x + railw / 2.0f - 1.0f, ty + 2.0f, 2.0f,
-                                                     thumb_h - 4.0f, fg.r, fg.g, fg.b, 1, 0,
-                                                     off != 0 ? 235 : 130));
+                const std::uint8_t edge = off != 0 ? 235 : 120; // brighter while scrolled
+                const std::uint8_t side = off != 0 ? 70 : 30;
+                const float capw = railw + 2.0f;
+                const float capx = x - 1.0f;
+                // Top & bottom caps (rounded) mark the viewport extent.
+                instances_.push_back(rect_round_inst(capx, ty, capw, 2.5f,
+                                                     fg.r, fg.g, fg.b, 1, 0, edge));
+                instances_.push_back(rect_round_inst(capx, ty + thumb_h - 2.5f, capw, 2.5f,
+                                                     fg.r, fg.g, fg.b, 1, 0, edge));
+                // Faint side rails connecting the caps (a subtle bracket).
+                instances_.push_back(rect_inst(capx, ty, 1.5f, thumb_h, fg.r, fg.g, fg.b, 0, side));
+                instances_.push_back(rect_inst(capx + capw - 1.5f, ty, 1.5f, thumb_h,
+                                               fg.r, fg.g, fg.b, 0, side));
             }
         }
     }

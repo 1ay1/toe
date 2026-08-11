@@ -537,7 +537,9 @@ std::int64_t Session::total_rows() const noexcept {
 bool Session::jump_to_command(std::uint64_t id) {
     for (const auto &b : impl_->model.commands.blocks()) {
         if (b.id == id) {
-            const std::int64_t row = b.input_row >= 0 ? b.input_row : b.output_row;
+            const std::int64_t row = b.prompt_row >= 0 ? b.prompt_row
+                                   : b.input_row >= 0  ? b.input_row
+                                                       : b.output_row;
             if (row < 0) return false;
             impl_->model.screen.scroll_to_abs_row(row, 1);
             return true;
@@ -728,9 +730,11 @@ CommandView resolve_block(const term::CommandBlock &b, const term::Screen &scr) 
     v.exit_code = b.exit_code;
     v.finished = b.finished();
     v.duration_ms = b.duration_ms();
-    // Absolute-row span for host UI (flyout / click-to-jump): the prompt/input
-    // row and the block's end (exclusive; live bottom while still running).
-    v.prompt_row = b.input_row;
+    // Absolute-row span for host UI (flyout / click-to-jump). Prefer the
+    // prompt row (A mark, always set); fall back to the command/output rows.
+    v.prompt_row = b.prompt_row >= 0 ? b.prompt_row
+                 : b.input_row >= 0  ? b.input_row
+                                     : b.output_row;
     v.end_row = b.end_row >= 0 ? b.end_row : scr.total_rows();
 
     // Command line: from the B mark (input_row/col). The C mark (output_row)
