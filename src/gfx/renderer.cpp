@@ -974,30 +974,64 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
         }
     }
 
-    // Scrollbar: a thin rounded thumb on the right edge indicating the viewport
-    // position within history. Shown only when there IS history and only while
-    // scrolled up OR briefly — here we show it whenever scrolled away from the
-    // bottom (the common "where am I" cue) plus always when history exists but
-    // keep it subtle. Overlay instance, appended every frame like the caret.
+    // Command minimap: a live map of the session on the right edge. Instead of
+    // a dumb scrollbar, each OSC-133 command is a coloured segment positioned by
+    // where it sits in scrollback — green (ok), red (failed), amber (running) —
+    // and the viewport thumb rides on top. It's a scrollbar that's also a visual
+    // index of your work. Shown whenever there's history or recorded commands.
     {
         const std::int32_t hist = screen.history_rows();
+        const std::int64_t total_rows = static_cast<std::int64_t>(hist) + grid.rows;
+        const auto &marks = screen.scroll_marks();
         const std::int32_t off = screen.scroll_offset();
-        if (hist > 0) {
-            const float total = static_cast<float>(hist + grid.rows); // scrollable extent
-            const float view = static_cast<float>(grid.rows);
+        if (hist > 0 || !marks.empty()) {
             const float track_h = static_cast<float>(px.h);
-            const float thumb_h = std::max(24.0f, track_h * (view / total));
-            // off=0 is the BOTTOM (live); off=hist is the top. Map to y.
-            const float frac = static_cast<float>(hist - off) / static_cast<float>(hist);
-            const float thumb_y = frac * (track_h - thumb_h);
-            const float w = 6.0f;
-            const float x = static_cast<float>(px.w) - w - 2.0f;
-            // Brighter while actively scrolled, faint at the bottom.
-            const Rgb fg = palette_.default_fg();
-            const std::uint8_t a = off != 0 ? 150 : 70;
-            instances_.push_back(
-                rect_round_inst(x, thumb_y + 2.0f, w, thumb_h - 4.0f, fg.r, fg.g, fg.b,
-                                static_cast<std::uint8_t>(w / 2.0f), 0, a));
+            const float railw = 5.0f;
+            const float x = static_cast<float>(px.w) - railw - 3.0f;
+            const std::uint8_t rr = static_cast<std::uint8_t>(railw / 2.0f);
+            // Faint track behind everything.
+            {
+                const Rgb bg = palette_.default_fg();
+                instances_.push_back(rect_round_inst(x + 1.5f, 0.0f, railw - 3.0f, track_h,
+                                                     bg.r, bg.g, bg.b, 1, 0, 22));
+            }
+            // Command segments. Map absolute-row span -> pixel span. Row 0 is the
+            // oldest history line at the TOP; total_rows-1 is the newest.
+            const auto row_to_y = [&](std::int64_t row) -> float {
+                if (total_rows <= 1) return 0.0f;
+                return static_cast<float>(row) / static_cast<float>(total_rows) * track_h;
+            };
+            for (const auto &m : marks) {
+                const float y0 = row_to_y(m.start);
+                const float y1 = std::max(y0 + 3.0f, row_to_y(m.end));
+                Rgb c;
+                std::uint8_t a = 200;
+                switch (m.status) {
+                case term::Screen::MarkStatus::ok: c = rgb(90, 190, 120); break;
+                case term::Screen::MarkStatus::failed: c = rgb(225, 95, 95); break;
+                case term::Screen::MarkStatus::running:
+                default:
+                    c = rgb(225, 185, 80); // amber; a running command in flight
+                    a = 210;
+                    break;
+                }
+                instances_.push_back(rect_round_inst(x, y0, railw, y1 - y0, c.r, c.g, c.b, rr, 0, a));
+            }
+            // Viewport thumb: where you're looking. Brighter while scrolled.
+            if (total_rows > grid.rows) {
+                const float view_frac = static_cast<float>(grid.rows) /
+                                        static_cast<float>(total_rows);
+                const float thumb_h = std::max(20.0f, track_h * view_frac);
+                // Top visible absolute row = (hist - off).
+                const std::int64_t top_row = static_cast<std::int64_t>(hist) - off;
+                const float frac = static_cast<float>(top_row) /
+                                   static_cast<float>(std::max<std::int64_t>(1, total_rows - grid.rows));
+                const float ty = frac * (track_h - thumb_h);
+                const Rgb fg = palette_.default_fg();
+                const std::uint8_t ta = off != 0 ? 210 : 90;
+                instances_.push_back(rect_round_inst(x - 1.0f, ty, railw + 2.0f, thumb_h,
+                                                     fg.r, fg.g, fg.b, rr + 1, 0, ta));
+            }
         }
     }
 

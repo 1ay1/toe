@@ -341,6 +341,28 @@ Cmds feed_output(Model &m, std::string_view bytes) {
             m.screen.apply(a, out); // Screen emits its own effects (replies, bell)
         }
     });
+
+    // Refresh the command-minimap marks from the OSC-133 command log so the
+    // renderer's scroll rail shows a live map of this session's commands
+    // (success / failure / running), positioned in scrollback.
+    {
+        const auto &blocks = m.commands.blocks();
+        std::vector<term::Screen::ScrollMark> marks;
+        marks.reserve(blocks.size());
+        for (const auto &b : blocks) {
+            if (b.prompt_row < 0) continue;
+            const std::int64_t start = b.prompt_row;
+            const std::int64_t end = (b.end_row >= 0) ? b.end_row + 1
+                                     : (b.output_row >= 0) ? b.output_row + 1
+                                                           : start + 1;
+            using MS = term::Screen::MarkStatus;
+            const MS st = !b.finished()      ? MS::running
+                          : b.succeeded()     ? MS::ok
+                                              : MS::failed;
+            marks.push_back({start, end, st});
+        }
+        m.screen.set_scroll_marks(std::move(marks));
+    }
     return out;
 }
 

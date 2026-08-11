@@ -60,6 +60,25 @@ public:
     // True when the cursor is within the currently-visible region.
     [[nodiscard]] bool cursor_visible() const noexcept { return scroll_offset_ == 0; }
 
+    // --- scroll marks (command minimap) ------------------------------------
+    // A shell command's footprint in scrollback, for the renderer's command
+    // minimap rail. `start`/`end` are ABSOLUTE rows [start, end); status colours
+    // the segment. The host (or the Model) refreshes these from the OSC-133
+    // command log whenever it changes — the renderer just reads them.
+    enum class MarkStatus : std::uint8_t { running, ok, failed };
+    struct ScrollMark {
+        std::int64_t start = 0;
+        std::int64_t end = 0;
+        MarkStatus status = MarkStatus::ok;
+        constexpr bool operator==(const ScrollMark &) const = default;
+    };
+    void set_scroll_marks(std::vector<ScrollMark> marks) {
+        if (marks != scroll_marks_) { scroll_marks_ = std::move(marks); touch(); }
+    }
+    [[nodiscard]] const std::vector<ScrollMark> &scroll_marks() const noexcept {
+        return scroll_marks_;
+    }
+
     // --- modes -------------------------------------------------------------
     // Whether the text cursor should be drawn (DECTCEM, CSI ?25 h/l).
     [[nodiscard]] bool cursor_shown() const noexcept { return cursor_shown_; }
@@ -582,6 +601,7 @@ private:
     bool any_line_attr_ = false; // fast-skip flag: any non-normal line_attr_?
     std::int32_t scroll_offset_{0};                 // rows scrolled into history
     std::size_t max_history_{10000};                // ring-buffer cap
+    std::vector<ScrollMark> scroll_marks_{};        // command minimap segments
 
     // Rewrap all content (history + live) from old_cols to the new width when a
     // resize changes the column count. Preserves logical lines + the cursor.
