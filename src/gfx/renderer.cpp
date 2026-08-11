@@ -708,6 +708,22 @@ void Renderer::ensure_image_pipeline() {}
 void Renderer::draw_images(const term::Screen &, PixelSize) {}
 void Renderer::draw_placeholders(const term::Screen &, PixelSize) {}
 
+void Renderer::sync_palette(const term::Screen &screen) noexcept {
+    for (std::size_t i = palette_applied_; i < screen.color_edits().size(); ++i) {
+        const auto &e = screen.color_edits()[i];
+        using T = term::Screen::ColorEdit::Target;
+        switch (e.target) {
+        case T::index:  e.reset ? palette_.reset_index(e.index) : palette_.set_index(e.index, e.rgb); break;
+        case T::fg:     e.reset ? palette_.set_default_fg(Palette{}.default_fg()) : palette_.set_default_fg(e.rgb); break;
+        case T::bg:     e.reset ? palette_.set_default_bg(Palette{}.default_bg()) : palette_.set_default_bg(e.rgb); break;
+        case T::cursor: palette_.set_cursor_color(e.reset ? std::optional<Rgb>{} : std::optional<Rgb>{e.rgb}); break;
+        case T::all:    palette_.reset(); break;
+        }
+    }
+    palette_applied_ = screen.color_edits().size();
+    palette_epoch_seen_ = screen.palette_epoch();
+}
+
 bool Renderer::animating() const noexcept {
     if (cursor_in_flight_) return true;
     if (bell_until_us_ == 0) return false;
@@ -785,19 +801,7 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
     // recorded since the last frame, then invalidate the row cache if the
     // palette actually moved (every resolved colour may have changed).
     if (screen.palette_epoch() != palette_epoch_seen_) {
-        for (std::size_t i = palette_applied_; i < screen.color_edits().size(); ++i) {
-            const auto &e = screen.color_edits()[i];
-            using T = term::Screen::ColorEdit::Target;
-            switch (e.target) {
-            case T::index:  e.reset ? palette_.reset_index(e.index) : palette_.set_index(e.index, e.rgb); break;
-            case T::fg:     e.reset ? palette_.set_default_fg(Palette{}.default_fg()) : palette_.set_default_fg(e.rgb); break;
-            case T::bg:     e.reset ? palette_.set_default_bg(Palette{}.default_bg()) : palette_.set_default_bg(e.rgb); break;
-            case T::cursor: palette_.set_cursor_color(e.reset ? std::optional<Rgb>{} : std::optional<Rgb>{e.rgb}); break;
-            case T::all:    palette_.reset(); break;
-            }
-        }
-        palette_applied_ = screen.color_edits().size();
-        palette_epoch_seen_ = screen.palette_epoch();
+        sync_palette(screen);
         for (auto &rc : rows_) rc.valid = false; // recolour everything
     }
 

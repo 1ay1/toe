@@ -309,8 +309,14 @@ public:
         sel_min_vis_ = min_vis;
         for (auto &rc : rows_) rc.valid = false;
     }
-    // Caret comet-trail length (number of fading ghosts on a long jump).
+    // Caret comet-trail ghost count (number of fading ghosts on a long jump).
     void set_cursor_trail_len(int n) noexcept { cursor_trail_len_ = n; }
+    // Fold the Screen's recorded colour edits (default fg/bg, palette, cursor)
+    // into this renderer's palette NOW. draw() does this lazily, but a host must
+    // call it after swapping in a fresh renderer (font/ligature rebuild) so
+    // default_bg() etc. are correct BEFORE the next frame's clear — otherwise a
+    // themed bg reverts to the built-in default for a frame.
+    void sync_palette(const term::Screen &screen) noexcept;
     // Inner window padding in pixels: the grid is inset by this on every edge.
     // cells_for() reserves 2*pad, and the vertex shader shifts by the origin.
     void set_padding(int px) noexcept { pad_ = px < 0 ? 0 : px; }

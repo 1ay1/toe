@@ -319,6 +319,7 @@ bool Session::set_font_pixel_size(int px, PixelSize surface_px) {
     if (!renderer) return false;
 
     impl_->renderer = std::move(*renderer);
+    impl_->renderer.sync_palette(impl_->model.screen); // keep theme colours across the rebuild
     impl_->renderer.set_cursor_animation(impl_->cursor_anim_.enabled, impl_->cursor_anim_.time_ms,
                                          impl_->cursor_anim_.trail);
     impl_->renderer.set_selection_color(impl_->selection_bg_);
@@ -377,6 +378,7 @@ bool Session::set_font(std::string_view family_or_file, PixelSize surface_px) {
     if (!renderer) return false;
 
     impl_->renderer = std::move(*renderer);
+    impl_->renderer.sync_palette(impl_->model.screen); // keep theme colours across the rebuild
     impl_->renderer.set_cursor_animation(impl_->cursor_anim_.enabled, impl_->cursor_anim_.time_ms,
                                          impl_->cursor_anim_.trail);
     impl_->renderer.set_selection_color(impl_->selection_bg_);
@@ -436,6 +438,7 @@ bool Session::set_ligatures(bool on, PixelSize surface_px) {
     auto renderer = gfx::Renderer::create(std::move(*atlas));
     if (!renderer) return false;
     impl_->renderer = std::move(*renderer);
+    impl_->renderer.sync_palette(impl_->model.screen); // keep theme colours across the rebuild
     impl_->renderer.set_cursor_animation(impl_->cursor_anim_.enabled, impl_->cursor_anim_.time_ms,
                                          impl_->cursor_anim_.trail);
     impl_->renderer.set_selection_color(impl_->selection_bg_);
