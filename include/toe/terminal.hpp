@@ -119,7 +119,21 @@ struct Config {
         bool enabled = true;
         int time_ms = 55;
         bool trail = true;
+        int trail_len = 3; // number of fading comet ghosts on a long jump (0..6)
     } cursor_anim{};
+
+    // Scrollback-search match highlight colours: every match uses match_bg, the
+    // one the user is ON uses the brighter current_bg. Live-settable.
+    Rgb search_match_bg = rgb(120, 96, 40);
+    Rgb search_current_bg = rgb(255, 176, 32);
+
+    // Command-minimap rail (OSC-133 shell integration): the right-edge visual
+    // index of the session's commands. All host-tunable.
+    bool rail_enabled = true;
+    int rail_width = 7;                    // px (expands on hover)
+    Rgb rail_ok = rgb(80, 200, 130);       // succeeded command segment
+    Rgb rail_failed = rgb(235, 90, 90);    // failed command segment
+    Rgb rail_running = rgb(240, 190, 70);  // in-flight command segment
 
     // The child terminal, adopted from the host. toe NEVER forks: the host
     // opens the PTY master (forkpty/ConPTY/ssh/tmux) and hands the fd + child

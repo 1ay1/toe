@@ -764,7 +764,7 @@ void Renderer::animate_cursor(float tgt_x, float tgt_y, float cw, float ch, Rgb 
     // shouldn't smear), and only when enabled.
     const float mvx = cur_anim_x_ - px0, mvy = cur_anim_y_ - py0;
     if (cursor_trail_ && mvx * mvx + mvy * mvy > (1.5f * cw) * (1.5f * cw)) {
-        constexpr int kTrail = 3;
+        const int kTrail = std::clamp(cursor_trail_len_, 0, 6);
         for (int i = 1; i <= kTrail; ++i) {
             const float t = static_cast<float>(i) / (kTrail + 1);
             const float tx = px0 + (cur_anim_x_ - px0) * t;
@@ -1024,12 +1024,13 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
         const std::int64_t total_rows = static_cast<std::int64_t>(hist) + grid.rows;
         const auto &marks = screen.scroll_marks();
         const std::int32_t off = screen.scroll_offset();
-        if (hist > 0 || !marks.empty()) {
+        if (rail_enabled_ && (hist > 0 || !marks.empty())) {
             const float track_h = static_cast<float>(px.h);
             // Is the pointer over the rail right now? If so the whole minimap
             // gently expands + brightens (an editor-style "come look at me").
             const bool rail_hot = screen.rail_hover_row() >= 0;
-            const float railw = rail_hot ? 11.0f : 7.0f;     // wider than the old 5px
+            const float base_w = static_cast<float>(std::clamp(rail_width_, 3, 24));
+            const float railw = rail_hot ? base_w * 1.6f : base_w; // wider on hover
             const float margin = 4.0f;
             const float x = static_cast<float>(px.w) - railw - margin;
             const std::uint8_t rr = static_cast<std::uint8_t>(railw / 2.0f);
@@ -1065,11 +1066,11 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
                 Rgb c;
                 std::uint8_t a = 210;
                 switch (m.status) {
-                case term::Screen::MarkStatus::ok: c = rgb(80, 200, 130); break;
-                case term::Screen::MarkStatus::failed: c = rgb(235, 90, 90); break;
+                case term::Screen::MarkStatus::ok: c = rail_ok_; break;
+                case term::Screen::MarkStatus::failed: c = rail_failed_; break;
                 case term::Screen::MarkStatus::running:
                 default:
-                    c = rgb(240, 190, 70); // amber; a running command in flight
+                    c = rail_running_; // amber; a running command in flight
                     a = 235;
                     break;
                 }

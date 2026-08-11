@@ -222,6 +222,13 @@ private:
     // match you're ON is unmistakable against the muted all-match amber.
     Rgb search_bg_{rgb(120, 96, 40)};
     Rgb search_cur_bg_{rgb(255, 176, 32)};
+    // Command-minimap rail config (host-set; defaults match the built-ins).
+    bool rail_enabled_{true};
+    int rail_width_{7};
+    Rgb rail_ok_{rgb(80, 200, 130)};
+    Rgb rail_failed_{rgb(235, 90, 90)};
+    Rgb rail_running_{rgb(240, 190, 70)};
+    int cursor_trail_len_{3};
     // Optional forced selection foreground. When unset (the default) the
     // renderer keeps each cell's own fg but GUARANTEES it stays readable
     // against selection_bg_ by flipping low-contrast text to black/white.
@@ -275,6 +282,16 @@ public:
         search_cur_bg_ = current;
         for (auto &rc : rows_) rc.valid = false;
     }
+    // Command-minimap rail: on/off, width (px), and the status segment colours.
+    void set_rail(bool enabled, int width_px, Rgb ok, Rgb failed, Rgb running) noexcept {
+        rail_enabled_ = enabled;
+        rail_width_ = width_px;
+        rail_ok_ = ok;
+        rail_failed_ = failed;
+        rail_running_ = running;
+    }
+    // Caret comet-trail length (number of fading ghosts on a long jump).
+    void set_cursor_trail_len(int n) noexcept { cursor_trail_len_ = n; }
     // Inner window padding in pixels: the grid is inset by this on every edge.
     // cells_for() reserves 2*pad, and the vertex shader shifts by the origin.
     void set_padding(int px) noexcept { pad_ = px < 0 ? 0 : px; }

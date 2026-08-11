@@ -1015,6 +1015,10 @@ Result<Terminal> Terminal::create(const Config &cfg, PixelSize px) {
     impl->renderer.set_opacity(cfg.opacity);
     impl->renderer.set_cursor_animation(cfg.cursor_anim.enabled, cfg.cursor_anim.time_ms,
                                         cfg.cursor_anim.trail);
+    impl->renderer.set_cursor_trail_len(cfg.cursor_anim.trail_len);
+    impl->renderer.set_search_colors(cfg.search_match_bg, cfg.search_current_bg);
+    impl->renderer.set_rail(cfg.rail_enabled, cfg.rail_width, cfg.rail_ok, cfg.rail_failed,
+                            cfg.rail_running);
     impl->renderer.set_selection_color(cfg.selection_bg);
     impl->renderer.set_selection_invert(cfg.selection_invert);
     if (!cfg.word_separators.empty())
