@@ -1053,6 +1053,18 @@ Result<Terminal> Terminal::create(const Config &cfg, PixelSize px) {
                                         cfg.selection_min_visibility);
     impl->renderer.set_selection_color(cfg.selection_bg);
     impl->renderer.set_selection_invert(cfg.selection_invert);
+    // Default foreground/background from config (the theme's base colours).
+    // Record them as Screen colour edits — the same channel OSC 10/11 use — so
+    // the renderer's palette (and thus default_bg(), which the host clears the
+    // frame to) reflects the theme from the VERY FIRST frame, not the built-in
+    // grey. Without this a new tab starts grey until a settings edit stamps the
+    // theme colour in, making the bg appear to "change" on any edit.
+    {
+        using CE = term::Screen::ColorEdit;
+        impl->model.screen.edit_color(CE{CE::Target::fg, 0, false, cfg.default_fg});
+        impl->model.screen.edit_color(CE{CE::Target::bg, 0, false, cfg.default_bg});
+        impl->renderer.sync_palette(impl->model.screen);
+    }
     if (!cfg.word_separators.empty())
         impl->model.screen.set_word_separators_extra(decode_word_seps(cfg.word_separators));
     // Query replies (DA1/DSR/…) no longer need a wired sink: the pure reducer
