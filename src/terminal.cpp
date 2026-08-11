@@ -471,8 +471,9 @@ int Session::scroll_offset() const noexcept { return impl_->model.screen.scroll_
 
 namespace {
 // Rail geometry, kept in ONE place so on_rail() and the renderer agree. The
-// rail is a ~10px hit zone on the right edge (the visual rail is ~5px + margin).
-constexpr int kRailHitW = 12;
+// rail is a ~16px hit zone on the right edge (the visual rail is 7px + 4px
+// margin, expanding to 11px on hover — the hit zone covers the widest state).
+constexpr int kRailHitW = 18;
 } // namespace
 
 bool Session::on_rail(int x, PixelSize px) const noexcept {

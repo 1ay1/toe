@@ -986,14 +986,24 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
         const std::int32_t off = screen.scroll_offset();
         if (hist > 0 || !marks.empty()) {
             const float track_h = static_cast<float>(px.h);
-            const float railw = 5.0f;
-            const float x = static_cast<float>(px.w) - railw - 3.0f;
+            // Is the pointer over the rail right now? If so the whole minimap
+            // gently expands + brightens (an editor-style "come look at me").
+            const bool rail_hot = screen.rail_hover_row() >= 0;
+            const float railw = rail_hot ? 11.0f : 7.0f;     // wider than the old 5px
+            const float margin = 4.0f;
+            const float x = static_cast<float>(px.w) - railw - margin;
             const std::uint8_t rr = static_cast<std::uint8_t>(railw / 2.0f);
-            // Faint track behind everything.
+            // Rounded track: a soft dark channel the segments sit inside, so the
+            // minimap reads as a distinct UI element and not stray pixels.
             {
-                const Rgb bg = palette_.default_fg();
-                instances_.push_back(rect_round_inst(x + 1.5f, 0.0f, railw - 3.0f, track_h,
-                                                     bg.r, bg.g, bg.b, 1, 0, 22));
+                const Rgb bg = palette_.default_bg();
+                // subtle lighter groove first (halo), then the darker channel
+                const Rgb fg = palette_.default_fg();
+                instances_.push_back(rect_round_inst(x - 1.0f, -1.0f, railw + 2.0f, track_h + 2.0f,
+                                                     fg.r, fg.g, fg.b, rr + 1, 0,
+                                                     rail_hot ? 28 : 16));
+                instances_.push_back(rect_round_inst(x, 0.0f, railw, track_h,
+                                                     bg.r, bg.g, bg.b, rr, 0, 150));
             }
             // Command segments. Map absolute-row span -> pixel span. Row 0 is the
             // oldest history line at the TOP; total_rows-1 is the newest.
@@ -1001,43 +1011,57 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
                 if (total_rows <= 1) return 0.0f;
                 return static_cast<float>(row) / static_cast<float>(total_rows) * track_h;
             };
+            const float segw = railw - 2.0f;
+            const float segx = x + 1.0f;
+            const std::uint8_t segr = static_cast<std::uint8_t>(segw / 2.0f);
             for (const auto &m : marks) {
                 const float y0 = row_to_y(m.start);
-                const float y1 = std::max(y0 + 3.0f, row_to_y(m.end));
+                const float y1 = std::max(y0 + 4.0f, row_to_y(m.end));
                 const bool hov = screen.rail_hover_row() >= m.start &&
                                  screen.rail_hover_row() < m.end;
                 Rgb c;
-                std::uint8_t a = 200;
+                std::uint8_t a = 220;
                 switch (m.status) {
-                case term::Screen::MarkStatus::ok: c = rgb(90, 190, 120); break;
-                case term::Screen::MarkStatus::failed: c = rgb(225, 95, 95); break;
+                case term::Screen::MarkStatus::ok: c = rgb(80, 200, 130); break;
+                case term::Screen::MarkStatus::failed: c = rgb(235, 90, 90); break;
                 case term::Screen::MarkStatus::running:
                 default:
-                    c = rgb(225, 185, 80); // amber; a running command in flight
-                    a = 210;
+                    c = rgb(240, 190, 70); // amber; a running command in flight
+                    a = 235;
                     break;
                 }
-                // Hovered segment: full alpha + a touch wider so it reads as
-                // the clickable target under the pointer.
-                const float sw = hov ? railw + 3.0f : railw;
-                const float sx = hov ? x - 1.5f : x;
+                // Soft outer halo so each command "glows" against the channel.
+                instances_.push_back(rect_round_inst(segx - 2.0f, y0 - 1.0f, segw + 4.0f,
+                                                     (y1 - y0) + 2.0f, c.r, c.g, c.b,
+                                                     segr + 2, 0, hov ? 90 : 45));
+                // The segment body. Hovered = full alpha + a touch wider so it
+                // reads as the clickable target under the pointer.
+                const float sw = hov ? segw + 4.0f : segw;
+                const float sx = hov ? segx - 2.0f : segx;
                 if (hov) a = 255;
-                instances_.push_back(rect_round_inst(sx, y0, sw, y1 - y0, c.r, c.g, c.b, rr, 0, a));
+                instances_.push_back(rect_round_inst(sx, y0, sw, y1 - y0, c.r, c.g, c.b,
+                                                     hov ? segr + 2 : segr, 0, a));
             }
-            // Viewport thumb: where you're looking. Brighter while scrolled.
+            // Viewport thumb: where you're looking. Brighter while scrolled, with
+            // a bright inner highlight so it stands out over the segments.
             if (total_rows > grid.rows) {
                 const float view_frac = static_cast<float>(grid.rows) /
                                         static_cast<float>(total_rows);
-                const float thumb_h = std::max(20.0f, track_h * view_frac);
+                const float thumb_h = std::max(24.0f, track_h * view_frac);
                 // Top visible absolute row = (hist - off).
                 const std::int64_t top_row = static_cast<std::int64_t>(hist) - off;
                 const float frac = static_cast<float>(top_row) /
                                    static_cast<float>(std::max<std::int64_t>(1, total_rows - grid.rows));
                 const float ty = frac * (track_h - thumb_h);
                 const Rgb fg = palette_.default_fg();
-                const std::uint8_t ta = off != 0 ? 210 : 90;
+                const std::uint8_t ta = off != 0 ? 170 : 70;
+                // Outer translucent thumb spanning the full rail width.
                 instances_.push_back(rect_round_inst(x - 1.0f, ty, railw + 2.0f, thumb_h,
                                                      fg.r, fg.g, fg.b, rr + 1, 0, ta));
+                // Bright center bar so the current viewport is unmistakable.
+                instances_.push_back(rect_round_inst(x + railw / 2.0f - 1.0f, ty + 2.0f, 2.0f,
+                                                     thumb_h - 4.0f, fg.r, fg.g, fg.b, 1, 0,
+                                                     off != 0 ? 235 : 130));
             }
         }
     }
