@@ -832,7 +832,13 @@ std::vector<CommandView> Session::commands() const {
     const auto &scr = impl_->model.screen;
     std::vector<CommandView> out;
     out.reserve(log.size());
-    for (const auto &b : log.blocks()) out.push_back(resolve_block(b, scr));
+    for (const auto &b : log.blocks()) {
+        // Only surface blocks that actually RAN a command: output started (C)
+        // or the block finished (D). A bare prompt the user is sitting at — or a
+        // prompt redraw — has neither, so it never appears as a "command".
+        if (b.output_row < 0 && !b.finished()) continue;
+        out.push_back(resolve_block(b, scr));
+    }
     return out;
 }
 

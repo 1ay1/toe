@@ -351,6 +351,10 @@ Cmds feed_output(Model &m, std::string_view bytes) {
         marks.reserve(blocks.size());
         for (const auto &b : blocks) {
             if (b.prompt_row < 0) continue;
+            // Only mark blocks that actually ran a command: output started (C)
+            // or finished (D). A bare prompt (or a prompt redraw) isn't a
+            // command, so it gets no rail segment — matching the flyout list.
+            if (b.output_row < 0 && !b.finished()) continue;
             const std::int64_t start = b.prompt_row;
             const std::int64_t end = (b.end_row >= 0) ? b.end_row + 1
                                      : (b.output_row >= 0) ? b.output_row + 1

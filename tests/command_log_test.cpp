@@ -201,6 +201,29 @@ int main() {
         }
     }
 
+    // --- fish-style prompt redraws must NOT spawn duplicate blocks ---------
+    // Shells re-emit OSC 133 A on every prompt repaint (keystroke/resize). The
+    // log must COALESCE consecutive A marks into ONE pending block until a
+    // command actually runs (output C / finish D).
+    {
+        term::Model r{cfg, Extent{80, 24}};
+        for (int i = 0; i < 6; ++i) feed(r, ftcs('A')); // 6 prompt redraws
+        ok(r.commands.size() == 1, "6 A marks -> 1 pending block");
+        feed(r, "$ ls\r\n");
+        feed(r, ftcs('B'));
+        feed(r, ftcs('C'));            // output starts -> block COMMITS
+        feed(r, "a b c\r\n");
+        feed(r, ftcs('D', "0"));
+        for (int i = 0; i < 4; ++i) feed(r, ftcs('A')); // redraw the next prompt
+        ok(r.commands.size() == 2, "committed cmd + next pending prompt = 2 blocks");
+        feed(r, "$ pwd\r\n");
+        feed(r, ftcs('B'));
+        feed(r, ftcs('C'));
+        feed(r, "/tmp\r\n");
+        feed(r, ftcs('D', "0"));
+        ok(r.commands.size() == 2, "two real commands, no phantom blocks");
+    }
+
     std::printf(fails ? "%d command-log test(s) failed\n" : "all command-log tests passed\n",
                 fails);
     return fails ? 1 : 0;

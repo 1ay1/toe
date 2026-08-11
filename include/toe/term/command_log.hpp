@@ -94,7 +94,28 @@ public:
 
     // A: a new prompt begins → start a fresh block. `cwd` is the OSC 7 dir known
     // at this point (may be empty). Bumps generation.
+    //
+    // Shells (fish especially) RE-EMIT the A mark every time they repaint the
+    // prompt — on each keystroke, resize, or completion — which would spawn a
+    // flood of empty duplicate blocks. So if the current (newest) block is still
+    // an UNUSED prompt (A seen, but no command submitted: no C/output yet),
+    // reuse it: just refresh its prompt row + cwd instead of pushing a new one.
+    // A block only "commits" to being a real command once output starts (C).
     void mark_prompt(std::int64_t abs_row, std::string cwd) {
+        if (!blocks_.empty()) {
+            CommandBlock &back = blocks_.back();
+            const bool committed = back.output_row >= 0 || back.finished();
+            if (!committed) {
+                // Reuse the pending prompt block (fish redrew its prompt).
+                back.prompt_row = abs_row;
+                back.input_row = -1;
+                back.input_col = 0;
+                if (!cwd.empty()) back.cwd = std::move(cwd);
+                zone_ = ShellZone::prompt;
+                ++generation_;
+                return;
+            }
+        }
         CommandBlock b;
         b.id = ++next_id_;
         b.prompt_row = abs_row;
