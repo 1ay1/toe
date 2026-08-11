@@ -218,9 +218,10 @@ private:
     std::size_t base_instance_n_{0};              // instances_ size before the anim caret
     Rgb selection_bg_{rgb(66, 84, 112)};          // selection highlight (config-set)
     // Search-match highlight colours. `search_bg_` tints every match; the
-    // CURRENT match gets `search_cur_bg_` (brighter). Sensible amber defaults.
+    // CURRENT match gets `search_cur_bg_` — a bright, saturated accent so the
+    // match you're ON is unmistakable against the muted all-match amber.
     Rgb search_bg_{rgb(120, 96, 40)};
-    Rgb search_cur_bg_{rgb(210, 160, 40)};
+    Rgb search_cur_bg_{rgb(255, 176, 32)};
     // Optional forced selection foreground. When unset (the default) the
     // renderer keeps each cell's own fg but GUARANTEES it stays readable
     // against selection_bg_ by flipping low-contrast text to black/white.
