@@ -1062,7 +1062,15 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
             const std::int64_t foc1 = screen.focused_span_end();
             for (const auto &m : marks) {
                 const float y0 = row_to_y(m.start);
-                const float y1 = std::max(y0 + 4.0f, row_to_y(m.end));
+                const float y1raw = std::max(y0 + 5.0f, row_to_y(m.end));
+                // Inset each segment by a small GAP so adjacent commands read as
+                // DISTINCT pills instead of merging into one solid bar (many
+                // back-to-back 'ok' commands were indistinguishable). The dark
+                // track shows through the gap as a divider.
+                const float gap = 1.5f;
+                const float sy0 = y0 + gap;
+                const float sy1 = std::max(sy0 + 3.0f, y1raw - gap);
+                const float y1 = y1raw;
                 const bool hov = screen.rail_hover_row() >= m.start &&
                                  screen.rail_hover_row() < m.end;
                 const bool focused = foc0 >= 0 && m.start < foc1 && m.end > foc0;
@@ -1081,15 +1089,15 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
                 // it's unmistakable which command you're viewing.
                 if (focused) {
                     const Rgb w = rgb(245, 247, 255);
-                    instances_.push_back(rect_round_inst(segx - 3.0f, y0 - 2.0f, segw + 6.0f,
-                                                         (y1 - y0) + 4.0f, w.r, w.g, w.b,
+                    instances_.push_back(rect_round_inst(segx - 3.0f, sy0 - 2.0f, segw + 6.0f,
+                                                         (sy1 - sy0) + 4.0f, w.r, w.g, w.b,
                                                          segr + 3, 0, 200));
                 }
                 // Hovered = full alpha + slightly wider so it reads as the
                 // command under the pointer. A gentle halo only on hover.
                 if (hov) {
-                    instances_.push_back(rect_round_inst(segx - 2.0f, y0 - 1.0f, segw + 4.0f,
-                                                         (y1 - y0) + 2.0f, c.r, c.g, c.b,
+                    instances_.push_back(rect_round_inst(segx - 2.0f, sy0 - 1.0f, segw + 4.0f,
+                                                         (sy1 - sy0) + 2.0f, c.r, c.g, c.b,
                                                          segr + 2, 0,
                                                          static_cast<std::uint8_t>(
                                                              std::clamp(rail_hover_halo_, 0, 255))));
@@ -1097,8 +1105,22 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
                 const float sw = (hov || focused) ? segw + 3.0f : segw;
                 const float sx = (hov || focused) ? segx - 1.5f : segx;
                 if (hov || focused) a = 255;
-                instances_.push_back(rect_round_inst(sx, y0, sw, y1 - y0, c.r, c.g, c.b,
-                                                     (hov || focused) ? segr + 1 : segr, 0, a));
+                // Each segment is a fully-rounded pill (rounded top AND bottom),
+                // so even a run of same-colour commands shows clear divisions.
+                const std::uint8_t pill = static_cast<std::uint8_t>(
+                    std::min<int>(segr + 2, static_cast<int>((sy1 - sy0) / 2.0f)));
+                instances_.push_back(rect_round_inst(sx, sy0, sw, sy1 - sy0, c.r, c.g, c.b,
+                                                     pill, 0, a));
+                // Explicit dark divider notch at the segment's TOP edge — the
+                // track colour, drawn a hair into the gap — so a run of same-
+                // status commands always shows a crisp division line between
+                // each, not just the rounded ends.
+                if (m.start > 0) {
+                    const Rgb dk = palette_.default_bg();
+                    instances_.push_back(rect_inst(segx - 0.5f, y0 - 0.5f, segw + 1.0f, 2.0f,
+                                                   dk.r, dk.g, dk.b, 0, 235));
+                }
+                (void)y1;
             }
             // Viewport indicator: a BRACKET framing the current view — thin caps
             // at the top & bottom of the viewport plus faint side rails — so it
