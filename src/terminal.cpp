@@ -585,6 +585,13 @@ std::int64_t Session::total_rows() const noexcept {
     return impl_->model.screen.total_rows();
 }
 
+bool Session::scroll_to_row(std::int64_t abs_row) {
+    if (abs_row < 0) return false;
+    const std::int32_t before = impl_->model.screen.scroll_offset();
+    impl_->model.screen.scroll_to_abs_row(abs_row, /*margin=*/0);
+    return impl_->model.screen.scroll_offset() != before;
+}
+
 bool Session::jump_to_command(std::uint64_t id) {
     for (const auto &b : impl_->model.commands.blocks()) {
         if (b.id == id) {

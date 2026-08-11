@@ -351,6 +351,9 @@ public:
     // Jump the view so the command block `id`'s prompt sits near the top.
     // Returns true if the block exists. Powers flyout click-to-jump.
     bool jump_to_command(std::uint64_t id);
+    // Plain read-only scroll so absolute row `abs_row` sits at the viewport top
+    // (margin 0). No focus/highlight side effects. Returns true if it moved.
+    bool scroll_to_row(std::int64_t abs_row);
 
     // --- selection ---------------------------------------------------------
     // Begin/extend a selection at a VISIBLE cell (viewport row/col). mode: 0
