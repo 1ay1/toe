@@ -207,6 +207,16 @@ public:
     // Reverse-video selection: swap each selected cell's fg/bg (classic terminal
     // look) instead of a coloured highlight. Live-toggle; rebuilds the cache.
     void set_selection_invert(bool on) noexcept;
+    // Scrollback-search highlight colours (all matches / current). Live.
+    void set_search_colors(Rgb all, Rgb current) noexcept;
+    // Selection fine-tuning: text-contrast floor, corner-radius fraction, and
+    // the min luma stand-off before a selection colour is nudged. Live.
+    void set_selection_tuning(float contrast, float radius, float min_visibility) noexcept;
+    // Command-minimap rail: on/off, width (px), status segment colours. Live.
+    void set_rail(bool enabled, int width_px, Rgb ok, Rgb failed, Rgb running) noexcept;
+    void set_rail_alpha(int body, int hover_halo) noexcept;
+    // Caret comet-trail ghost count on a long jump (0..6). Live.
+    void set_cursor_trail_len(int n) noexcept;
     // Live-set extra word-joining codepoints (UTF-8) for double-click select.
     void set_word_separators(std::string_view utf8);
     // Cursor blink half-period (ms); 0 = steady. Read by the host run loop to

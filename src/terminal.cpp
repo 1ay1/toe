@@ -259,6 +259,26 @@ void Session::set_selection_invert(bool on) noexcept {
     impl_->renderer.set_selection_invert(on);
 }
 
+void Session::set_search_colors(Rgb all, Rgb current) noexcept {
+    impl_->renderer.set_search_colors(all, current);
+}
+
+void Session::set_selection_tuning(float contrast, float radius, float min_visibility) noexcept {
+    impl_->renderer.set_selection_tuning(contrast, radius, min_visibility);
+}
+
+void Session::set_rail(bool enabled, int width_px, Rgb ok, Rgb failed, Rgb running) noexcept {
+    impl_->renderer.set_rail(enabled, width_px, ok, failed, running);
+}
+
+void Session::set_rail_alpha(int body, int hover_halo) noexcept {
+    impl_->renderer.set_rail_alpha(body, hover_halo);
+}
+
+void Session::set_cursor_trail_len(int n) noexcept {
+    impl_->renderer.set_cursor_trail_len(n);
+}
+
 void Session::set_word_separators(std::string_view utf8) {
     impl_->model.screen.set_word_separators_extra(decode_word_seps(utf8));
 }
