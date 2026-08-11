@@ -119,6 +119,9 @@ private:
 
     // --- pointer -----------------------------------------------------------
     void handle(const win::MouseDown &e) {
+        // Command minimap: a click on the right-edge rail jumps the view to the
+        // command block there. Consumed before selection/link handling.
+        if (e.button == MouseButton::left && s_.rail_click(e.x, e.y, px_)) return;
         const auto [col, vrow] = cell_of(e.x, e.y);
         // Ctrl+Click (or plain click when the app isn't tracking the mouse)
         // opens an OSC 8 hyperlink under the pointer, if any.

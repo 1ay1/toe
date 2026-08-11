@@ -274,6 +274,14 @@ public:
     void scroll_to_bottom();
     [[nodiscard]] int scroll_offset() const noexcept;
 
+    // Command-minimap interaction: if the pixel (x,y) lands on the right-edge
+    // rail, jump the view to the command block there (or to that scroll
+    // position) and return true. `px` is the current drawable size. Lets a host
+    // wire click-to-jump on the minimap with no knowledge of its geometry.
+    bool rail_click(int x, int y, PixelSize px);
+    // True if pixel x is within the rail's hit zone (for cursor/hover cues).
+    [[nodiscard]] bool on_rail(int x, PixelSize px) const noexcept;
+
     // --- command-block navigation (OSC 133) --------------------------------
     // Jump the scroll view to a shell command's prompt. These power a
     // human-facing block UI over full-screen scrollback: step through past

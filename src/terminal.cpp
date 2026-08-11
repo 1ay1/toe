@@ -469,6 +469,34 @@ void Session::scroll(int lines) { impl_->model.screen.scroll(lines); }
 void Session::scroll_to_bottom() { impl_->model.screen.scroll_to_bottom(); }
 int Session::scroll_offset() const noexcept { return impl_->model.screen.scroll_offset(); }
 
+namespace {
+// Rail geometry, kept in ONE place so on_rail() and the renderer agree. The
+// rail is a ~10px hit zone on the right edge (the visual rail is ~5px + margin).
+constexpr int kRailHitW = 12;
+} // namespace
+
+bool Session::on_rail(int x, PixelSize px) const noexcept {
+    return x >= px.w - kRailHitW;
+}
+
+bool Session::rail_click(int x, int y, PixelSize px) {
+    if (!on_rail(x, px) || px.h <= 0) return false;
+    auto &scr = impl_->model.screen;
+    const std::int64_t total = scr.total_rows();
+    if (total <= 0) return false;
+    // Map the click Y to an absolute row (row 0 = oldest at the top).
+    const std::int64_t row =
+        std::clamp<std::int64_t>(static_cast<std::int64_t>(y) * total / px.h, 0, total - 1);
+    // Prefer snapping to the command block under the click (jump to its prompt);
+    // otherwise scroll to the raw row.
+    std::int64_t target = row;
+    for (const auto &m : scr.scroll_marks()) {
+        if (row >= m.start && row < m.end) { target = m.start; break; }
+    }
+    scr.scroll_to_abs_row(target, /*margin=*/1);
+    return true;
+}
+
 // --- command-block navigation ----------------------------------------------
 std::uint64_t Session::focused_block() const noexcept { return impl_->focused_block; }
 
