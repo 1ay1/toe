@@ -497,6 +497,16 @@ bool Session::rail_click(int x, int y, PixelSize px) {
     return true;
 }
 
+void Session::rail_hover(int x, int y, PixelSize px) {
+    auto &scr = impl_->model.screen;
+    if (!on_rail(x, px) || px.h <= 0) { scr.set_rail_hover(-1); return; }
+    const std::int64_t total = scr.total_rows();
+    if (total <= 0) { scr.set_rail_hover(-1); return; }
+    const std::int64_t row =
+        std::clamp<std::int64_t>(static_cast<std::int64_t>(y) * total / px.h, 0, total - 1);
+    scr.set_rail_hover(row);
+}
+
 // --- command-block navigation ----------------------------------------------
 std::uint64_t Session::focused_block() const noexcept { return impl_->focused_block; }
 

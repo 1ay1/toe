@@ -145,6 +145,7 @@ private:
     }
 
     void handle(const win::MouseMove &e) {
+        s_.rail_hover(e.x, e.y, px_); // brighten the rail segment under the pointer
         const auto [col, vrow] = cell_of(e.x, e.y);
         // Shift always forces LOCAL selection — including the drag. Without this
         // check a Shift+drag inside a mouse-tracking app (vim/tmux/htop) would

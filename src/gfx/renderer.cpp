@@ -1004,6 +1004,8 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
             for (const auto &m : marks) {
                 const float y0 = row_to_y(m.start);
                 const float y1 = std::max(y0 + 3.0f, row_to_y(m.end));
+                const bool hov = screen.rail_hover_row() >= m.start &&
+                                 screen.rail_hover_row() < m.end;
                 Rgb c;
                 std::uint8_t a = 200;
                 switch (m.status) {
@@ -1015,7 +1017,12 @@ DamageRect Renderer::draw(const term::Screen &screen, PixelSize px, bool cursor_
                     a = 210;
                     break;
                 }
-                instances_.push_back(rect_round_inst(x, y0, railw, y1 - y0, c.r, c.g, c.b, rr, 0, a));
+                // Hovered segment: full alpha + a touch wider so it reads as
+                // the clickable target under the pointer.
+                const float sw = hov ? railw + 3.0f : railw;
+                const float sx = hov ? x - 1.5f : x;
+                if (hov) a = 255;
+                instances_.push_back(rect_round_inst(sx, y0, sw, y1 - y0, c.r, c.g, c.b, rr, 0, a));
             }
             // Viewport thumb: where you're looking. Brighter while scrolled.
             if (total_rows > grid.rows) {

@@ -281,6 +281,9 @@ public:
     bool rail_click(int x, int y, PixelSize px);
     // True if pixel x is within the rail's hit zone (for cursor/hover cues).
     [[nodiscard]] bool on_rail(int x, PixelSize px) const noexcept;
+    // Update the rail hover highlight from a pointer at (x,y); clears it when
+    // the pointer isn't on the rail. Cheap; call from mouse-move.
+    void rail_hover(int x, int y, PixelSize px);
 
     // --- command-block navigation (OSC 133) --------------------------------
     // Jump the scroll view to a shell command's prompt. These power a

@@ -78,6 +78,12 @@ public:
     [[nodiscard]] const std::vector<ScrollMark> &scroll_marks() const noexcept {
         return scroll_marks_;
     }
+    // The absolute row the pointer is hovering on the rail (-1 = none). The
+    // renderer brightens the segment under it. Host sets it from mouse-move.
+    void set_rail_hover(std::int64_t abs_row) noexcept {
+        if (rail_hover_row_ != abs_row) { rail_hover_row_ = abs_row; touch(); }
+    }
+    [[nodiscard]] std::int64_t rail_hover_row() const noexcept { return rail_hover_row_; }
 
     // --- modes -------------------------------------------------------------
     // Whether the text cursor should be drawn (DECTCEM, CSI ?25 h/l).
@@ -602,6 +608,7 @@ private:
     std::int32_t scroll_offset_{0};                 // rows scrolled into history
     std::size_t max_history_{10000};                // ring-buffer cap
     std::vector<ScrollMark> scroll_marks_{};        // command minimap segments
+    std::int64_t rail_hover_row_{-1};               // rail hover row (-1 = none)
 
     // Rewrap all content (history + live) from old_cols to the new width when a
     // resize changes the column count. Preserves logical lines + the cursor.
