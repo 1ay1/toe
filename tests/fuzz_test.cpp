@@ -117,7 +117,7 @@ int main() {
     }();
     const std::string ris_storm = [] {
         std::string s;
-        for (int i = 0; i < 20000; ++i) s += "\x1bc";
+        for (int i = 0; i < 20000; ++i) s += "\033c";
         return s;
     }();
     const std::string margin_abuse =
@@ -131,7 +131,7 @@ int main() {
     }();
     const std::string scroll_abuse = [] {
         std::string s = "\x1b[2;5r";
-        for (int i = 0; i < 5000; ++i) s += "\x1bM\x1bD";
+        for (int i = 0; i < 5000; ++i) s += "\x1bM\033D";
         return s;
     }();
     const std::string wide_edge = [] {
@@ -208,7 +208,7 @@ int main() {
     {
         term::Config cfg;
         term::Model m{cfg, Extent{1, 1}};
-        (void)term::feed_output(m, "abc\r\n\x1b[2J\xe4\xb8\xad\x1b[5;5Hx\t\t\x1bM\x1bD");
+        (void)term::feed_output(m, "abc\r\n\x1b[2J\xe4\xb8\xad\x1b[5;5Hx\t\t\x1bM\033D");
         check_invariants(m, "1x1 terminal survives");
     }
 

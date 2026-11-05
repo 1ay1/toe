@@ -411,6 +411,17 @@ private:
     void erase_in_display(int mode);
     void erase_in_line(int mode);
     void move_cursor_abs(Row r, Col c);
+    // CUU/CUD/CNL/CPL: move by `delta` rows, stopping at the scroll region's
+    // edge if the cursor started inside it. `to_first_col` also returns to the
+    // left margin (CNL/CPL).
+    void move_cursor_vert(std::int32_t delta, bool to_first_col);
+    // CUF/CUB: move by `delta` columns, bounded by the left/right margins when
+    // the cursor is within them.
+    void move_cursor_horiz(std::int32_t delta);
+    // Like move_cursor_abs, but interprets (r,c) per DECOM: when origin mode is
+    // on they are relative to the scroll region / left margin, and the cursor
+    // is confined to it. Used by CUP, HVP and VPA.
+    void move_cursor_origin(Row r, Col c);
     void apply_sgr(std::span<const int> params, std::span<const std::uint8_t> sub);
     void clamp_cursor() noexcept;
     void touch() noexcept { ++generation_; }
@@ -474,6 +485,7 @@ private:
     Pen pen_{};
     bool wrap_pending_{false};   // DEC-style deferred wrap at right margin
     std::uint64_t generation_{1};
+    bool origin_mode_{false};          // DECOM: coords relative to the region?
     bool sync_output_{false};          // DEC 2026 synchronized-output active?
     std::uint64_t sync_frozen_gen_{1}; // generation reported while sync is on
     bool focus_events_{false};         // DEC 1004 focus reporting requested?

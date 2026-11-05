@@ -1131,6 +1131,15 @@ void Screen::set_private_mode(int mode, bool set) {
     case 1: // DECCKM — application cursor keys.
         app_cursor_keys_ = set;
         break;
+    case 6: // DECOM — origin mode: CUP/HVP/VPA become relative to the scroll
+            // region (and left/right margins), and the cursor cannot leave it.
+            // Setting or resetting it homes the cursor, per DEC STD 070.
+        origin_mode_ = set;
+        cursor_ = Pos{Row{origin_mode_ ? scroll_top_ : 0},
+                      Col{origin_mode_ ? left_bound() : 0}};
+        wrap_pending_ = false;
+        touch();
+        break;
     case 7: // DECAWM — autowrap at right margin.
         autowrap_ = set;
         break;
@@ -1195,6 +1204,7 @@ void Screen::report_mode(int mode, bool priv) {
     if (priv) {
         switch (mode) {
         case 1:    pv = b(app_cursor_keys_); break;          // DECCKM
+        case 6:    pv = b(origin_mode_); break;             // DECOM
         case 7:    pv = b(autowrap_); break;                 // DECAWM
         case 12:   pv = kReset; break;      // cursor blink: accepted, host-driven
         case 25:   pv = b(cursor_shown_); break;            // DECTCEM
@@ -1277,6 +1287,7 @@ void Screen::soft_reset() {
     cursor_shown_ = true;
     cursor_style_ = {};
     autowrap_ = true;
+    origin_mode_ = false; // DECOM is in DECSTR's reset list
     app_cursor_keys_ = false;
     app_keypad_ = false;
     charset_g0_ = charset_g1_ = Charset::Ascii;
@@ -1403,6 +1414,45 @@ void Screen::move_cursor_abs(Row r, Col c) {
     touch();
 }
 
+void Screen::move_cursor_vert(std::int32_t delta, bool to_first_col) {
+    // CUU/CUD/CNL/CPL stop at the scroll region's edge when the cursor starts
+    // INSIDE it (DEC STD 070). A cursor already outside the region is bounded
+    // by the screen instead, so a region can never trap it.
+    const std::int32_t r = cursor_.row.get();
+    const bool inside = r >= scroll_top_ && r <= scroll_bottom_;
+    const std::int32_t lo = inside ? scroll_top_ : 0;
+    const std::int32_t hi = inside ? scroll_bottom_ : size_.rows - 1;
+    wrap_pending_ = false;
+    cursor_.row = Row{std::clamp(r + delta, lo, hi)};
+    if (to_first_col) cursor_.col = Col{inside ? left_bound() : 0};
+    touch();
+}
+
+void Screen::move_cursor_horiz(std::int32_t delta) {
+    // CUF/CUB are bounded by the left/right margins when the cursor is within
+    // them, and by the screen otherwise.
+    const std::int32_t c = cursor_.col.get();
+    const bool inside = c >= left_bound() && c <= right_bound();
+    const std::int32_t lo = inside ? left_bound() : 0;
+    const std::int32_t hi = inside ? right_bound() : size_.cols - 1;
+    wrap_pending_ = false;
+    cursor_.col = Col{std::clamp(c + delta, lo, hi)};
+    touch();
+}
+
+void Screen::move_cursor_origin(Row r, Col c) {
+    if (!origin_mode_) {
+        move_cursor_abs(r, c);
+        return;
+    }
+    // Origin mode: (0,0) is the top-left of the scroll region / left margin,
+    // and the cursor is clamped INSIDE the region rather than to the screen.
+    wrap_pending_ = false;
+    cursor_.row = Row{std::clamp(scroll_top_ + r.get(), scroll_top_, scroll_bottom_)};
+    cursor_.col = Col{std::clamp(left_bound() + c.get(), left_bound(), right_bound())};
+    touch();
+}
+
 void Screen::erase_in_line(int mode) {
     const Row r = cursor_.row;
     const Cell b = blank_cell();
@@ -1460,16 +1510,16 @@ void Screen::erase_in_display(int mode) {
 void Screen::csi(const vt::CsiDispatch &d) {
     const auto p = d.params;
     switch (d.final) {
-    case 'A': move_cursor_abs(cursor_.row - param_or(p, 0, 1), cursor_.col); break; // CUU
-    case 'B': move_cursor_abs(cursor_.row + param_or(p, 0, 1), cursor_.col); break; // CUD
-    case 'C': move_cursor_abs(cursor_.row, cursor_.col + param_or(p, 0, 1)); break; // CUF
-    case 'D': move_cursor_abs(cursor_.row, cursor_.col - param_or(p, 0, 1)); break; // CUB
-    case 'E': move_cursor_abs(cursor_.row + param_or(p, 0, 1), Col{0}); break;      // CNL
-    case 'F': move_cursor_abs(cursor_.row - param_or(p, 0, 1), Col{0}); break;      // CPL
+    case 'A': move_cursor_vert(-param_or(p, 0, 1), false); break;             // CUU
+    case 'B': move_cursor_vert(param_or(p, 0, 1), false); break;              // CUD
+    case 'C': move_cursor_horiz(param_or(p, 0, 1)); break;                    // CUF
+    case 'D': move_cursor_horiz(-param_or(p, 0, 1)); break;                   // CUB
+    case 'E': move_cursor_vert(param_or(p, 0, 1), true); break;               // CNL
+    case 'F': move_cursor_vert(-param_or(p, 0, 1), true); break;              // CPL
     case 'G': move_cursor_abs(cursor_.row, Col{param_or(p, 0, 1) - 1}); break;      // CHA
     case 'H':
     case 'f': // CUP (1-based params)
-        move_cursor_abs(Row{param_or(p, 0, 1) - 1}, Col{param_or(p, 1, 1) - 1});
+        move_cursor_origin(Row{param_or(p, 0, 1) - 1}, Col{param_or(p, 1, 1) - 1});
         break;
     case 'J': erase_in_display(param_raw(p, 0, 0)); break; // ED
     case 'K': erase_in_line(param_raw(p, 0, 0)); break;    // EL
@@ -1528,7 +1578,16 @@ void Screen::csi(const vt::CsiDispatch &d) {
             reply(buf);
         }
         break;
-    case 'd': move_cursor_abs(Row{param_or(p, 0, 1) - 1}, cursor_.col); break; // VPA
+    case 'd': // VPA — row only, so pass the current column through unchanged.
+        if (origin_mode_) {
+            wrap_pending_ = false;
+            cursor_.row = Row{std::clamp(scroll_top_ + param_or(p, 0, 1) - 1,
+                                         scroll_top_, scroll_bottom_)};
+            touch();
+        } else {
+            move_cursor_abs(Row{param_or(p, 0, 1) - 1}, cursor_.col);
+        }
+        break;
     case 'r': // DECSTBM (set scroll region) or DECCARA (change attrs in rect)
         if (d.intermediates.size() == 1 && d.intermediates[0] == '$') {
             // DECCARA: CSI t;l;b;r ; Ps... $ r  -> apply SGR attrs to a rect.
@@ -1853,6 +1912,7 @@ void Screen::esc(const vt::EscDispatch &d) {
             cur_link_key_.clear();
             hover_link_ = 0;
             wrap_pending_ = false;
+            origin_mode_ = false;
             scroll_top_ = 0;
             scroll_bottom_ = size_.rows - 1;
             scroll_left_ = 0;

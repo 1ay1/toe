@@ -25,6 +25,10 @@ add_executable(caps_test caps_test.cpp)
 target_link_libraries(caps_test PRIVATE toe::toe)
 add_test(NAME caps COMMAND caps_test)
 
+add_executable(region_test region_test.cpp)
+target_link_libraries(region_test PRIVATE toe::toe)
+add_test(NAME region COMMAND region_test)
+
 # Robustness: no byte stream may crash, hang or corrupt the model. Most
 # valuable under -DTOE_SANITIZE=ON, where a bad cell write becomes a failure.
 add_executable(fuzz_test fuzz_test.cpp)
