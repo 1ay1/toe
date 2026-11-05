@@ -1,204 +1,167 @@
-# toe — a GPU terminal engine that renders anywhere
+# toe — a terminal library
 
-`toe` is a from-scratch terminal emulator **library** — no VTE, no GTK, no
-SDL. It owns the entire stack (PTY → escape-sequence parser → grid model →
-GPU renderer) and is the engine behind [`hand`](../hand).
+`toe` is a terminal emulator as a **library**: it turns bytes into a grid of
+cells. VT/ANSI parsing, the screen model, scrollback, selection, search, shell
+integration, and key encoding. That's the whole scope.
 
-It renders a live terminal into **anything that can hold an OpenGL context** —
-a Wayland or X11 window, an offscreen framebuffer, a texture inside your own
-engine's UI, a headless CI job taking screenshots. Not "any project": any
-*surface*, anywhere. The engine (`toe::core`) knows nothing about your window
-system, does not own your GL context, and does not decide how your shell is
-spawned. The three things a terminal library should *not* dictate — **the
-surface, the GL context, and the child process** — are handed to the host, and
-each boundary is encoded in the type system so illegal wiring is a compile
-error.
+It is the engine behind [`hand`](../hand).
+
+**toe links nothing.** No window system, no GPU, no font stack, no image codec,
+no process spawning. Its only dependency is the C++23 standard library:
+
+```console
+$ ldd your-app-using-toe
+    libstdc++.so.6  libm.so.6  libgcc_s.so.1  libc.so.6
+```
+
+That is the point. Drawing the grid, owning the PTY, and running an event loop
+are *your* job — and they're the parts that are platform-specific, opinionated,
+and different for every host. A terminal's hard, portable, reusable core is the
+state machine, so that is all that's here.
 
 ```cmake
-find_package(toe CONFIG REQUIRED COMPONENTS Core)          # bring your own window
-find_package(toe CONFIG REQUIRED COMPONENTS Core Platform) # or use the Linux backends
-target_link_libraries(app PRIVATE toe::core [toe::platform])
+find_package(toe CONFIG REQUIRED)
+target_link_libraries(app PRIVATE toe::toe)
 ```
 
-- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — the Elm-architecture core and the type-theoretic design.
-- **[docs/INTEGRATION.md](docs/INTEGRATION.md)** — how to embed toe, with a complete minimal host.
-- **[docs/API.md](docs/API.md)** — the public surface, header by header.
+## The shape of it
 
-## Two libraries, one strict boundary
+```
+            your host                        toe
+    ┌──────────────────────┐      ┌────────────────────────┐
+    │ PTY / ssh / recording│─────▶│ feed_output(model, …)  │
+    │                      │ bytes│   vt parse → screen    │
+    │ keyboard             │─────▶│ encode_key(…)          │
+    │                      │◀─────│ [Cmd]: write, title,   │
+    │ GPU / TUI / tests    │      │        clipboard, bell │
+    │                      │◀─────│ screen.row(r) → Cells  │
+    └──────────────────────┘ read │                        │
+                                  └────────────────────────┘
+```
 
-| Target | What it is | Links |
-|--------|-----------|-------|
-| **`toe::core`** | the whole terminal — pty, VT parser, grid model, TEA reducer, inline graphics, GPU renderer, keymap — **plus the `Surface` contract** | freetype, harfbuzz, fontconfig, libpng, epoxy (all **private**) |
-| **`toe::platform`** *(optional)* | batteries-included Linux `Surface` backends: Wayland / X11 / offscreen EGL + `open_surface()` | core + wayland, x11, xcb, xkbcommon, egl |
-
-`toe::core` links **zero** windowing libraries. A host on macOS, Windows, or an
-embedded compositor consumes `toe::core` and provides its own `Surface`; a
-Linux terminal like `hand` also links `toe::platform` and gets a window for
-free. The dependency arrow only ever points `core ← platform ← host`.
-
-## The three boundaries that give the host all the power
-
-### 1. `Surface` is a concept, not a base class
-
-Bring your own window (GLFW, Qt, SDL, Win32, Cocoa) by *modelling* the
-`toe::platform::Surface` **C++23 concept** — a structural contract. No
-inheritance, no vtable forced on your type, no toe header pulled into your
-window class beyond the contract. Optional capabilities (title, clipboard,
-key-repeat, flush) are refinement concepts, so a minimal host implements five
-methods. `AnySurface` offers opt-in type erasure for hosts that want runtime
-polymorphism. The shipped Wayland/X11 backends are just models of the same
-concept.
-
-### 2. `RenderContext` — a capability token for the GL context
-
-`Session::render()` requires a `gfx::RenderContext&`. Its existence is the
-*proof* that a GL context is current on this thread — a fact the compiler now
-checks instead of a comment nobody read. The token also carries a strong-typed
-target `Framebuffer`, so the host says exactly where the terminal composites
-(default: the window's back buffer; or an offscreen FBO / a texture you own).
+Two calls in, a grid and a list of effects out:
 
 ```cpp
-auto rc = toe::gfx::RenderContext::adopt_current();  // "my GL context is live"
-session.render(rc, px);                                // impossible to call without proof
+#include "toe/term/update.hpp"
+
+toe::term::Config cfg;
+cfg.scrollback_lines = 10000;
+toe::term::Model m{cfg, toe::Extent{80, 24}};
+
+// Feed child output. Returns the side effects it implies — it performs none.
+for (const toe::Cmd &c : toe::term::feed_output(m, bytes)) {
+    if (auto *w = std::get_if<toe::WriteChild>(&c)) write(pty, w->bytes);   // a DA/DSR reply
+    else if (auto *t = std::get_if<toe::SetTitle>(&c)) set_title(t->title);
+}
+
+// Read the grid back out and draw it however you like.
+toe::term::Palette pal;
+for (const toe::term::Cell &cell : m.screen.row(toe::Row{0})) {
+    const toe::Rgb fg = pal.resolve(cell.pen.fg, /*is_fg=*/true);
+    draw(cell.cp, fg, toe::term::has(cell.pen.attr, toe::term::Attr::Bold));
+}
 ```
 
-### 3. `AdoptFd` — the host opens the child, toe drives it
+## The one big idea: The Elm Architecture
 
-toe never `fork`s. The host opens a PTY master by whatever native means —
-`forkpty` on Linux/macOS, ConPTY on Windows, an SSH channel, a container, a
-recorded session — and hands it to toe. `Config::source` is an `AdoptFd`:
+A terminal is a machine that folds a byte stream into a grid plus a handful of
+side effects (write to the child, set the title, ring the bell, touch the
+clipboard). The usual way to build one is callbacks that mutate shared state
+and do I/O inline — untestable, and full of "forgot to send the reply" bugs.
+
+toe is a **pure reducer** instead. Every effect is *reified as data* — a `Cmd`
+value returned from `feed_output` — and the caller interprets it:
+
+```
+feed_output : (Model, bytes) -> (Model', [Cmd])     // pure, total, testable
+```
+
+Nothing in toe writes to a file descriptor, allocates a GPU resource, or reads
+a clock you don't control. So a protocol bug is a one-line assertion with no
+mocks and no window:
 
 ```cpp
-Config cfg;
-cfg.source = AdoptFd{ .master_fd = my_master, .child = my_pid, .owns_fd = true };
+assert(writes(feed_output(m, "\x1b[c")) == "\x1b[?62;1;4;6;22c");  // DA1
 ```
 
-So the engine carries no `<pty.h>`, no `forkpty`, no OS branch. argv/`$SHELL`,
-`TERM`, and any post-fork child hook are host policy (see hand's
-`posix_pty.cpp`).
+Every test in `tests/` runs headless for exactly this reason, and that is a
+property of the library, not of the tests.
 
-## The Elm Architecture, in C++
+## Layers
 
-The terminal core is a **pure state machine**. Nothing in the model performs
-I/O; every side effect is *reified as data* and returned from a pure `update`
-function that a thin runtime interprets.
+| Layer | Header | What it is |
+|---|---|---|
+| value types | `core/types.hpp` | `Coord<Tag>` phantom newtypes — a Row cannot be passed as a Col; `Result<T>` = `expected<T, Error>` |
+| effects | `core/tea.hpp` | the closed `Cmd` / `Msg` sum types |
+| parser | `vt/parser.hpp` | Williams DEC state machine → typed actions; `PrintRun` batches ASCII; `simd_scan.hpp` vectorizes the scan for the next control byte |
+| grid + history | `term/rowring.hpp` | **one** arena shared by viewport and scrollback: a scroll is pointer arithmetic plus blanking one row, never a per-line memcpy |
+| screen | `term/screen.hpp` | the reduction target — modes, margins, tabs, selection, search, reflow |
+| colour | `term/palette.hpp` | the xterm 256 table and `Color` → `Rgb` resolution |
+| reducer | `term/update.hpp` | `feed_output` — the public entry point |
+| shell integration | `term/command_log.hpp`, `term/sbquery.hpp` | OSC 133 command blocks; a JSON-over-DCS read-out |
+| keys | `input/keymap.hpp` | legacy + Kitty keyboard protocol, encoded into a caller-owned buffer (no allocation per keystroke) |
 
-```
-             ┌────────────────────────── the pure core ──────────────────────────┐
-   Msg  ───▶ │  update : (Model, Msg) -> (Model, [Cmd])        view : Model -> Scene │ ──▶ GPU
-             └───────────────────────────────────────────────────────────────────┘
-   ▲                                    │
-   │  ChildOutput, Key, Paste,          │  WriteChild, SetTitle, SetClipboard,
-   │  Resized, Mouse*, ChildExited      │  ResizePty, RingBell, Quit
-   │                                    ▼
-   └──────────────── Runtime (the ONLY impure code) executes [Cmd] ───────────────┘
-```
+## What it emulates
 
-The terminal's response to *any* byte stream is a pure function you can assert
-on with zero mocks:
+xterm-class VT with the modern extensions: UTF-8 with correct display widths
+from a generated Unicode Character Database table (not locale-dependent libc
+`wcwidth`), full SGR (256 + truecolour, italic/strike/underline styles,
+coloured underlines), the alternate screen, origin/autowrap/insert
+modes, bracketed paste, focus reporting, all four mouse encodings, soft-wrap
+reflow on resize (scrollback included), scroll regions with left/right margins,
+synchronized output (DEC 2026), OSC 8 hyperlinks, OSC 7 cwd, OSC 133 shell
+integration, OSC 10/11/12 + 4/104 dynamic colours, DEC line attributes
+(double-width/height, DECALN), tab stops, insert/delete/erase/repeat, and the
+full device-query set (DA/DSR/XTVERSION/XTGETTCAP/DECRQSS/DECRQM).
+
+Wide glyphs (CJK, emoji) occupy a lead cell plus a zero-width spacer, and
+combining marks attach to the preceding cell without advancing the cursor.
+There is no full grapheme-cluster segmentation — width is per codepoint, as in
+alacritty and kitty.
+
+Also present, because they're model state rather than drawing: Unicode-aware
+selection (word/line/block, soft-wrap aware), scrollback search with match
+ranking, command-block navigation (jump to the last failed command), inline
+image *protocol* handling (sixel and kitty graphics — placement, scrolling and
+eviction), and a secret redactor for safe transcript capture.
+
+## Inline images need a decoder from you
+
+toe tracks image placements but does not decompress pictures — that is codec
+work, not terminal work. Raw RGB/RGBA (kitty `f=24`/`f=32`) works out of the
+box. For PNG (`f=100`), hand it the decoder your host already has:
 
 ```cpp
-term::Model m{cfg, {80, 24}};
-Cmds fx = term::feed_output(m, "\x1b[c");     // fish's DA1 query
-assert(writes(fx) == "\x1b[?62;1;6;22c");      // the reply, as data
+toe::term::set_png_decoder([](const std::uint8_t *d, std::size_t n,
+                              int &w, int &h, std::vector<std::uint8_t> &rgba) {
+    return my_png_decode(d, n, w, h, rgba);   // → tightly-packed RGBA8
+});
 ```
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full treatment.
+Without one, PNG transmissions are rejected cleanly.
 
-## Type-theoretic design
+## Threading
 
-- Strong coordinate newtypes (`Row`, `Col`, `Extent`, `PixelSize`) — grid math
-  cannot mix axes or confuse cells with pixels.
-- `std::expected<T, Error>` at every fallible boundary (PTY, GL, fonts,
-  surface). No exceptions across the seams; no half-built objects.
-- Sum types everywhere illegal states would otherwise be representable: VT
-  parser action, cell colour (`Default | Indexed | TrueColor`), terminal
-  lifecycle (`Running(Session) | Exited(code)`), `KeyEvent`
-  (`Text | SpecialKey`), and the `Surface` `Event`.
-- RAII over every C handle; `std::span` / `std::string_view` over raw
-  pointer+length pairs.
+None. toe contains no threads, no locks, and no atomics — it is a plain state
+machine, so *you* decide its concurrency. Call it from one thread (what `hand`
+does, and what a terminal wants: the grid is touched on every keystroke, every
+output byte and every frame, so the right number of threads contending for it
+is one), or own it per-session across a pool. toe imposes nothing either way.
 
-## Library hygiene
-
-toe::core behaves like a guest in the host's process:
-
-- **No environment reads for policy.** Backend selection is an explicit
-  `Backend` argument; the persistent-mapping escape hatch is
-  `Renderer::set_persistent_mapping()`, not an env var. toe never forks, so it
-  reads neither `$SHELL` nor `$TERM` — the host resolves those before handing
-  toe an `AdoptFd`.
-- **No `abort()` / `exit()`** across the API. Fallible paths return
-  `Result<T>`; internal invariants use debug `assert` that compiles out.
-- **No stray stderr.** Diagnostics travel in `Error::message`. The one
-  post-`fork` write is async-signal-safe.
-- **Per-instance C handles.** Each `FontAtlas` owns its own `FT_Library`; the
-  only process-global touch is Fontconfig's idempotent, refcounted `FcInit()`.
-- **Fully packaged.** `install()` + `find_package(toe COMPONENTS Core [Platform])`,
-  versioned SONAMEs, pkg-config. Private deps stay private — no GL type leaks
-  through a public header.
-
-## Building
+## Build
 
 ```sh
-cmake -S . -B build
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
-ctest --test-dir build          # parser, screen, tea, keymap, render, cache
-./build/toe-demo               # a minimal host that drives the library
+ctest --test-dir build
 ```
 
-Useful options:
+Needs a C++23 compiler and nothing else. `-DTOE_BUILD_TESTS=OFF` to skip the
+suite; `-DTOE_INSTALL=ON` to emit `find_package` support.
 
-| Option | Default | Effect |
-|--------|---------|--------|
-| `TOE_BUILD_PLATFORM` | `ON` | build the Linux Surface backends |
-| `TOE_BUILD_DEMO` | top-level | build `toe-demo` (needs platform) |
-| `TOE_BUILD_TESTS` | top-level | build the test suite |
-| `TOE_INSTALL` | top-level | emit install + `find_package` rules |
+## Docs
 
-A core-only build has no windowing dependencies:
-
-```sh
-cmake -S . -B build -DTOE_BUILD_PLATFORM=OFF -DTOE_BUILD_DEMO=OFF
-# libtoe links no wayland / xcb / x11 / egl
-```
-
-## Layout
-
-| Path | Role |
-|------|------|
-| `core/tea.hpp` | `Cmd` / `Msg` sum types — the architecture's spine |
-| `core/types.hpp` | strong coords, `Result<T>`, `Rgb` |
-| `vt/parser.*` | Williams ANSI state machine → typed actions (incl. DCS) |
-| `term/screen.*` | the grid `Model`: scroll regions, alt screen, selection |
-| `term/update.*` | the **pure reducer** — `feed_output(Model, bytes) -> Cmds` |
-| `pty/pty_source.hpp` | `PtySource` — spawn a shell or adopt an fd (**boundary 3**) |
-| `gfx/render_target.hpp` | `RenderContext` capability token (**boundary 2**) |
-| `gfx/*` | font atlas, palette, SDF shaders, instanced renderer (`view`) |
-| `platform/surface.hpp` | the `Surface` **concept** + `Event` + `AnySurface` (**boundary 1**) |
-| `platform/*.cpp` | Wayland / X11 / offscreen backends (`toe::platform`) |
-| `terminal.*` | `Terminal` lifecycle SM + `Session` + Runtime |
-
-## Status
-
-A real terminal: runs vim, tmux, htop; **reflow on resize** (logical lines
-rewrap when the width changes, scrollback included), scroll regions, left/right
-margins (DECSLRM/DECLRMM, DECBI/DECFI), alt screen,
-selection (char/word/line/block), mouse in and out, clipboard (Wayland + X11),
-OSC titles/hyperlinks/52, working directory (OSC 7), shell integration marks
-(OSC 133), dynamic colours (OSC 4/104 palette, 10/11 default
-fg/bg, 12/112 cursor), cursor shapes (DECSCUSR: block/underline/bar, steady or
-blinking), the Kitty keyboard protocol end-to-end (progressive-enhancement flag
-stack + disambiguating CSI-u encoding, event types incl. key-release from the
-Wayland/X11 backends, report-all-keys), programming ligatures (HarfBuzz calt
-shaping), curly/coloured underlines, synchronized output, soft reset (DECSTR),
-rectangular area ops (DECFRA/DECERA/DECCARA/DECRARA/DECRQCRA), REP, DEC line
-attributes (double-width/height, DECALN), full device-query
-replies (DA/DSR/XTVERSION/XTGETTCAP/DECRQSS/DECRQM), inline images (sixel +
-kitty graphics) with animation. IME preedit: a host-drivable composition string
-(`Session::set_preedit`) rendered inline at the cursor; the Wayland backend
-drives it from **text-input-v3** (real fcitx/ibus input methods) when the
-compositor offers it, falling back to xkb dead-key / Compose sequences
-(´+e = é) otherwise.
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — the design and the reasons
 
 ## License
 

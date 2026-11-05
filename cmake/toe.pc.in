@@ -4,7 +4,7 @@ libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
 includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
 
 Name: toe
-Description: A GPU terminal engine (core) that renders into any OpenGL surface.
+Description: A terminal library: VT parsing, screen model, scrollback and key encoding.
 Version: @PROJECT_VERSION@
 Cflags: -I${includedir}
 Libs: -L${libdir} -ltoe

@@ -5,8 +5,9 @@
 #   find_package(toe CONFIG REQUIRED)
 #   target_link_libraries(app PRIVATE toe::toe)
 #
-# toe exports a single target, toe::toe (the engine). toe::core remains as a
-# back-compat alias. The window system lives in the host (e.g. hand), never toe.
+# toe exports a single target, toe::toe (the terminal library). toe::core
+# remains as a back-compat alias. Drawing it, owning the PTY and running the
+# event loop live in the host (e.g. hand), never in toe.
 
 include(CMakePackageConfigHelpers)
 

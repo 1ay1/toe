@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: LGPL-2.0-or-later
 //
-// The 256-color palette and Color -> Rgb resolution. Separating this from the
-// screen model keeps SGR handling pure (it only records *which* color, as a
-// sum type) and localizes the "what pixels" decision to the renderer.
+// The 256-colour palette and Color -> Rgb resolution. SGR handling stays pure
+// (the screen only records *which* colour, as a sum type); this is what turns
+// that into concrete RGB, for a host that wants to draw the grid.
 
-#ifndef TOE_GFX_PALETTE_HPP
-#define TOE_GFX_PALETTE_HPP
+#ifndef TOE_TERM_PALETTE_HPP
+#define TOE_TERM_PALETTE_HPP
 
 #include <array>
 #include <optional>
@@ -14,11 +14,11 @@
 #include "toe/core/types.hpp"
 #include "toe/term/cell.hpp"
 
-namespace toe::gfx {
+namespace toe::term {
 
 class Palette {
 public:
-    // Build the standard xterm 256-color table (16 base + 6x6x6 cube + grays).
+    // Build the standard xterm 256-colour table (16 base + 6x6x6 cube + grays).
     Palette();
 
     [[nodiscard]] Rgb by_index(std::uint8_t i) const noexcept { return table_[i]; }
@@ -28,7 +28,7 @@ public:
     [[nodiscard]] Rgb cursor_color() const noexcept { return cursor_ ? *cursor_ : fg_; }
 
     // Dynamic colour control (OSC 4/104, 10/11, 12/112). Setters return true
-    // when the value actually changed, so the renderer can damage on change.
+    // when the value actually changed, so a host can damage on change.
     bool set_index(std::uint8_t i, Rgb c) noexcept {
         if (table_[i] == c) return false;
         table_[i] = c;
@@ -46,15 +46,14 @@ public:
     bool reset_index(std::uint8_t i) noexcept { return set_index(i, Palette{}.by_index(i)); }
 
     // Resolve a terminal Color to concrete RGB. `is_fg` selects which default
-    // to substitute for DefaultColor. Inline + branch-on-index (not std::visit)
-    // — this is the renderer's hottest per-cell call, so it must inline into
-    // the draw loop.
-    [[nodiscard]] Rgb resolve(const term::Color &c, bool is_fg) const noexcept {
+    // to substitute for DefaultColor. Branch-on-index, not std::visit, so it
+    // inlines into a caller's per-cell loop.
+    [[nodiscard]] Rgb resolve(const Color &c, bool is_fg) const noexcept {
         switch (c.index()) {
         case 1: // IndexedColor
-            return table_[std::get_if<term::IndexedColor>(&c)->index];
+            return table_[std::get_if<IndexedColor>(&c)->index];
         case 2: // TrueColor
-            return std::get_if<term::TrueColor>(&c)->rgb;
+            return std::get_if<TrueColor>(&c)->rgb;
         default: // DefaultColor (0) or valueless
             return is_fg ? fg_ : bg_;
         }
@@ -72,6 +71,6 @@ private:
     std::optional<Rgb> cursor_{}; // OSC 12; nullopt => follow fg
 };
 
-} // namespace toe::gfx
+} // namespace toe::term
 
-#endif // TOE_GFX_PALETTE_HPP
+#endif // TOE_TERM_PALETTE_HPP

@@ -37,6 +37,25 @@ Screen::Screen(Extent size) : size_{size} {
     }
 }
 
+void Screen::set_max_history(std::size_t lines) {
+    if (lines == max_history_) return;
+    max_history_ = lines;
+    // The alt screen has no scrollback, so only the primary ring is re-capped;
+    // the new cap applies to the primary buffer when it's swapped back in.
+    if (!on_alt_) {
+        const std::int64_t top_abs =
+            static_cast<std::int64_t>(ring_.view_base()) - scroll_offset_;
+        ring_.resize_keep(size_.rows, size_.cols, max_history_, blank_cell());
+        if (scroll_offset_ > 0) {
+            scroll_offset_ = static_cast<std::int32_t>(std::clamp<std::int64_t>(
+                static_cast<std::int64_t>(ring_.view_base()) - top_abs, 0,
+                static_cast<std::int64_t>(ring_.scrollback())));
+        }
+        stamp_all();
+        touch();
+    }
+}
+
 std::size_t Screen::index(Row r, Col c) const noexcept {
     // Offset into the ring arena for the visible row r. Used by bulk ops.
     return static_cast<std::size_t>(ring_.slot_of(ring_.view_base() +

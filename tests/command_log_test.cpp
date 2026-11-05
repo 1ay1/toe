@@ -30,7 +30,7 @@ static std::string ftcs(char which, const std::string &arg = "") {
 static std::string osc7(const std::string &dir) { return "\x1b]7;" + dir + "\x1b\\"; }
 
 int main() {
-    Config cfg;
+    term::Config cfg;
     term::Model m{cfg, Extent{80, 24}};
 
     // --- a full command lifecycle ------------------------------------------

@@ -34,6 +34,12 @@ public:
     // Resize the grid, preserving overlapping content (top-left anchored).
     void resize(Extent size);
 
+    // Scrollback capacity: max lines retained above the visible grid.
+    // Reallocates the ring (and so drops any history beyond the new cap), so
+    // set it once at startup rather than per frame.
+    void set_max_history(std::size_t lines);
+    [[nodiscard]] std::size_t max_history() const noexcept { return max_history_; }
+
     [[nodiscard]] Extent size() const noexcept { return size_; }
     [[nodiscard]] Pos cursor() const noexcept { return cursor_; }
 

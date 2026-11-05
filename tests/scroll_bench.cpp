@@ -3,7 +3,6 @@
 // components (through the public feed API) so the cost can be attributed to a
 // specific operation rather than guessed at.
 #include "toe/term/update.hpp"
-#include "toe/terminal.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -13,7 +12,7 @@ using Clock = std::chrono::steady_clock;
 
 // Feed `payload` repeatedly; report ns per BYTE so workloads compare directly.
 static void bench(const char *name, const std::string &payload, int reps, int cols = 200) {
-    toe::Config cfg;
+    toe::term::Config cfg;
     toe::term::Model m{cfg, toe::Extent{cols, 50}};
     (void)toe::term::feed_output(m, payload); // warm
 

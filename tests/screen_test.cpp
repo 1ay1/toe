@@ -990,7 +990,7 @@ int main() {
     // OSC is routed by feed_output (which owns the palette), not Screen::apply,
     // so these drive a Model and assert on model.screen's recorded edits.
     {
-        term::Model m{Config{}, Extent{6, 2}};
+        term::Model m{term::Config{}, Extent{6, 2}};
         const std::uint64_t e0 = m.screen.palette_epoch();
         (void)term::feed_output(m, "\x1b]4;1;rgb:ff/00/00\x1b\\"); // set index 1 = red
         expect(m.screen.palette_epoch() > e0, "OSC 4 set bumps the palette epoch");
@@ -1017,7 +1017,7 @@ int main() {
 
     // --- OSC 11 set + OSC 12 cursor colour ---------------------------------
     {
-        term::Model m{Config{}, Extent{6, 2}};
+        term::Model m{term::Config{}, Extent{6, 2}};
         (void)term::feed_output(m, "\x1b]11;#101828\x1b\\"); // default bg via #rrggbb
         bool bg_ok = false;
         for (const auto &e : m.screen.color_edits())
@@ -1117,7 +1117,7 @@ int main() {
 
     // --- OSC 7 (cwd) + OSC 133 (shell integration) -------------------------
     {
-        term::Model m{Config{}, Extent{10, 3}};
+        term::Model m{term::Config{}, Extent{10, 3}};
         (void)term::feed_output(m, "\x1b]7;file:///home/u/proj\x1b\\");
         expect(m.working_dir == "file:///home/u/proj", "OSC 7 records working directory");
         (void)term::feed_output(m, "\x1b]133;A\x1b\\");

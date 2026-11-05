@@ -1,18 +1,17 @@
 # SPDX-License-Identifier: LGPL-2.0-or-later
 cmake_minimum_required(VERSION 3.20)
-project(toe VERSION 0.1.0 LANGUAGES CXX C)
+project(toe VERSION 0.1.0 LANGUAGES CXX)
 
 # ---------------------------------------------------------------------------
-# toe — a GPU terminal ENGINE.
+# toe — a terminal LIBRARY.
 #
-#   toe::core   the whole terminal: pty · vt · screen · update · graphics ·
-#               renderer · keymap. It turns bytes into pixels (into a GL
-#               framebuffer the host provides via a RenderContext token) and
-#               knows NOTHING about any window system. This is the library.
+#   toe::toe   the terminal itself: vt · screen · scrollback · shell
+#              integration · keymap. It turns bytes into a grid of cells, and
+#              links nothing at all (standard library only).
 #
-# toe has no window-system dependency at all. A host (hand, or Qt/GLFW/SDL/
-# Win32/macOS) owns the window, input and GL-context creation, and drives
-# toe::Terminal. The old toe::platform Linux backends now live in `hand`.
+# toe does not draw, does not own a PTY, and does not run an event loop. A host
+# (e.g. hand) owns the window, the GPU, the font stack, the child process and
+# the loop; it feeds toe bytes and reads the grid back out.
 #
 # Toggles:
 #   TOE_BUILD_TESTS   build the test suite         (default ON when top-level)

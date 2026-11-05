@@ -1,20 +1,21 @@
 // SPDX-License-Identifier: LGPL-2.0-or-later
 
-#include "toe/gfx/palette.hpp"
+#include "toe/term/palette.hpp"
 
-namespace toe::gfx {
+namespace toe::term {
 
 Palette::Palette() {
-    // 0-15: standard + bright ANSI colors (a common Tango-ish set).
+    // 0-15: standard + bright ANSI colours (a common Tango-ish set).
     static constexpr std::array<Rgb, 16> base = {{
         {0x00, 0x00, 0x00}, {0xcc, 0x00, 0x00}, {0x4e, 0x9a, 0x06}, {0xc4, 0xa0, 0x00},
         {0x34, 0x65, 0xa4}, {0x75, 0x50, 0x7b}, {0x06, 0x98, 0x9a}, {0xd3, 0xd7, 0xcf},
         {0x55, 0x57, 0x53}, {0xef, 0x29, 0x29}, {0x8a, 0xe2, 0x34}, {0xfc, 0xe9, 0x4f},
         {0x72, 0x9f, 0xcf}, {0xad, 0x7f, 0xa8}, {0x34, 0xe2, 0xe2}, {0xee, 0xee, 0xec},
     }};
-    for (int i = 0; i < 16; ++i) table_[static_cast<std::size_t>(i)] = base[static_cast<std::size_t>(i)];
+    for (int i = 0; i < 16; ++i)
+        table_[static_cast<std::size_t>(i)] = base[static_cast<std::size_t>(i)];
 
-    // 16-231: 6x6x6 color cube.
+    // 16-231: 6x6x6 colour cube.
     auto level = [](int v) -> std::uint8_t {
         return static_cast<std::uint8_t>(v == 0 ? 0 : 55 + v * 40);
     };
@@ -31,4 +32,4 @@ Palette::Palette() {
     }
 }
 
-} // namespace toe::gfx
+} // namespace toe::term

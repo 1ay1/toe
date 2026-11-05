@@ -173,7 +173,7 @@ int main() {
     // feed_output) exactly as the live terminal does, and verify a scrolled-up
     // view holds its place across many output bursts.
     {
-        term::Model m(toe::Config{}, Extent{80, 10});
+        term::Model m(toe::term::Config{}, Extent{80, 10});
         for (int i = 0; i < 50; ++i) {
             char b[32]; std::snprintf(b, sizeof b, "ROW-%03d\r\n", i);
             (void)term::feed_output(m, b);

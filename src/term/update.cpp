@@ -5,13 +5,39 @@
 
 #include "toe/term/update.hpp"
 
-#include "toe/gfx/palette.hpp"
+#include "toe/term/palette.hpp"
 
 #include <chrono>
 #include <cstdio>
 #include <optional>
 
 namespace toe::term {
+
+// Decode UTF-8 into codepoints. Malformed bytes are skipped rather than
+// rejected — a bad config char must never break word selection.
+std::u32string decode_utf8(std::string_view utf8) {
+    std::u32string cps;
+    for (std::size_t i = 0; i < utf8.size();) {
+        const auto b0 = static_cast<unsigned char>(utf8[i]);
+        char32_t cp = 0;
+        int n = 1;
+        if (b0 < 0x80) { cp = b0; n = 1; }
+        else if ((b0 >> 5) == 0x6) { cp = b0 & 0x1F; n = 2; }
+        else if ((b0 >> 4) == 0xE) { cp = b0 & 0x0F; n = 3; }
+        else if ((b0 >> 3) == 0x1E) { cp = b0 & 0x07; n = 4; }
+        else { ++i; continue; } // stray continuation / invalid lead
+        if (i + static_cast<std::size_t>(n) > utf8.size()) break;
+        bool ok = true;
+        for (int k = 1; k < n; ++k) {
+            const auto bc = static_cast<unsigned char>(utf8[i + static_cast<std::size_t>(k)]);
+            if ((bc >> 6) != 0x2) { ok = false; break; }
+            cp = (cp << 6) | (bc & 0x3F);
+        }
+        if (ok) cps.push_back(cp);
+        i += static_cast<std::size_t>(n);
+    }
+    return cps;
+}
 
 namespace {
 
@@ -148,10 +174,9 @@ void handle_osc(Model &m, std::string_view d, Cmds &out) {
             for (char c : idx_s) { if (c < '0' || c > '9') { idx_ok = false; break; } idx = idx * 10 + (c - '0'); }
             if (idx_ok && idx >= 0 && idx < 256) {
                 if (spec == "?") {
-                    // Query: reply with the current value. The live palette lives
-                    // in the renderer; the model answers with the xterm default,
-                    // which is correct unless the app already overrode this slot.
-                    const Rgb c = toe::gfx::Palette{}.by_index(static_cast<std::uint8_t>(idx));
+                    // Query: reply with the xterm default for this slot. The
+                    // live palette is the host's (it may have been overridden).
+                    const Rgb c = Palette{}.by_index(static_cast<std::uint8_t>(idx));
                     char rep[64];
                     std::snprintf(rep, sizeof rep,
                                   "\x1b]4;%d;rgb:%02x%02x/%02x%02x/%02x%02x\x1b\\", idx, c.r,

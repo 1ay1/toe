@@ -6,7 +6,6 @@
 // Workloads mirror tools/bench.py: plain ASCII, heavy SGR, scrolling, CJK, and
 // a mixed stream.
 #include "toe/term/update.hpp"
-#include "toe/terminal.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -30,7 +29,7 @@ static void run(const char *name, const std::string &payload, int reps) {
     double best = 1e30;
 
     for (int round = 0; round < kRounds; ++round) {
-        toe::Config cfg;
+        toe::term::Config cfg;
         toe::term::Model model{cfg, toe::Extent{200, 50}};
         (void)toe::term::feed_output(model, payload); // warm caches + branch predictors
 

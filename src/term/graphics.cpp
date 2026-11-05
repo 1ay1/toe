@@ -7,8 +7,6 @@
 #include <charconv>
 #include <cstring>
 
-#include <png.h>
-
 namespace toe::term {
 
 namespace {
@@ -50,65 +48,18 @@ long long to_ll(std::string_view s, long long def = 0) {
     return v;
 }
 
-// Decode a PNG (from memory) to tightly-packed RGBA8 via libpng. Returns false
-// on any error. Kept self-contained so the rest of the protocol is decoder-free.
-bool decode_png(const std::uint8_t *data, std::size_t len, int &w, int &h,
-                std::vector<std::uint8_t> &rgba) {
-    if (len < 8 || png_sig_cmp(data, 0, 8) != 0) return false;
-    png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
-    if (!png) return false;
-    png_infop info = png_create_info_struct(png);
-    if (!info) {
-        png_destroy_read_struct(&png, nullptr, nullptr);
-        return false;
-    }
-    if (setjmp(png_jmpbuf(png))) { // libpng error handler
-        png_destroy_read_struct(&png, &info, nullptr);
-        return false;
-    }
-
-    struct Src {
-        const std::uint8_t *p;
-        std::size_t left;
-    } src{data, len};
-    png_set_read_fn(png, &src, [](png_structp pp, png_bytep out, png_size_t n) {
-        auto *s = static_cast<Src *>(png_get_io_ptr(pp));
-        const std::size_t take = std::min<std::size_t>(n, s->left);
-        std::memcpy(out, s->p, take);
-        s->p += take;
-        s->left -= take;
-    });
-    png_read_info(png, info);
-
-    w = static_cast<int>(png_get_image_width(png, info));
-    h = static_cast<int>(png_get_image_height(png, info));
-    const png_byte color = png_get_color_type(png, info);
-    const png_byte depth = png_get_bit_depth(png, info);
-
-    // Normalise everything to 8-bit RGBA.
-    if (depth == 16) png_set_strip_16(png);
-    if (color == PNG_COLOR_TYPE_PALETTE) png_set_palette_to_rgb(png);
-    if (color == PNG_COLOR_TYPE_GRAY && depth < 8) png_set_expand_gray_1_2_4_to_8(png);
-    if (png_get_valid(png, info, PNG_INFO_tRNS)) png_set_tRNS_to_alpha(png);
-    if (color == PNG_COLOR_TYPE_GRAY || color == PNG_COLOR_TYPE_GRAY_ALPHA)
-        png_set_gray_to_rgb(png);
-    if (color == PNG_COLOR_TYPE_RGB || color == PNG_COLOR_TYPE_GRAY ||
-        color == PNG_COLOR_TYPE_PALETTE)
-        png_set_filler(png, 0xFF, PNG_FILLER_AFTER);
-    png_read_update_info(png, info);
-
-    if (w <= 0 || h <= 0 || static_cast<long long>(w) * h > (64LL << 20)) return false; // sanity cap
-    rgba.assign(static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4, 0);
-    std::vector<png_bytep> rows(static_cast<std::size_t>(h));
-    for (int y = 0; y < h; ++y)
-        rows[static_cast<std::size_t>(y)] =
-            rgba.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(w) * 4;
-    png_read_image(png, rows.data());
-    png_destroy_read_struct(&png, &info, nullptr);
-    return true;
+// The host's PNG decoder, if it registered one. toe links no image codec: a
+// terminal's job is the protocol (parse, place, scroll, evict), not inflate +
+// un-filter. Hosts that want kitty format=100 install a decoder; without one
+// PNG transmissions are rejected and raw RGB/RGBA still work.
+PngDecoder &png_decoder() {
+    static PngDecoder d{};
+    return d;
 }
 
 } // namespace
+
+void set_png_decoder(PngDecoder d) { png_decoder() = std::move(d); }
 
 void Graphics::clear() {
     images_.clear();
@@ -419,8 +370,10 @@ bool Graphics::handle_apc(std::string_view data, std::int64_t cursor_abs_row,
 static bool decode_payload(int format, int width, int height, const std::string &b64,
                            int &out_w, int &out_h, std::vector<std::uint8_t> &rgba) {
     std::vector<std::uint8_t> raw = b64_decode(b64);
-    if (format == 100) { // PNG
-        return decode_png(raw.data(), raw.size(), out_w, out_h, rgba);
+    if (format == 100) { // PNG — only if the host gave us a decoder
+        const PngDecoder &dec = png_decoder();
+        if (!dec) return false;
+        return dec(raw.data(), raw.size(), out_w, out_h, rgba);
     }
     if (width <= 0 || height <= 0) return false;
     out_w = width;

@@ -15,12 +15,26 @@
 #define TOE_TERM_GRAPHICS_HPP
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
 
 namespace toe::term {
+
+// A PNG decoder, supplied by the host. toe links no image codec — decoding
+// compressed images is not terminal work, and a host that renders pictures
+// already has a decoder. Install one to accept kitty `f=100` (PNG)
+// transmissions; raw RGB/RGBA (f=24/32) always work without it.
+//
+// Contract: decode `len` bytes at `data` into tightly-packed RGBA8, top-left
+// origin; set w/h; return false on any malformed input (never throw).
+using PngDecoder = std::function<bool(const std::uint8_t *data, std::size_t len, int &w, int &h,
+                                      std::vector<std::uint8_t> &rgba)>;
+
+// Install (or clear, with {}) the process-wide PNG decoder.
+void set_png_decoder(PngDecoder d);
 
 // One decoded image: tightly-packed RGBA8, top-left origin.
 struct Image {

@@ -3,24 +3,14 @@
 #
 # toeConfig.cmake — find_package(toe) entry point.
 #
-# toe exports a single target: toe::toe — the terminal ENGINE (VT parse, screen
-# model, GL renderer). It has no window-system dependency; the host brings its
-# own window and drives toe::Terminal. toe::core is provided as a back-compat
-# alias.
-
-include(CMakeFindDependencyMacro)
-
-# toe's private link deps are recorded on the exported target as PkgConfig::*
-# imported targets. A consumer must recreate those before the target file is
-# included. Both are PRIVATE — no header of them leaks.
-find_dependency(PkgConfig)
-pkg_check_modules(PNG   REQUIRED IMPORTED_TARGET libpng)
-# sokol GLCORE links the real libGL directly (no epoxy).
-find_dependency(OpenGL)
+# toe exports a single target: toe::toe — the terminal library (VT parse, screen
+# model, scrollback, shell integration, key encoding). It has NO dependencies
+# at all: no window system, no GPU, no fonts, no image codec. So there is
+# nothing to find_dependency() here. toe::core is a back-compat alias.
 
 include("${CMAKE_CURRENT_LIST_DIR}/toeTargets.cmake")
 
-# Back-compat alias: consumers that still say toe::core get the engine target.
+# Back-compat alias: consumers that still say toe::core get the same target.
 if(TARGET toe::toe AND NOT TARGET toe::core)
   add_library(toe::core ALIAS toe::toe)
 endif()

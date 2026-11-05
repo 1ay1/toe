@@ -2,5 +2,4 @@
 /build*/
 .cache/
 compile_commands.json
-generated/
-# sokol-shdc generated (regenerated at build)
+a.out
