@@ -95,7 +95,7 @@ std::size_t parse_params(std::string_view s, std::uint32_t *out, std::size_t max
         std::uint32_t v = 0;
         for (char c : tok) {
             if (c < '0' || c > '9') { v = 0; break; }
-            v = v * 10 + static_cast<std::uint32_t>(c - '0');
+            if (v < 1u << 24) v = v * 10 + static_cast<std::uint32_t>(c - '0');
         }
         out[n++] = v;
         if (semi == std::string_view::npos) break;

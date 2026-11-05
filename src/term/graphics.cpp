@@ -2,6 +2,8 @@
 
 #include "toe/term/graphics.hpp"
 
+#include "toe/core/types.hpp" // push_digit
+
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -132,14 +134,14 @@ bool Graphics::handle_sixel(std::string_view params, std::string_view data,
         if (ch == '#') { // colour: #Pc or #Pc;Pu;Px;Py;Pz
             ++i;
             int idx = 0;
-            while (i < data.size() && data[i] >= '0' && data[i] <= '9') idx = idx * 10 + (data[i++] - '0');
+            while (i < data.size() && data[i] >= '0' && data[i] <= '9') push_digit(idx, data[i++]);
             if (i < data.size() && data[i] == ';') { // definition
                 ++i;
                 int comps[4] = {0, 0, 0, 0};
                 int n = 0;
                 while (n < 4) {
                     int v = 0;
-                    while (i < data.size() && data[i] >= '0' && data[i] <= '9') v = v * 10 + (data[i++] - '0');
+                    while (i < data.size() && data[i] >= '0' && data[i] <= '9') push_digit(v, data[i++]);
                     comps[n++] = v;
                     if (i < data.size() && data[i] == ';') { ++i; continue; }
                     break;
@@ -160,7 +162,7 @@ bool Graphics::handle_sixel(std::string_view params, std::string_view data,
         } else if (ch == '!') { // run-length: !Pn <sixel>
             ++i;
             int rep = 0;
-            while (i < data.size() && data[i] >= '0' && data[i] <= '9') rep = rep * 10 + (data[i++] - '0');
+            while (i < data.size() && data[i] >= '0' && data[i] <= '9') push_digit(rep, data[i++]);
             if (i < data.size()) {
                 const char sx = data[i];
                 if (sx >= '?' && sx <= '~') {

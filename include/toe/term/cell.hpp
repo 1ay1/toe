@@ -98,17 +98,21 @@ struct Pen {
 
 // --- a grid cell -----------------------------------------------------------
 struct Cell {
-    char32_t cp{U' '}; // the glyph; U' ' == blank
+    char32_t cp{U' '}; // the base glyph; U' ' == blank
     Pen pen{};
     // Display width: 1 = normal, 2 = lead cell of a double-width (CJK/emoji)
     // glyph, 0 = the trailing spacer cell it occupies (renderer skips it).
     std::uint8_t width{1};
+    // Combining marks attached to `cp` (accents, ZWJ emoji sequences), as a
+    // 1-based index into the Screen's mark table; 0 = none. Lives in the
+    // cell's existing padding byte, so Cell stays 24 bytes.
+    std::uint8_t marks{0};
     // OSC 8 hyperlink id (0 = none). Indexes into the Screen's link table; kept
     // small so it fits the cell's existing padding — Cell stays 24 bytes.
     std::uint16_t link{0};
 
     [[nodiscard]] constexpr bool blank() const noexcept {
-        return cp == U' ' && pen == Pen{};
+        return cp == U' ' && marks == 0 && pen == Pen{};
     }
     [[nodiscard]] constexpr bool spacer() const noexcept { return width == 0; }
     constexpr auto operator<=>(const Cell &) const = default;

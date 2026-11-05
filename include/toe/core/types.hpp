@@ -108,6 +108,20 @@ struct Rgb {
 
 constexpr Rgb rgb(std::uint8_t r, std::uint8_t g, std::uint8_t b) noexcept { return {r, g, b}; }
 
+// --- saturating decimal accumulation ---------------------------------------
+// Terminal input is untrusted: a child can send an unbounded run of digits in
+// a CSI parameter, an OSC palette index or a sixel repeat count. Accumulating
+// that into an int overflows, which is UB -- so every digit loop in toe
+// saturates through this instead. The cap sits far above any meaningful row,
+// column, palette index or repeat count, so clamping is indistinguishable
+// from honouring an absurd value.
+inline constexpr int kDigitMax = 1 << 24; // ~16.7M, nowhere near INT_MAX
+
+// Append decimal digit `d` ('0'..'9') to `acc`, saturating at kDigitMax.
+constexpr void push_digit(int &acc, char d) noexcept {
+    if (acc < kDigitMax) acc = acc * 10 + (d - '0');
+}
+
 // --- error channel ---------------------------------------------------------
 // One error type for the whole app boundary. std::expected carries it out of
 // any fallible constructor/factory instead of throwing across the C FFI seams.

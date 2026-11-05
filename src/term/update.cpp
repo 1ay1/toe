@@ -171,7 +171,7 @@ void handle_osc(Model &m, std::string_view d, Cmds &out) {
             const std::string_view spec = rest.substr(0, next);
             int idx = 0;
             bool idx_ok = !idx_s.empty();
-            for (char c : idx_s) { if (c < '0' || c > '9') { idx_ok = false; break; } idx = idx * 10 + (c - '0'); }
+            for (char c : idx_s) { if (c < '0' || c > '9') { idx_ok = false; break; } push_digit(idx, c); }
             if (idx_ok && idx >= 0 && idx < 256) {
                 if (spec == "?") {
                     // Query: reply with the xterm default for this slot. The
@@ -201,7 +201,7 @@ void handle_osc(Model &m, std::string_view d, Cmds &out) {
                 const auto semi = rest.find(';');
                 const std::string_view idx_s = rest.substr(0, semi);
                 int idx = 0; bool ok = !idx_s.empty();
-                for (char c : idx_s) { if (c < '0' || c > '9') { ok = false; break; } idx = idx * 10 + (c - '0'); }
+                for (char c : idx_s) { if (c < '0' || c > '9') { ok = false; break; } push_digit(idx, c); }
                 if (ok && idx >= 0 && idx < 256)
                     m.screen.edit_color({term::Screen::ColorEdit::Target::index,
                                          static_cast<std::uint8_t>(idx), true, {}});
@@ -260,7 +260,7 @@ void handle_osc(Model &m, std::string_view d, Cmds &out) {
             if (ok && (cs[0] == '-' )) { neg = true; i = 1; }
             for (; i < cs.size() && ok; ++i) {
                 if (cs[i] < '0' || cs[i] > '9') { ok = false; break; }
-                v = v * 10 + (cs[i] - '0');
+                push_digit(v, cs[i]);
             }
             if (ok) code = neg ? -v : v;
         }

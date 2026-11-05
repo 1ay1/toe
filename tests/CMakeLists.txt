@@ -17,6 +17,21 @@ add_executable(widechar_test widechar_test.cpp)
 target_link_libraries(widechar_test PRIVATE toe::toe)
 add_test(NAME widechar COMMAND widechar_test)
 
+add_executable(utf8_test utf8_test.cpp)
+target_link_libraries(utf8_test PRIVATE toe::toe)
+add_test(NAME utf8 COMMAND utf8_test)
+
+add_executable(caps_test caps_test.cpp)
+target_link_libraries(caps_test PRIVATE toe::toe)
+add_test(NAME caps COMMAND caps_test)
+
+# Robustness: no byte stream may crash, hang or corrupt the model. Most
+# valuable under -DTOE_SANITIZE=ON, where a bad cell write becomes a failure.
+add_executable(fuzz_test fuzz_test.cpp)
+target_link_libraries(fuzz_test PRIVATE toe::toe)
+add_test(NAME fuzz COMMAND fuzz_test)
+set_tests_properties(fuzz PROPERTIES TIMEOUT 300)
+
 add_executable(resize_test resize_test.cpp)
 target_link_libraries(resize_test PRIVATE toe::toe)
 add_test(NAME resize COMMAND resize_test)

@@ -526,7 +526,7 @@ void Screen::put_ascii_run(std::string_view ascii) {
                 if (after->width == 0) *after = blank_cell();
             }
             for (std::size_t k = 0; k < take; ++k) {
-                base[k] = Cell{static_cast<char32_t>(ascii[i + k]), pen_, 1, cur_link_};
+                base[k] = Cell{static_cast<char32_t>(ascii[i + k]), pen_, 1, 0, cur_link_};
             }
             ring_.note_used(r, endc + (endc < size_.cols ? 1 : 0));
             last_char_ = static_cast<char32_t>(ascii[i + take - 1]);
@@ -537,6 +537,55 @@ void Screen::put_ascii_run(std::string_view ascii) {
         // Now cursor is at the right margin (or run exhausted). One more char
         // via put() writes the margin cell and sets wrap_pending_.
         if (i < n) put(static_cast<char32_t>(ascii[i++]));
+    }
+}
+
+namespace {
+// Append one codepoint to `out` as UTF-8.
+void push_utf8(std::string &out, char32_t cp) {
+    if (cp < 0x80) {
+        out.push_back(static_cast<char>(cp));
+    } else if (cp < 0x800) {
+        out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else if (cp < 0x10000) {
+        out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else {
+        out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    }
+}
+} // namespace
+
+std::uint8_t Screen::intern_marks(const std::u32string &seq) {
+    for (std::size_t i = 0; i < marks_.size(); ++i)
+        if (marks_[i] == seq) return static_cast<std::uint8_t>(i + 1);
+    if (marks_.size() >= 255) return 0; // table full; drop rather than corrupt
+    marks_.push_back(seq);
+    return static_cast<std::uint8_t>(marks_.size());
+}
+
+void Screen::attach_mark(char32_t cp) {
+    // The mark belongs to the last glyph written. Normally that's the cell left
+    // of the cursor; if a wrap is pending the cursor still sits on it, and a
+    // wide glyph puts a spacer in between.
+    std::int32_t col = wrap_pending_ ? cursor_.col.get() : cursor_.col.get() - 1;
+    if (col < 0 || col >= size_.cols) return; // nothing written yet on this line
+    Cell *row = ring_.view_row(cursor_.row.get());
+    if (row[col].width == 0 && col > 0) --col; // step back over a wide spacer
+    Cell &target = row[col];
+
+    std::u32string seq{marks_of(target)};
+    if (seq.size() >= 8) return; // sanity cap: no unbounded growth per cell
+    seq.push_back(cp);
+    const std::uint8_t idx = intern_marks(seq);
+    if (idx != 0) {
+        target.marks = idx;
+        stamp(cursor_.row.get());
     }
 }
 
@@ -551,7 +600,7 @@ void Screen::put(char32_t cp) {
             // Room to write and advance without wrapping.
             const std::int32_t r = cursor_.row.get();
             stamp(r);
-            *cell_ptr(cursor_.row, cursor_.col) = Cell{cp, pen_, 1, cur_link_};
+            *cell_ptr(cursor_.row, cursor_.col) = Cell{cp, pen_, 1, 0, cur_link_};
             ring_.note_used(r, col + 1);
             last_char_ = cp;
             cursor_.col = Col{col + 1};
@@ -565,8 +614,11 @@ void Screen::put(char32_t cp) {
     const int w = char_width(cp);
 
     // Combining / zero-width marks attach to the preceding cell rather than
-    // advancing the cursor (best-effort: we keep the base glyph as-is).
+    // advancing the cursor, so "e" + U+0301 stays one cluster the host can
+    // render as é. Dropping them (as we used to) silently mangles any accented
+    // text that arrives decomposed.
     if (w == 0) {
+        attach_mark(cp);
         touch();
         return;
     }
@@ -587,7 +639,7 @@ void Screen::put(char32_t cp) {
             line_feed();
         } else {
             // No room and no wrap: overwrite in place as a single cell.
-            at(cursor_.row, cursor_.col) = Cell{cp, pen_, 1, cur_link_};
+            at(cursor_.row, cursor_.col) = Cell{cp, pen_, 1, 0, cur_link_};
             touch();
             return;
         }
@@ -601,7 +653,8 @@ void Screen::put(char32_t cp) {
         clean_wide_at(cursor_.row, c0);
         if (w == 2) clean_wide_at(cursor_.row, c0 + 1);
     }
-    at(cursor_.row, cursor_.col) = Cell{cp, pen_, static_cast<std::uint8_t>(w), cur_link_};
+    at(cursor_.row, cursor_.col) =
+        Cell{cp, pen_, static_cast<std::uint8_t>(w), 0, cur_link_};
     last_char_ = cp; // remember for REP (CSI Ps b)
     if (w == 2) {
         // The second half is a spacer the renderer skips. The base cell was just
@@ -609,7 +662,7 @@ void Screen::put(char32_t cp) {
         // write the spacer DIRECTLY through the row pointer and extend note_used
         // to col+2, avoiding a second at() (stamp + view_row) for the same row.
         const std::int32_t c0 = cursor_.col.get();
-        cell_ptr(cursor_.row, Col{c0 + 1})[0] = Cell{U' ', pen_, 0, cur_link_};
+        cell_ptr(cursor_.row, Col{c0 + 1})[0] = Cell{U' ', pen_, 0, 0, cur_link_};
         ring_.note_used(cursor_.row.get(), c0 + 2);
     }
 
@@ -1143,13 +1196,19 @@ void Screen::report_mode(int mode, bool priv) {
         switch (mode) {
         case 1:    pv = b(app_cursor_keys_); break;          // DECCKM
         case 7:    pv = b(autowrap_); break;                 // DECAWM
+        case 12:   pv = kReset; break;      // cursor blink: accepted, host-driven
         case 25:   pv = b(cursor_shown_); break;            // DECTCEM
+        case 69:   pv = b(lr_margins_); break;              // DECLRMM
         case 1000: pv = b(mouse_mode_ == MouseMode::normal); break;
         case 1002: pv = b(mouse_mode_ == MouseMode::button); break;
         case 1003: pv = b(mouse_mode_ == MouseMode::any); break;
+        case 1004: pv = b(focus_events_); break;            // focus reporting
         case 1006: pv = b(mouse_sgr_); break;
-        case 1049: pv = b(on_alt_); break;                  // alt screen
+        case 47:                                            // legacy alt screen
+        case 1047:                                          // alt screen, no clear
+        case 1049: pv = b(on_alt_); break;                  // alt screen + cursor
         case 2004: pv = b(bracketed_paste_); break;
+        case 2026: pv = b(sync_output_); break;             // synchronized output
         default:   pv = kUnknown; break;
         }
     } else {
@@ -1244,7 +1303,7 @@ void Screen::fill_rect(int top, int left, int bottom, int right, char32_t cp) {
     const std::uint8_t w = static_cast<std::uint8_t>(char_width(cp) == 0 ? 1 : char_width(cp));
     for (int row = t; row <= b; ++row)
         for (int col = l; col <= r; ++col)
-            at(Row{row}, Col{col}) = Cell{cp, pen_, w, 0};
+            at(Row{row}, Col{col}) = Cell{cp, pen_, w, 0, 0};
     touch();
 }
 
@@ -1513,6 +1572,11 @@ void Screen::csi(const vt::CsiDispatch &d) {
         if (d.private_marker && d.marker == '>') {
             // DA2 (secondary): report a VT220-ish terminal, version, keyboard.
             reply("\x1b[>1;95;0c");
+        } else if (d.private_marker && d.marker == '=') {
+            // DA3 (tertiary): a DECRPTUI unit id, as DCS ! | <hex> ST. The ID
+            // is site-defined; report all-zero like xterm's default rather
+            // than staying silent, since an app may block on the reply.
+            reply("\x1bP!|00000000\x1b\\");
         } else if (!d.private_marker || d.marker == '?') {
             // DA1 (primary). fish sends this last as a fence and waits 10s for
             // the reply; the response must start with '?' and end with 'c'.
@@ -1781,6 +1845,13 @@ void Screen::esc(const vt::EscDispatch &d) {
             scroll_offset_ = 0;
             cursor_ = Pos{};
             pen_ = Pen{};
+            // The side tables are only reachable from cells, and every cell is
+            // now blank, so drop them instead of leaking across a reset.
+            marks_.clear();
+            links_.clear();
+            cur_link_ = 0;
+            cur_link_key_.clear();
+            hover_link_ = 0;
             wrap_pending_ = false;
             scroll_top_ = 0;
             scroll_bottom_ = size_.rows - 1;
@@ -1866,7 +1937,7 @@ void Screen::esc(const vt::EscDispatch &d) {
         case '8': // DECALN — fill the whole screen with 'E' (alignment test)
             for (std::int32_t row = 0; row < size_.rows; ++row)
                 for (std::int32_t col = 0; col < size_.cols; ++col)
-                    at(Row{row}, Col{col}) = Cell{U'E', Pen{}, 1, 0};
+                    at(Row{row}, Col{col}) = Cell{U'E', Pen{}, 1, 0, 0};
             std::fill(line_attr_.begin(), line_attr_.end(), LineAttr::normal);
             cursor_ = Pos{};
             touch();
@@ -2251,22 +2322,9 @@ std::string Screen::selected_text() const {
             // cell, so emitting the spacer would append a spurious space.
             if (cell && cell->width == 0 && cell->cp == U' ') continue;
             const char32_t cp = cell ? cell->cp : U' ';
-            // Encode the codepoint as UTF-8.
-            if (cp < 0x80) {
-                line.push_back(static_cast<char>(cp));
-            } else if (cp < 0x800) {
-                line.push_back(static_cast<char>(0xC0 | (cp >> 6)));
-                line.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-            } else if (cp < 0x10000) {
-                line.push_back(static_cast<char>(0xE0 | (cp >> 12)));
-                line.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-                line.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-            } else {
-                line.push_back(static_cast<char>(0xF0 | (cp >> 18)));
-                line.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
-                line.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-                line.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-            }
+            push_utf8(line, cp);
+            if (cell)
+                for (char32_t mk : marks_of(*cell)) push_utf8(line, mk);
         }
         // Trim trailing spaces on each line — but NOT when this row soft-wraps
         // into the next and we're copying through its right edge in character
@@ -2420,21 +2478,9 @@ std::string Screen::text_between_abs(std::int64_t row0, std::int64_t row1,
             // Skip the trailing spacer cell of a wide (CJK/emoji) glyph.
             if (cell && cell->width == 0 && cell->cp == U' ') continue;
             const char32_t cp = cell ? cell->cp : U' ';
-            if (cp < 0x80) {
-                line.push_back(static_cast<char>(cp));
-            } else if (cp < 0x800) {
-                line.push_back(static_cast<char>(0xC0 | (cp >> 6)));
-                line.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-            } else if (cp < 0x10000) {
-                line.push_back(static_cast<char>(0xE0 | (cp >> 12)));
-                line.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-                line.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-            } else {
-                line.push_back(static_cast<char>(0xF0 | (cp >> 18)));
-                line.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
-                line.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-                line.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-            }
+            push_utf8(line, cp);
+            if (cell)
+                for (char32_t mk : marks_of(*cell)) push_utf8(line, mk);
         }
         while (!line.empty() && line.back() == ' ') line.pop_back();
         out += line;

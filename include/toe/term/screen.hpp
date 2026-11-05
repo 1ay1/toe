@@ -237,6 +237,14 @@ public:
     // e.g. "'" or "," can be made word-joining. Empty by default.
     void set_word_separators_extra(std::u32string_view cps) { word_extra_ = cps; }
 
+    // The combining marks attached to a cell (accents, variation selectors,
+    // ZWJ emoji joins), in the order they arrived. Empty for most cells. A host
+    // renders cell.cp followed by these as one cluster.
+    [[nodiscard]] std::u32string_view marks_of(const Cell &c) const noexcept {
+        if (c.marks == 0 || c.marks > marks_.size()) return {};
+        return marks_[c.marks - 1];
+    }
+
     // True if the cell at absolute (row,col) is within the current selection.
     [[nodiscard]] bool is_selected(std::int64_t abs_row, std::int32_t col) const noexcept;
 
@@ -522,6 +530,20 @@ private:
     std::string cur_link_key_{};              // the OSC 8 id= param, for coalescing
     std::vector<std::string> links_{};        // id-1 -> URI
     std::uint16_t hover_link_{0};             // link id under the pointer, 0=none
+
+    // Combining marks attached to cells (Cell::marks is a 1-based index here).
+    // Interned: identical sequences share a slot, so a screenful of the same
+    // accented letter costs one entry. Capped at 255 distinct live sequences
+    // (the index is a byte); past that, further marks are dropped rather than
+    // corrupting the base glyph.
+    std::vector<std::u32string> marks_{};
+
+    // Intern a mark sequence, returning its 1-based index (0 if the table is
+    // full).
+    std::uint8_t intern_marks(const std::u32string &seq);
+    // Append a combining mark to the cell left of the cursor (the last glyph
+    // written). No-op at the start of a line with nothing before it.
+    void attach_mark(char32_t cp);
 
     // Inline images (kitty graphics). Placements are anchored in absolute rows.
     Graphics graphics_{};

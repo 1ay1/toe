@@ -121,6 +121,27 @@ private:
     template <typename Sink>
     void csi_dispatch(std::uint8_t final, Sink &sink);
 
+    // Is `b` a valid SECOND byte for the multi-byte sequence in progress?
+    // This is where overlong encodings, surrogates and out-of-range
+    // codepoints are caught (Unicode Table 3-7): the lead byte alone can't
+    // tell, but lead+second can.
+    [[nodiscard]] bool utf8_second_ok(std::uint8_t b) const noexcept {
+        if (utf8_need_ == 2) { // 3-byte: E0 needs A0..BF, ED needs 80..9F
+            if (utf8_cp_ == 0x0 && b < 0xA0) return false;  // E0: overlong
+            if (utf8_cp_ == 0xD && b >= 0xA0) return false; // ED: surrogate
+        } else if (utf8_need_ == 3) { // 4-byte: F0 needs 90..BF, F4 needs 80..8F
+            if (utf8_cp_ == 0x0 && b < 0x90) return false; // F0: overlong
+            if (utf8_cp_ == 0x4 && b >= 0x90) return false; // F4: > U+10FFFF
+        }
+        return true;
+    }
+
+    // Largest value a CSI/DCS parameter can hold. A child can send an
+    // unbounded run of digits, so accumulation must saturate rather than
+    // overflow (which is UB). 65535 matches xterm's cap and is far beyond any
+    // meaningful row, column or SGR value.
+    static constexpr int kParamMax = 65535;
+
     State state_{State::Ground};
 
     // CSI accumulation
@@ -146,6 +167,7 @@ private:
     // UTF-8 decoding of printable text in Ground.
     char32_t utf8_cp_{0};
     int utf8_remaining_{0};
+    int utf8_need_{0}; // continuation bytes the current sequence started with
 };
 
 } // namespace toe::vt

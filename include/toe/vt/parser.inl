@@ -34,10 +34,25 @@ void Parser::csi_dispatch(std::uint8_t final, Sink &sink) {
 }
 
 // UTF-8 aware handling of a Ground-state byte.
+//
+// Validation follows the Unicode standard's definition of well-formed UTF-8
+// (Table 3-7): a decoder must reject overlong encodings, UTF-16 surrogates
+// (U+D800..U+DFFF) and anything above U+10FFFF, substituting U+FFFD. Accepting
+// them is a security problem, not just a cosmetic one — an overlong "/" or a
+// smuggled NUL can slip past a filter that checks the decoded text.
 template <typename Sink>
 void Parser::ground_byte(std::uint8_t b, Sink &sink) {
     if (utf8_remaining_ > 0) {
         if ((b & 0xC0) == 0x80) { // continuation byte
+            // Reject as soon as the prefix can't lead anywhere valid, so a bad
+            // sequence costs one U+FFFD rather than silently decoding. The
+            // SECOND byte of the sequence is the one that arrives while the
+            // full count is still outstanding.
+            if (utf8_remaining_ == utf8_need_ && !utf8_second_ok(b)) {
+                sink(Action{Print{U'\uFFFD'}});
+                utf8_remaining_ = 0;
+                return; // the byte was consumed as part of the bad sequence
+            }
             utf8_cp_ = (utf8_cp_ << 6) | (b & 0x3F);
             if (--utf8_remaining_ == 0) {
                 sink(Action{Print{utf8_cp_}});
@@ -52,15 +67,26 @@ void Parser::ground_byte(std::uint8_t b, Sink &sink) {
     if (b < 0x80) {
         sink(Action{Print{static_cast<char32_t>(b)}});
     } else if ((b & 0xE0) == 0xC0) {
+        // C0/C1 are overlong leads (they could only encode < U+0080).
+        if (b < 0xC2) {
+            sink(Action{Print{U'\uFFFD'}});
+            return;
+        }
         utf8_cp_ = b & 0x1F;
-        utf8_remaining_ = 1;
+        utf8_remaining_ = utf8_need_ = 1;
     } else if ((b & 0xF0) == 0xE0) {
         utf8_cp_ = b & 0x0F;
-        utf8_remaining_ = 2;
+        utf8_remaining_ = utf8_need_ = 2;
     } else if ((b & 0xF8) == 0xF0) {
+        // F5..F7 would start a codepoint above U+10FFFF.
+        if (b > 0xF4) {
+            sink(Action{Print{U'\uFFFD'}});
+            return;
+        }
         utf8_cp_ = b & 0x07;
-        utf8_remaining_ = 3;
+        utf8_remaining_ = utf8_need_ = 3;
     } else {
+        // 0x80..0xBF stray continuation, or 0xF8..0xFF (never valid UTF-8).
         sink(Action{Print{U'\uFFFD'}});
     }
 }
@@ -154,7 +180,12 @@ void Parser::step(std::uint8_t b, Sink &sink) {
                 param_sub_.push_back(0);
                 param_started_ = true;
             }
-            params_.back() = params_.back() * 10 + (b - '0');
+            // Clamp instead of overflowing: a child can send arbitrarily many
+            // digits, and signed overflow is UB. xterm caps parameters too, and
+            // every consumer already clamps to the screen, so a saturated value
+            // behaves the same as a huge one.
+            if (params_.back() < kParamMax)
+                params_.back() = params_.back() * 10 + (b - '0');
         } else if (b == ';' || b == ':') {
             // Close the current param (default 0 if empty) and open a fresh
             // empty slot. ';' starts a new primary parameter; ':' opens a

@@ -42,6 +42,17 @@ include(GNUInstallDirs)
 # Warning flags applied to toe's own TUs (not propagated to consumers).
 set(TOE_WARNINGS -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion)
 
+# --- sanitizers --------------------------------------------------------------
+# A terminal parses bytes from an untrusted child, so out-of-bounds cell writes
+# and signed overflow are security bugs, not just crashes. TOE_SANITIZE=ON
+# turns them into immediate failures; tests/fuzz_test.cpp exists to be run this
+# way. Applied to everything (library and tests) so the whole path is covered.
+option(TOE_SANITIZE "Build with AddressSanitizer + UndefinedBehaviorSanitizer" OFF)
+if(TOE_SANITIZE)
+  add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer -g)
+  add_link_options(-fsanitize=address,undefined)
+endif()
+
 # --- optimisation policy -----------------------------------------------------
 # A terminal is a byte pump: the VT scanner, the UTF-8 decoder and the cell
 # writes are the whole program. Both knobs below were chosen by MEASUREMENT
