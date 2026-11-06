@@ -22,6 +22,7 @@
 #include "toe/core/types.hpp"
 #include "toe/term/graphics.hpp"
 #include "toe/term/cell.hpp"
+#include "toe/term/palette.hpp"
 #include "toe/term/rowring.hpp"
 #include "toe/vt/parser.hpp"
 
@@ -171,21 +172,62 @@ public:
         Rgb rgb{};
     };
     [[nodiscard]] std::uint64_t palette_epoch() const noexcept { return palette_epoch_; }
+    // The palette currently in effect, including every OSC 4/10/11/12 edit the
+    // app has made. Colour QUERIES must be answered from this, not from the
+    // built-in defaults.
+    [[nodiscard]] const Palette &palette() const noexcept { return palette_; }
+    // Seed the live palette's default fg/bg from config, WITHOUT recording a
+    // ColorEdit: this is the starting state, not an app-driven change, so the
+    // host's renderer has no edit to replay.
+    void set_default_palette_colors(Rgb fg, Rgb bg) noexcept {
+        (void)palette_.set_default_fg(fg);
+        (void)palette_.set_default_bg(bg);
+    }
     [[nodiscard]] const std::vector<ColorEdit> &color_edits() const noexcept {
         return color_edits_;
     }
     // Record a dynamic-colour change (called from OSC handling).
     void edit_color(const ColorEdit &e) {
         color_edits_.push_back(e);
+        // Keep a live palette alongside the edit log so a colour QUERY can
+        // report what is actually in effect. Answering OSC 4/10/11/12 queries
+        // from the built-in defaults made the terminal lie about any colour the
+        // app had already set -- an app that sets a slot and reads it back saw
+        // its own write vanish.
+        switch (e.target) {
+        case ColorEdit::Target::index:
+            if (e.reset) (void)palette_.reset_index(e.index);
+            else (void)palette_.set_index(e.index, e.rgb);
+            break;
+        case ColorEdit::Target::fg:
+            if (e.reset) (void)palette_.set_default_fg(Palette{}.default_fg());
+            else (void)palette_.set_default_fg(e.rgb);
+            break;
+        case ColorEdit::Target::bg:
+            if (e.reset) (void)palette_.set_default_bg(Palette{}.default_bg());
+            else (void)palette_.set_default_bg(e.rgb);
+            break;
+        case ColorEdit::Target::cursor:
+            if (e.reset) (void)palette_.set_cursor_color(std::nullopt);
+            else (void)palette_.set_cursor_color(e.rgb);
+            break;
+        case ColorEdit::Target::all: {
+            // Reset the 256 slots but keep the host's configured default fg/bg:
+            // those came from config, not from the app, so OSC 104 must not
+            // silently revert the user's theme to the built-in colours.
+            const Rgb fg = palette_.default_fg();
+            const Rgb bg = palette_.default_bg();
+            palette_.reset();
+            (void)palette_.set_default_fg(fg);
+            (void)palette_.set_default_bg(bg);
+            break;
+        }
+        }
         ++palette_epoch_;
         touch();
     }
     // OSC 104 with no params: reset the entire palette to defaults.
-    void reset_all_palette() {
-        color_edits_.push_back({ColorEdit::Target::all, 0, true, {}});
-        ++palette_epoch_;
-        touch();
-    }
+    void reset_all_palette() { edit_color({ColorEdit::Target::all, 0, true, {}}); }
     // Whether the alternate screen is active (no scrollback while on it).
     [[nodiscard]] bool on_alt_screen() const noexcept { return on_alt_; }
     // Mouse tracking mode requested by the app (CSI ?1000/1002/1003 + ?1006).
@@ -546,6 +588,7 @@ private:
     // Dynamic-colour edits (OSC 4/104/10/11/12/112), applied by the renderer.
     std::vector<ColorEdit> color_edits_{};
     std::uint64_t palette_epoch_{0};
+    Palette palette_{}; // the live palette, mirroring color_edits_
     bool on_alt_{false};
     bool bracketed_paste_{false};
     bool app_cursor_keys_{false};

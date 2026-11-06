@@ -111,9 +111,22 @@ int main() {
            "DECRQSS reports invalid for an unknown setting");
 
     // --- XTVERSION / XTGETTCAP ---------------------------------------------
-    expect(ask("\x1b[>0q").find("toe") != std::string::npos, "XTVERSION names toe");
+    expect(ask("\033[>0q").find("toe") != std::string::npos, "XTVERSION names toe");
     // XTGETTCAP TN (544e) -> the terminal name, hex-encoded, with a 1 = valid.
-    expect(ask("\x1bP+q544e\x1b\\").starts_with("\x1bP1+r"), "XTGETTCAP TN answers valid");
+    expect(ask("\033P+q544e\033\\").starts_with("\033P1+r"), "XTGETTCAP TN answers valid");
+    // Values are hex-encoded name=value pairs. 544E="TN", 436F="Co".
+    expect(ask("\033P+q544e\033\\").find("=787465726D2D323536636F6C6F72") != std::string::npos,
+           "XTGETTCAP TN reports xterm-256color");
+    expect(ask("\033P+q436f\033\\").find("=323536") != std::string::npos,
+           "XTGETTCAP Co reports 256");
+    // An UNKNOWN capability must get an explicit invalid reply (DCS 0 + r),
+    // not silence (a shell may block) and not a fabricated value.
+    {
+        const std::string r = ask("\033P+q626f677573\033\\"); // "bogus"
+        expect(r.starts_with("\033P0+r"), "XTGETTCAP reports invalid for an unknown capability");
+        expect(r.find('=') == std::string::npos,
+               "an invalid XTGETTCAP reply carries no value");
+    }
 
     // --- queries must not leave anything on screen -------------------------
     {
@@ -126,6 +139,85 @@ int main() {
         expect(txt.empty(), "no query leaks text onto the grid");
         expect(m.screen.cursor().col.get() == 0 && m.screen.cursor().row.get() == 0,
                "no query moves the cursor");
+    }
+
+    // --- dynamic colours must report what's in EFFECT ----------------------
+    // Same contract as DECRQM, same bug: OSC 4/10/11/12 queries answered from
+    // the built-in defaults, so an app that set a colour and read it back saw
+    // its own write vanish. Every valid spec form must round-trip.
+    {
+        struct Spec { const char *set; const char *want; const char *what; };
+        static const Spec specs[] = {
+            {"rgb:ff/00/00",       "ffff/0000/0000", "OSC 4 round-trips rgb: 2-digit"},
+            {"rgb:f/0/0",          "ffff/0000/0000", "OSC 4 round-trips rgb: 1-digit"},
+            {"rgb:ffff/0000/0000", "ffff/0000/0000", "OSC 4 round-trips rgb: 4-digit"},
+            {"rgb:FF/00/00",       "ffff/0000/0000", "OSC 4 accepts uppercase hex"},
+            {"#f00",               "ffff/0000/0000", "OSC 4 round-trips #RGB"},
+            {"#ff0000",            "ffff/0000/0000", "OSC 4 round-trips #RRGGBB"},
+            {"rgb:80/80/80",       "8080/8080/8080", "OSC 4 round-trips a mid value"},
+        };
+        for (const Spec &s : specs) {
+            std::string q = "\033]4;1;";
+            q += s.set;
+            q += "\033\\\033]4;1;?\033\\";
+            const std::string got = ask(q);
+            const bool ok = got.find(s.want) != std::string::npos;
+            if (!ok)
+                std::printf("FAIL %s\n       got  %s\n       want ...%s...\n", s.what,
+                            got.c_str(), s.want);
+            else
+                std::printf("ok   %s\n", s.what);
+            if (!ok) ++failures;
+        }
+        // A malformed spec must leave the slot alone, not corrupt it.
+        for (const char *bad : {"rgb:zz/00/00", "rgb:ff/00", "#ff00", "notacolour", ""}) {
+            std::string q = "\033]4;1;";
+            q += bad;
+            q += "\033\\\033]4;1;?\033\\";
+            expect(ask(q).find("cccc/0000/0000") != std::string::npos,
+                   "a malformed OSC 4 spec leaves the slot at its default");
+        }
+        // OSC 10/11/12 (default fg, bg, cursor).
+        expect_reply("\033]10;#ff0000\033\\\033]10;?\033\\",
+                     "\033]10;rgb:ffff/0000/0000\033\\", "OSC 10 reports the set fg");
+        expect_reply("\033]11;#00ff00\033\\\033]11;?\033\\",
+                     "\033]11;rgb:0000/ffff/0000\033\\", "OSC 11 reports the set bg");
+        expect_reply("\033]12;#0000ff\033\\\033]12;?\033\\",
+                     "\033]12;rgb:0000/0000/ffff\033\\", "OSC 12 reports the set cursor colour");
+        // One sequence may carry several index;spec pairs.
+        {
+            const std::string set = "\033]4;1;#ff0000;2;#00ff00;3;#0000ff\033\\";
+            expect(ask(set + "\033]4;2;?\033\\").find("0000/ffff/0000") != std::string::npos,
+                   "OSC 4 applies every index;spec pair in one sequence");
+        }
+        // OSC 104 resets: one slot, or all of them.
+        expect(ask("\033]4;1;#00ff00\033\\\033]104;1\033\\\033]4;1;?\033\\")
+                   .find("cccc/0000/0000") != std::string::npos,
+               "OSC 104 with an index resets that slot");
+        expect(ask("\033]4;1;#00ff00\033\\\033]104\033\\\033]4;1;?\033\\")
+                   .find("cccc/0000/0000") != std::string::npos,
+               "OSC 104 with no params resets the whole palette");
+    }
+    {
+        // The CONFIGURED defaults must be what a query reports before any OSC,
+        // and OSC 104 must not revert the user's theme to the built-ins.
+        term::Config cfg;
+        cfg.default_fg = rgb(1, 2, 3);
+        cfg.default_bg = rgb(4, 5, 6);
+        term::Model m{cfg, Extent{10, 2}};
+        auto ask_m = [&m](std::string_view s) {
+            std::string r;
+            for (const Cmd &c : term::feed_output(m, s))
+                if (const auto *w = std::get_if<WriteChild>(&c)) r += w->bytes;
+            return r;
+        };
+        expect(ask_m("\033]10;?\033\\") == "\033]10;rgb:0101/0202/0303\033\\",
+               "OSC 10 reports the CONFIGURED default fg");
+        expect(ask_m("\033]11;?\033\\") == "\033]11;rgb:0404/0505/0606\033\\",
+               "OSC 11 reports the CONFIGURED default bg");
+        (void)term::feed_output(m, "\033]104\033\\");
+        expect(ask_m("\033]10;?\033\\") == "\033]10;rgb:0101/0202/0303\033\\",
+               "OSC 104 keeps the configured default fg");
     }
 
     std::printf(failures ? "caps: %d FAILURES\n" : "caps: PASS\n", failures);

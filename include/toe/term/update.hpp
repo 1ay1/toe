@@ -79,6 +79,9 @@ struct Model {
             screen.set_max_history(static_cast<std::size_t>(cfg.scrollback_lines));
         if (!cfg.word_separators.empty())
             screen.set_word_separators_extra(decode_utf8(cfg.word_separators));
+        // Seed the live palette so a colour query before any OSC reports the
+        // configured defaults rather than the built-in ones.
+        screen.set_default_palette_colors(cfg.default_fg, cfg.default_bg);
     }
 };
 

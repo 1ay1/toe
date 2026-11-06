@@ -155,9 +155,11 @@ void handle_osc(Model &m, std::string_view d, Cmds &out) {
             }
         }
     } else if (d.starts_with("11;?")) {
-        out.emplace_back(colour_reply(11, m.cfg.default_bg));
+        // Report the colour actually in effect, not the configured default:
+        // an app that sets a colour and reads it back must see its own write.
+        out.emplace_back(colour_reply(11, m.screen.palette().default_bg()));
     } else if (d.starts_with("10;?")) {
-        out.emplace_back(colour_reply(10, m.cfg.default_fg));
+        out.emplace_back(colour_reply(10, m.screen.palette().default_fg()));
     } else if (d.starts_with("4;")) {
         // OSC 4 ; index ; spec [ ; index ; spec ]...  set palette colour(s).
         // A spec of '?' queries: reply OSC 4 ; index ; rgb:.. ST.
@@ -174,9 +176,11 @@ void handle_osc(Model &m, std::string_view d, Cmds &out) {
             for (char c : idx_s) { if (c < '0' || c > '9') { idx_ok = false; break; } push_digit(idx, c); }
             if (idx_ok && idx >= 0 && idx < 256) {
                 if (spec == "?") {
-                    // Query: reply with the xterm default for this slot. The
-                    // live palette is the host's (it may have been overridden).
-                    const Rgb c = Palette{}.by_index(static_cast<std::uint8_t>(idx));
+                    // Report the slot's CURRENT value. Answering from the
+                    // built-in defaults meant an app that set a slot and then
+                    // queried it saw its own write vanish.
+                    const Rgb c =
+                        m.screen.palette().by_index(static_cast<std::uint8_t>(idx));
                     char rep[64];
                     std::snprintf(rep, sizeof rep,
                                   "\x1b]4;%d;rgb:%02x%02x/%02x%02x/%02x%02x\x1b\\", idx, c.r,
@@ -218,7 +222,7 @@ void handle_osc(Model &m, std::string_view d, Cmds &out) {
     } else if (d.starts_with("12;")) {
         const std::string_view spec = d.substr(3);
         if (spec == "?") {
-            out.emplace_back(colour_reply(12, m.cfg.default_fg)); // best-effort
+            out.emplace_back(colour_reply(12, m.screen.palette().cursor_color()));
         } else if (auto rgb = parse_color_spec(spec)) {
             m.screen.edit_color({term::Screen::ColorEdit::Target::cursor, 0, false, *rgb});
         }

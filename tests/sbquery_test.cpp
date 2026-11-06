@@ -203,6 +203,64 @@ int main() {
         const std::string bad = replies("\033[>1;1;1;2;3;4b");
         expect(bad.find("\"blocks\"") == std::string::npos,
                "a query with the wrong token does not return blocks");
+
+        // --- the query MODES -----------------------------------------------
+        // Ps selects what to report; each mode was previously untested.
+        auto query = [&](int ps, int pn) {
+            char q[160];
+            std::snprintf(q, sizeof q, "\033[>%d;%d;%u;%u;%u;%ub", ps, pn, tok[0], tok[1],
+                          tok[2], tok[3]);
+            return replies(q);
+        };
+        // Three more completed commands, so "last" and "last N" differ.
+        auto run_cmd = [&](const char *c, int ec) {
+            std::string s = "\033]133;A\033\\$ \033]133;B\033\\";
+            s += c;
+            s += "\r\n\033]133;C\033\\out-";
+            s += c;
+            s += "\r\n\033]133;D;";
+            s += std::to_string(ec);
+            s += "\033\\";
+            (void)replies(s);
+        };
+        run_cmd("one", 0);
+        run_cmd("two", 1);
+        run_cmd("three", 0);
+
+        {
+            const std::string r = query(1, 1);
+            expect(r.find("\"three\"") != std::string::npos &&
+                       r.find("\"two\"") == std::string::npos,
+                   "Ps=1 reports only the last completed block");
+        }
+        {
+            // Ps=2 with Pn=2 reports the last two, OLDEST first.
+            const std::string r = query(2, 2);
+            const std::size_t two = r.find("\"two\""), three = r.find("\"three\"");
+            expect(two != std::string::npos && three != std::string::npos,
+                   "Ps=2 with Pn=2 reports two blocks");
+            expect(two < three, "Ps=2 emits blocks oldest-first");
+            expect(r.find("\"one\"") == std::string::npos,
+                   "Ps=2 with Pn=2 does not reach further back");
+            // A failed command's exit code must survive the round trip.
+            expect(r.find("\"exitCode\":1") != std::string::npos,
+                   "a non-zero exit code is reported");
+        }
+        {
+            // Ps=3 is the in-progress command: no D mark yet, so exitCode is
+            // null and finished is false.
+            (void)replies("\033]133;A\033\\$ \033]133;B\033\\sleep 9\r\n\033]133;C\033\\");
+            const std::string r = query(3, 1);
+            expect(r.find("\"sleep 9\"") != std::string::npos,
+                   "Ps=3 reports the in-progress command");
+            expect(r.find("\"exitCode\":null") != std::string::npos,
+                   "an unfinished block reports exitCode null");
+            expect(r.find("\"finished\":false") != std::string::npos,
+                   "an unfinished block reports finished false");
+        }
+        // An unknown Ps must be refused rather than guessing a mode.
+        expect(query(9, 1).find("\"blocks\"") == std::string::npos,
+               "an unknown Ps returns no blocks");
     }
 
     std::printf(failures ? "sbquery: %d FAILURES\n" : "sbquery: PASS\n", failures);

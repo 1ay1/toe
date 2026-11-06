@@ -51,7 +51,7 @@ cmake -S . -B build-san -DCMAKE_BUILD_TYPE=Debug -DTOE_SANITIZE=ON
 cmake --build build-san -j && ctest --test-dir build-san
 ```
 
-The whole suite (16 binaries, ~613 assertions) passes under
+The whole suite (16 binaries, ~647 assertions) passes under
 AddressSanitizer + UndefinedBehaviorSanitizer.
 
 **4. Coverage-guided probing.**
@@ -67,8 +67,9 @@ cmake --build build-cov -j && ctest --test-dir build-cov
 cd build-cov/src/CMakeFiles/toe.dir/term && gcov *.gcno
 ```
 
-Current line coverage: `screen.cpp` 90%, `graphics.cpp` 98%, `parser.inl` 97%,
-`rowring.hpp` 97%, `update.cpp` 86%, `sbquery.cpp` 85%, `redact.cpp` 100%.
+Current line coverage: `sbquery.cpp` 98%, `graphics.cpp` 98%, `parser.inl` 97%,
+`rowring.hpp` 97%, `update.cpp` 96%, `screen.cpp` 90%, `redact.cpp` 100%,
+`palette.cpp` 100%.
 
 ## Implemented
 
@@ -123,10 +124,18 @@ XTWINOPS 18 (report size).
 
 Capability reporting is held to a rule: **toe must not lie to applications.**
 Everything DA1 advertises is implemented, every mode in the DECRQM switch is
-backed by real state, and an unknown mode reports "not recognised" (0) rather
-than "reset" (2). `tests/caps_test.cpp` enforces this, because the failure mode
-is invisible — an app silently falls back to a worse path. DECRQM reporting
-2026 as unrecognised while synchronized output worked was exactly this bug.
+backed by real state, an unknown mode reports "not recognised" (0) rather than
+"reset" (2), an unknown XTGETTCAP capability gets an explicit invalid reply
+rather than silence, and OSC 4/10/11/12 colour queries report the palette
+**currently in effect** rather than the built-in defaults.
+`tests/caps_test.cpp` enforces all of it, because the failure mode is
+invisible — an app silently falls back to a worse path. DECRQM reporting 2026
+as unrecognised while synchronized output worked, and colour queries returning
+the default for a slot the app had just set, were both exactly this bug.
+
+Every `rgb:` and `#` spec form round-trips: `rgb:f/0/0`, `rgb:ff/00/00`,
+`rgb:ffff/0000/0000`, `#f00` and `#ff0000` all set the same value and read
+back identically. A malformed spec leaves the slot untouched.
 
 ### Unicode
 UTF-8 validated per Unicode Table 3-7: overlong encodings, surrogates and
@@ -227,5 +236,6 @@ the code and declaring it correct:
 | A wide glyph's forced early wrap never marked the row soft-wrapped, injecting a blank per row on every rewrap | fuzz invariant |
 | Reflow could put a wide lead in the last column with its spacer on the next row | fuzz invariant |
 | Trimming a trailing blank could orphan a wide lead | fuzz invariant |
+| OSC 4/10/11/12 queries answered from the built-in defaults, so an app that set a colour and read it back saw its own write vanish | round-trip invariant |
 | DA3 silently dropped (an app can block on it) | capability audit |
 | RIS never cleared the hyperlink table | code audit during the above |
