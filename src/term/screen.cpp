@@ -214,14 +214,46 @@ void Screen::reflow(Extent old_size, Extent new_size) {
         std::int32_t len = cols;
         if (!wrapped) {
             while (len > 0 && rowp[len - 1].blank()) --len;
+        } else {
+            // A soft-wrapped row can still end in blanks that are NOT content:
+            // when a double-width glyph won't fit the last column, the terminal
+            // leaves it empty and wraps. Those padding cells are an artifact of
+            // the OLD width, so carrying them into the arena injected blanks
+            // into the middle of the logical line on every rewrap (a 30-glyph
+            // line at width 11 grew a blank every 11 columns). Trim them, but
+            // only the run that a wide glyph could not have occupied -- at most
+            // one column, since a wider gap would mean real trailing spaces.
+            if (len > 0 && rowp[len - 1].blank()) --len;
         }
         reflow_cells_.insert(reflow_cells_.end(), rowp, rowp + len);
+        // A wide LEAD must keep its width-0 spacer: the pair is one glyph, and a
+        // lead alone is an orphan no later rewrap can repair. The spacer can be
+        // lost when it sat in a column we just trimmed, so re-synthesize it
+        // rather than dropping the lead (dropping it DELETED the character --
+        // a 12-glyph line came back as 11).
+        if (len > 0 && rowp[len - 1].width == 2) {
+            Cell spacer{};
+            spacer.pen = rowp[len - 1].pen;
+            spacer.width = 0;
+            reflow_cells_.push_back(spacer);
+            return static_cast<std::uint32_t>(len) + 1u;
+        }
         return static_cast<std::uint32_t>(len);
     };
 
     // 1. Gather logical lines from history, joining soft-wrapped runs. History
     //    lives in the ring: absolute rows [0, scrollback()) are scrollback,
     //    oldest first. Each logical line is a Span into reflow_cells_.
+    //
+    //    `carry` means the last history row soft-wraps, so its logical line
+    //    CONTINUES into the live grid below. It must not be closed here: a line
+    //    long enough to spill off the top of the viewport straddles the
+    //    scrollback boundary, and closing it split one logical line in two at
+    //    exactly that point. Widening then rewrapped the halves separately, so
+    //    a 26-char line at width 5 with 3 rows of history came back as
+    //    "ABCDEFGHIJKLMNO" + "PQRSTUVWXYZ" instead of rejoining.
+    std::uint32_t carry_off = 0;
+    bool carry = false;
     {
         const std::size_t hist = ring_.scrollback();
         std::uint32_t line_off = static_cast<std::uint32_t>(reflow_cells_.size());
@@ -239,8 +271,9 @@ void Screen::reflow(Extent old_size, Extent new_size) {
             }
         }
         if (have) {
-            const auto end = static_cast<std::uint32_t>(reflow_cells_.size());
-            reflow_lines_.push_back({line_off, end - line_off, false, false});
+            // Hand the open line to step 2 rather than closing it.
+            carry = true;
+            carry_off = line_off;
         }
     }
 
@@ -267,8 +300,11 @@ void Screen::reflow(Extent old_size, Extent new_size) {
         }
         const std::int32_t live_rows = last_meaningful + 1;
 
-        std::uint32_t line_off = static_cast<std::uint32_t>(reflow_cells_.size());
-        bool have = false;
+        // Continue the logical line carried over from history, if any, so a
+        // line that straddles the scrollback boundary stays one line.
+        std::uint32_t line_off = carry ? carry_off
+                                       : static_cast<std::uint32_t>(reflow_cells_.size());
+        bool have = carry;
         for (std::int32_t r = 0; r < live_rows; ++r) {
             const bool wrapped = wrapped_at(r);
             if (r == cur_row) {
@@ -328,8 +364,19 @@ void Screen::reflow(Extent old_size, Extent new_size) {
         // do/while emits at least one row, so an empty logical line yields one
         // blank physical row (no separate empty-line branch that double-counts).
         do {
-            const std::uint32_t take =
+            std::uint32_t take =
                 std::min<std::uint32_t>(static_cast<std::uint32_t>(ncols), ln.len - off);
+            // Never split a double-width glyph across the row break. Taking a
+            // flat `ncols` cells put a width-2 lead in the last column and its
+            // width-0 spacer at the start of the next row, so the pair was torn
+            // apart and both halves rendered as orphans. Leave the lead for the
+            // next row instead (the column it would have used stays blank, which
+            // is exactly what a terminal does when a wide glyph won't fit).
+            // `take > 1` keeps a 1-column terminal making progress; orphan
+            // leads are already removed when the row was gathered, so the
+            // reduced chunk always ends on a complete pair.
+            if (take > 1 && reflow_cells_[ln.off + off + take - 1].width == 2) --take;
+            if (take == 0) take = std::min<std::uint32_t>(1u, ln.len - off);
             const bool more = (off + take) < ln.len;
             if (ln.from_live && li == cursor_line && !cursor_placed) {
                 const std::int32_t col = cursor_col_in_line;
@@ -633,8 +680,13 @@ void Screen::put(char32_t cp) {
     // next line first (leaving the last column blank), as real terminals do.
     if (w == 2 && cursor_.col.get() + 1 > right_bound()) {
         if (autowrap_) {
-            // Blank the final column, then wrap to the left margin.
+            // Blank the final column, then wrap to the left margin. The row
+            // MUST be marked soft-wrapped: it continues on the next line, and
+            // without the flag reflow treated it as hard-terminated, so
+            // rewrapping split the logical line and injected the unusable
+            // padding column into the middle of it.
             at(cursor_.row, cursor_.col) = Cell{};
+            set_wrapped(cursor_.row.get(), true);
             cursor_.col = Col{left_bound()};
             line_feed();
         } else {

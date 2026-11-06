@@ -45,6 +45,19 @@ static void check_invariants(const term::Model &m, const char *what) {
         std::uint32_t acc = 0;
         for (const term::Cell &c : row) acc += c.cp + c.width + c.marks + c.link;
         (void)acc;
+        // The wide-glyph invariant: a width-2 lead must be followed by its
+        // width-0 spacer, and a spacer must follow a lead. Reflow and the
+        // margin-confined edits both move cells around, and breaking this
+        // pair leaves half-glyph orphans on screen.
+        for (std::size_t c = 0; c < row.size(); ++c) {
+            if (row[c].width == 2) {
+                // A lead in the last column has nowhere to put its spacer, so
+                // that is the one legal exception.
+                if (c + 1 < row.size()) expect(row[c + 1].width == 0, what);
+            } else if (row[c].width == 0 && c > 0) {
+                expect(row[c - 1].width == 2 || row[c - 1].width == 0, what);
+            }
+        }
     }
     // Text extraction must not walk off the ring.
     (void)m.screen.text_between_abs(0, m.screen.total_rows());
@@ -224,6 +237,45 @@ int main() {
             const std::int32_t rows = 1 + static_cast<std::int32_t>(rng() % 40);
             m.screen.resize(Extent{cols, rows});
             check_invariants(m, "resize under fuzz keeps invariants");
+        }
+    }
+    {
+        // Reflow across the SCROLLBACK BOUNDARY, which is where a logical line
+        // gets gathered in two passes. Long wrapped lines plus a short viewport
+        // guarantee lines that straddle it, then resize repeatedly so the join
+        // is exercised in both directions with history present.
+        std::mt19937 rng{11};
+        term::Config cfg;
+        cfg.scrollback_lines = 60;
+        term::Model m{cfg, Extent{20, 3}};
+        for (int i = 0; i < 200; ++i) {
+            // A line several viewport-heights long, sometimes hard-terminated.
+            std::string s(static_cast<std::size_t>(40 + (rng() % 120)), 'a' + (i % 26));
+            if (i % 3 == 0) s += "\r\n";
+            (void)term::feed_output(m, s);
+            const std::int32_t cols = 2 + static_cast<std::int32_t>(rng() % 60);
+            m.screen.resize(Extent{cols, 1 + static_cast<std::int32_t>(rng() % 6)});
+            check_invariants(m, "boundary-straddling reflow keeps invariants");
+            // Scrolling into history and back must stay in range afterwards.
+            m.screen.scroll(static_cast<std::int32_t>(rng() % 20));
+            check_invariants(m, "scroll after reflow keeps invariants");
+            m.screen.scroll_to_bottom();
+        }
+    }
+    {
+        // Wide glyphs straddling the boundary: a CJK pair cannot be split
+        // across a rewrap without corrupting the lead/spacer invariant.
+        std::mt19937 rng{13};
+        term::Config cfg;
+        cfg.scrollback_lines = 40;
+        term::Model m{cfg, Extent{11, 3}};
+        for (int i = 0; i < 150; ++i) {
+            std::string s;
+            for (int k = 0; k < 30; ++k) s += "\xe4\xb8\xad";
+            (void)term::feed_output(m, s);
+            m.screen.resize(Extent{2 + static_cast<std::int32_t>(rng() % 40),
+                                   1 + static_cast<std::int32_t>(rng() % 5)});
+            check_invariants(m, "wide glyphs across a reflow boundary");
         }
     }
 

@@ -35,17 +35,23 @@ published stress vectors. Currently 0 mismatches.
 **3. Sanitizers over adversarial input.**
 A terminal parses bytes from an untrusted child, so an out-of-bounds cell
 write is a security bug. `tests/fuzz_test.cpp` drives the model with random
-bytes, escape-biased random bytes, and 18 adversarial shapes (5000 CSI
+bytes, escape-biased random bytes, and 20 adversarial shapes (5000 CSI
 parameters, 200 KB OSC/DCS/APC strings, unterminated strings, ESC/CSI storms,
-out-of-range margins and rectangles, 5000 combining marks), each fed both in
-one chunk and byte-at-a-time, plus randomised resize and a 1×1 terminal.
+out-of-range margins and rectangles, margin-confined edits, 5000 combining
+marks), each fed both in one chunk and byte-at-a-time, plus randomised resize,
+boundary-straddling reflow, wide glyphs across a rewrap, and a 1×1 terminal.
+
+After every step it re-checks the model's invariants — cursor in range, rows
+the right width, and every double-width glyph still paired with its spacer.
+That last one is what caught three separate reflow bugs that no crash would
+have revealed.
 
 ```sh
 cmake -S . -B build-san -DCMAKE_BUILD_TYPE=Debug -DTOE_SANITIZE=ON
 cmake --build build-san -j && ctest --test-dir build-san
 ```
 
-The whole suite (16 binaries, ~588 assertions) passes under
+The whole suite (16 binaries, ~613 assertions) passes under
 AddressSanitizer + UndefinedBehaviorSanitizer.
 
 **4. Coverage-guided probing.**
@@ -128,6 +134,11 @@ anything above U+10FFFF become U+FFFD. Display widths come from a generated
 Unicode Character Database table (not locale-dependent libc `wcwidth`). Wide
 glyphs occupy a lead cell plus a zero-width spacer, kept consistent when
 either half is overwritten, and wrap rather than truncate at the right edge.
+That pair also survives a rewrap: reflow never splits a glyph across rows,
+never orphans a lead, and never loses one. Soft-wrap reflow preserves a
+logical line even when it STRADDLES the scrollback boundary (part in history,
+part in the live grid), so widening rejoins the whole line instead of
+rewrapping the two halves separately.
 Combining marks attach to their base cell (`Screen::marks_of`) and survive
 text extraction. A multi-byte character split across `feed_output` calls
 decodes correctly — the partial sequence stays pending, as streaming requires.
@@ -212,5 +223,9 @@ the code and declaring it correct:
 | Agent JSON silently DROPPED DEL, losing a byte from the transcript | JSON-parser oracle |
 | An unticked animation reported deadline 0 ("idle"), so a host polling it never started the animation | coverage-guided probe |
 | Animation frames were scheduled from now_ms, so late ticks permanently stretched the loop | coverage-guided probe |
+| Reflow split a logical line at the scrollback boundary, so widening never rejoined it | coverage-guided probe |
+| A wide glyph's forced early wrap never marked the row soft-wrapped, injecting a blank per row on every rewrap | fuzz invariant |
+| Reflow could put a wide lead in the last column with its spacer on the next row | fuzz invariant |
+| Trimming a trailing blank could orphan a wide lead | fuzz invariant |
 | DA3 silently dropped (an app can block on it) | capability audit |
 | RIS never cleared the hyperlink table | code audit during the above |

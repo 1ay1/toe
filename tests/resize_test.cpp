@@ -300,6 +300,121 @@ int main() {
         }
     }
 
+    // --- a logical line that STRADDLES the scrollback boundary -------------
+    // A wrapped line long enough to spill off the top of the viewport has some
+    // of its rows in history and some in the live grid. Reflow gathers those in
+    // two separate passes, and the first pass used to CLOSE the logical line at
+    // the boundary -- so widening rewrapped the two halves independently and
+    // the line came back split at exactly the point where it crossed into
+    // scrollback (26 chars at width 5 with 3 rows of history reflowed to
+    // "ABCDEFGHIJKLMNO" + "PQRSTUVWXYZ").
+    {
+        const std::string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        // 26 chars at width 5 = 6 rows; fewer viewport rows spills the rest.
+        for (int rows : {3, 5, 6, 7}) {
+            term::Screen s{Extent{5, rows}};
+            feed(s, alphabet);
+            s.resize(Extent{26, rows});
+            // The whole line must be back on one row.
+            std::string got = s.text_between_abs(0, s.total_rows());
+            while (!got.empty() && (got.back() == ' ' || got.back() == '\n')) got.pop_back();
+            char name[96];
+            std::snprintf(name, sizeof name,
+                          "reflow rejoins a line straddling the boundary (rows=%d)", rows);
+            ck(got == alphabet, name);
+        }
+    }
+    {
+        // Several straddling lines at once must stay distinct, not merge.
+        term::Screen s{Extent{5, 3}};
+        feed(s, "AAAAAAAAAAAA\r\nBBBBBBBBBBBB\r\nCCCC");
+        s.resize(Extent{20, 3});
+        const std::vector<std::string> rows = read_all(s);
+        int found = 0;
+        for (const std::string &r : rows) {
+            if (r == "AAAAAAAAAAAA" || r == "BBBBBBBBBBBB" || r == "CCCC") ++found;
+            // A merge would produce a row containing two different letters.
+            ck(!(r.find('A') != std::string::npos && r.find('B') != std::string::npos),
+               "straddling lines do not merge into each other");
+        }
+        ck(found == 3, "three straddling lines reflow to three logical lines");
+    }
+    {
+        // The cursor must follow its character across a straddling reflow.
+        term::Screen s{Extent{5, 3}};
+        feed(s, "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+        s.resize(Extent{26, 3});
+        ck(s.cursor().row.get() == 0 && s.cursor().col.get() == 25,
+           "the cursor tracks its column across a straddling reflow");
+    }
+    {
+        // Narrow then widen: the round trip must come back clean rather than
+        // carrying a split forward.
+        const std::string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        term::Screen s{Extent{10, 3}};
+        feed(s, alphabet);
+        s.resize(Extent{5, 3});   // spills into history
+        s.resize(Extent{26, 3});  // must rejoin
+        std::string got = s.text_between_abs(0, s.total_rows());
+        while (!got.empty() && (got.back() == ' ' || got.back() == '\n')) got.pop_back();
+        ck(got == alphabet, "a narrow-then-widen round trip rejoins the line");
+    }
+    {
+        // A hard newline must never be joined by reflow, however wide we go.
+        term::Screen s{Extent{10, 4}};
+        feed(s, "one\r\ntwo\r\nthree");
+        s.resize(Extent{40, 4});
+        const std::vector<std::string> rows = read_all(s);
+        int n = 0;
+        for (const std::string &r : rows)
+            if (r == "one" || r == "two" || r == "three") ++n;
+        ck(n == 3, "hard newlines survive widening as separate lines");
+    }
+
+    {
+        // --- wide glyphs across a rewrap ----------------------------------
+        // A double-width glyph is a width-2 lead plus a width-0 spacer. Three
+        // separate bugs tore that pair apart on reflow:
+        //   * the early wrap a wide glyph forces (when it won't fit the last
+        //     column) never marked the row soft-wrapped, so reflow treated the
+        //     line as hard-terminated AND kept the unusable padding column,
+        //     injecting a blank every N columns on every rewrap;
+        //   * the rewrap took a flat `ncols` cells, so a lead could land in the
+        //     last column with its spacer on the next row;
+        //   * trimming a trailing blank could remove a spacer, orphaning its
+        //     lead (and an early attempt to fix that by dropping the lead
+        //     DELETED the character instead).
+        std::string glyphs;
+        for (int i = 0; i < 12; ++i) glyphs += "\xe4\xb8\xad"; // U+4E2D, width 2
+        for (int w : {11, 20, 5, 7, 24, 3, 2}) {
+            term::Screen s{Extent{11, 4}};
+            feed(s, glyphs);
+            s.resize(Extent{w, 4});
+            // 1. No glyph may be lost.
+            const std::string got = s.text_between_abs(0, s.total_rows());
+            std::string compact;
+            for (char ch : got)
+                if (ch != ' ' && ch != '\n') compact += ch;
+            char name[96];
+            std::snprintf(name, sizeof name, "wide glyphs survive a reflow to w=%d", w);
+            ck(compact == glyphs, name);
+            // 2. Every lead keeps its spacer, and no spacer is orphaned.
+            bool paired = true;
+            for (std::int32_t r = 0; r < s.size().rows; ++r) {
+                const std::span<const term::Cell> row = s.row(Row{r});
+                for (std::size_t c = 0; c < row.size(); ++c) {
+                    if (row[c].width == 2 && c + 1 < row.size() && row[c + 1].width != 0)
+                        paired = false;
+                    if (row[c].width == 0 && c > 0 && row[c - 1].width != 2 &&
+                        row[c - 1].width != 0)
+                        paired = false;
+                }
+            }
+            std::snprintf(name, sizeof name, "lead/spacer pairs intact after reflow to w=%d", w);
+            ck(paired, name);
+        }
+    }
+
     std::printf(failures ? "\nresize test: %d FAILURES\n" : "\nresize test: PASS\n", failures);
     return failures ? 1 : 0;
 }
