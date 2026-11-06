@@ -496,8 +496,14 @@ bool Graphics::advance_animations(std::uint64_t now_ms) {
         if (now_ms >= img.next_advance_ms) {
             img.current = (img.current + 1) % static_cast<int>(img.frames.size());
             img.rgba = img.frames[static_cast<std::size_t>(img.current)].rgba;
-            img.next_advance_ms =
-                now_ms + static_cast<std::uint64_t>(img.frames[static_cast<std::size_t>(img.current)].gap_ms);
+            // Schedule from the deadline we just passed, not from now_ms:
+            // basing it on now_ms made every late tick permanently shift the
+            // animation, so a slow frame stretched the whole loop. If we're
+            // more than one gap behind (a long stall), resync to now.
+            const auto gap =
+                static_cast<std::uint64_t>(img.frames[static_cast<std::size_t>(img.current)].gap_ms);
+            img.next_advance_ms += gap;
+            if (img.next_advance_ms <= now_ms) img.next_advance_ms = now_ms + gap;
             any = true;
         }
     }
@@ -507,11 +513,24 @@ bool Graphics::advance_animations(std::uint64_t now_ms) {
 }
 
 std::uint64_t Graphics::next_animation_deadline() const noexcept {
+    // Zero means "nothing scheduled". An animation whose clock hasn't been
+    // seeded yet (next_advance_ms == 0) still needs a tick to start it, so it
+    // must not be reported as idle -- a host that polls this to decide when to
+    // wake would otherwise never call advance_animations() at all, and the
+    // animation would sit on frame 0 forever.
     std::uint64_t soonest = 0;
+    bool needs_seed = false;
     for (const auto &[id, img] : images_) {
-        if (img.frames.size() < 2 || img.next_advance_ms == 0) continue;
+        if (img.frames.size() < 2) continue;
+        if (img.next_advance_ms == 0) {
+            needs_seed = true;
+            continue;
+        }
         if (soonest == 0 || img.next_advance_ms < soonest) soonest = img.next_advance_ms;
     }
+    // An unseeded animation wants a tick immediately; 1 is the earliest
+    // non-zero deadline, so it reads as "due now" without meaning "idle".
+    if (needs_seed) return 1;
     return soonest;
 }
 

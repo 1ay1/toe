@@ -245,7 +245,7 @@ side table specifically so it fits in existing padding.
 
 ## Testing
 
-Fourteen test binaries, all headless, all linking only `toe::toe`:
+Sixteen test binaries, all headless, all linking only `toe::toe`:
 
 | Test | Covers |
 |---|---|
@@ -256,6 +256,8 @@ Fourteen test binaries, all headless, all linking only `toe::toe`:
 | `sgr_test` | extended colour in both wire forms, underline styles, attrs |
 | `caps_test` | what toe reports matches what it implements |
 | `region_test` | scroll regions, origin mode, margins, rectangle ops |
+| `graphics_test` | kitty/sixel protocol bookkeeping and animation timing |
+| `sbquery_test` | the agent JSON read-out: escaping, injection, encoding |
 | `fuzz_test` | no byte stream crashes, hangs or corrupts the model |
 | `resize_test` | resize and soft-wrap reflow, scroll position preservation |
 | `tea_test` | `feed_output` returns the right `Cmd`s; config reaches the screen |

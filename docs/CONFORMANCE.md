@@ -45,7 +45,7 @@ cmake -S . -B build-san -DCMAKE_BUILD_TYPE=Debug -DTOE_SANITIZE=ON
 cmake --build build-san -j && ctest --test-dir build-san
 ```
 
-The whole suite (14 binaries, ~535 assertions) passes under
+The whole suite (16 binaries, ~588 assertions) passes under
 AddressSanitizer + UndefinedBehaviorSanitizer.
 
 **4. Coverage-guided probing.**
@@ -61,8 +61,8 @@ cmake --build build-cov -j && ctest --test-dir build-cov
 cd build-cov/src/CMakeFiles/toe.dir/term && gcov *.gcno
 ```
 
-Current line coverage: `screen.cpp` 88%, `parser.inl` 97%, `rowring.hpp` 97%,
-`update.cpp` 85%, `graphics.cpp` 85%, `sbquery.cpp` 75%.
+Current line coverage: `screen.cpp` 90%, `graphics.cpp` 98%, `parser.inl` 97%,
+`rowring.hpp` 97%, `update.cpp` 86%, `sbquery.cpp` 85%, `redact.cpp` 100%.
 
 ## Implemented
 
@@ -141,6 +141,16 @@ command blocks (text, output, cwd, exit code, duration, row span) · sixel and
 kitty graphics protocol handling · scrollback search · Unicode-aware selection
 · a secret redactor for transcript capture.
 
+The DEC 2034 agent read-out emits JSON that is valid per RFC 8259 for *any*
+cell content: a command containing `","evil":"` cannot inject a field, and
+malformed UTF-8 from the child becomes U+FFFD rather than producing a document
+strict parsers reject. Queries require the session token issued by `CSI ?2034h`.
+
+Kitty animation timing is reportable as well as correct: an animation that has
+not yet been ticked reports a due deadline rather than "idle", and each frame
+is scheduled from the deadline it passed rather than from the current time, so
+ticking late does not stretch the loop.
+
 ## Not implemented
 
 Deliberate, with reasons:
@@ -169,8 +179,9 @@ Honest gaps in the *verification*, not necessarily in the code:
 - **No `vttest` run.** vttest is interactive and needs a real terminal
   front-end, which toe deliberately doesn't have. The differential harness
   covers much of the same ground programmatically, but not all of it.
-- **Sixel and kitty graphics** are exercised by the fuzzer for robustness, but
-  their output is not diffed against a reference implementation.
+- **Sixel and kitty graphics** are covered for protocol bookkeeping (store,
+  place, replace, refuse, delete, animate) and robustness, but the decoded
+  pixel output is not diffed against a reference implementation.
 - **Mouse event encoding** is covered for mode tracking, not byte-for-byte
   against xterm for every button/modifier combination.
 - **pyte is the only reference.** It has real gaps (no REP, CHT, CBT, SU, SD,
@@ -197,5 +208,9 @@ the code and declaring it correct:
 | IL/DL moved whole rows instead of just the margin columns | coverage-guided probe |
 | DECSLRM homed to the margin corner, not the page origin | VT510 manual |
 | DECCARA with SGR 0 SET every attribute instead of clearing | coverage-guided probe |
+| Agent JSON passed invalid UTF-8 through, so strict parsers rejected the whole document | JSON-parser oracle |
+| Agent JSON silently DROPPED DEL, losing a byte from the transcript | JSON-parser oracle |
+| An unticked animation reported deadline 0 ("idle"), so a host polling it never started the animation | coverage-guided probe |
+| Animation frames were scheduled from now_ms, so late ticks permanently stretched the loop | coverage-guided probe |
 | DA3 silently dropped (an app can block on it) | capability audit |
 | RIS never cleared the hyperlink table | code audit during the above |

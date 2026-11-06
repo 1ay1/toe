@@ -29,6 +29,14 @@ add_executable(sgr_test sgr_test.cpp)
 target_link_libraries(sgr_test PRIVATE toe::toe)
 add_test(NAME sgr COMMAND sgr_test)
 
+add_executable(graphics_test graphics_test.cpp)
+target_link_libraries(graphics_test PRIVATE toe::toe)
+add_test(NAME graphics COMMAND graphics_test)
+
+add_executable(sbquery_test sbquery_test.cpp)
+target_link_libraries(sbquery_test PRIVATE toe::toe)
+add_test(NAME sbquery COMMAND sbquery_test)
+
 add_executable(region_test region_test.cpp)
 target_link_libraries(region_test PRIVATE toe::toe)
 add_test(NAME region COMMAND region_test)

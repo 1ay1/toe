@@ -16,22 +16,64 @@ namespace toe::term {
 std::string json_escape(std::string_view s) {
     std::string out;
     out.reserve(s.size() + 8);
-    for (unsigned char c : s) {
+    // RFC 8259 requires a JSON text to be valid UTF-8, so this cannot simply
+    // pass bytes >= 0x80 through: cell text can hold anything the child sent,
+    // and a single stray 0xFF used to produce a document that every strict
+    // parser rejects -- breaking the whole agent read-out, not just one field.
+    // Malformed sequences become U+FFFD, matching the screen's own decoder.
+    const std::size_t n = s.size();
+    for (std::size_t i = 0; i < n;) {
+        const auto c = static_cast<unsigned char>(s[i]);
         switch (c) {
-        case '"':  out += "\\\""; break;
-        case '\\': out += "\\\\"; break;
-        case '\n': out += "\\n"; break;
-        case '\r': out += "\\r"; break;
-        case '\t': out += "\\t"; break;
-        default:
-            if (c < 0x20) {
-                char buf[8];
-                std::snprintf(buf, sizeof buf, "\\u%04x", c);
-                out += buf;
-            } else {
-                out.push_back(static_cast<char>(c));
-            }
+        case '"':  out += "\\\""; ++i; continue;
+        case '\\': out += "\\\\"; ++i; continue;
+        case '\n': out += "\\n";  ++i; continue;
+        case '\r': out += "\\r";  ++i; continue;
+        case '\t': out += "\\t";  ++i; continue;
+        case '\b': out += "\\b";  ++i; continue;
+        case '\f': out += "\\f";  ++i; continue;
+        default: break;
         }
+        if (c < 0x20 || c == 0x7F) {
+            // C0 controls must be escaped; DEL may legally be literal but is
+            // escaped too rather than silently dropped (it used to vanish).
+            char buf[8];
+            std::snprintf(buf, sizeof buf, "\\u%04x", c);
+            out += buf;
+            ++i;
+            continue;
+        }
+        if (c < 0x80) {
+            out.push_back(static_cast<char>(c));
+            ++i;
+            continue;
+        }
+        // Multi-byte: validate the whole sequence (length, continuation bytes,
+        // overlongs, surrogates, > U+10FFFF) before copying it verbatim.
+        int need = 0;
+        if ((c & 0xE0) == 0xC0 && c >= 0xC2) need = 1;
+        else if ((c & 0xF0) == 0xE0) need = 2;
+        else if ((c & 0xF8) == 0xF0 && c <= 0xF4) need = 3;
+        bool ok = need > 0 && i + static_cast<std::size_t>(need) < n;
+        if (ok) {
+            for (int k = 1; k <= need; ++k)
+                if ((static_cast<unsigned char>(s[i + static_cast<std::size_t>(k)]) & 0xC0) != 0x80) {
+                    ok = false;
+                    break;
+                }
+        }
+        if (ok) {
+            const auto b1 = static_cast<unsigned char>(s[i + 1]);
+            if (need == 2 && ((c == 0xE0 && b1 < 0xA0) || (c == 0xED && b1 >= 0xA0))) ok = false;
+            if (need == 3 && ((c == 0xF0 && b1 < 0x90) || (c == 0xF4 && b1 >= 0x90))) ok = false;
+        }
+        if (!ok) {
+            out += "\xEF\xBF\xBD"; // U+FFFD
+            ++i;                   // resync one byte at a time
+            continue;
+        }
+        out.append(s.substr(i, static_cast<std::size_t>(need) + 1));
+        i += static_cast<std::size_t>(need) + 1;
     }
     return out;
 }
