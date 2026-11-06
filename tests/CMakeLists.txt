@@ -25,6 +25,10 @@ add_executable(caps_test caps_test.cpp)
 target_link_libraries(caps_test PRIVATE toe::toe)
 add_test(NAME caps COMMAND caps_test)
 
+add_executable(sgr_test sgr_test.cpp)
+target_link_libraries(sgr_test PRIVATE toe::toe)
+add_test(NAME sgr COMMAND sgr_test)
+
 add_executable(region_test region_test.cpp)
 target_link_libraries(region_test PRIVATE toe::toe)
 add_test(NAME region COMMAND region_test)

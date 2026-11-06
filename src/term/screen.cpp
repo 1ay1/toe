@@ -2093,19 +2093,40 @@ void Screen::apply_sgr(std::span<const int> params, std::span<const std::uint8_t
             } else if (c >= 100 && c <= 107) {
                 pen_.bg = IndexedColor{static_cast<std::uint8_t>(c - 100 + 8)};
             } else if (c == 38 || c == 48 || c == 58) {
-                // Extended color: 38/48/58 ;5;n (indexed) or ;2;r;g;b (true).
-                // 58 is the underline colour (rendered in its own colour when
-                // set; falls back to fg when default). Colon- and semicolon-
-                // separated forms are both handled by scanning ahead.
+                // Extended colour: 38/48/58 with an indexed (5;n) or direct
+                // (2;r;g;b) selector. 58 is the underline colour.
+                //
+                // Two wire forms, and they are NOT the same length:
+                //   semicolon: 38;2;R;G;B        (legacy xterm)
+                //   colon:     38:2::R:G:B       (ECMA-48; kitty, neovim, iTerm2)
+                // The colon form carries an extra colour-space-id slot after
+                // the 2, which is normally empty. Treating the two alike read
+                // the colour one position early, so 38:2::1:2:3 came out as
+                // rgb(0,1,2). `sub[k]` is non-zero when params[k] arrived as a
+                // colon subparameter, which is how we tell them apart.
                 Color *target = (c == 38) ? &pen_.fg : (c == 48) ? &pen_.bg : &pen_.underline_color;
-                if (i + 1 < params.size() && params[i + 1] == 5 && i + 2 < params.size()) {
-                    *target = IndexedColor{static_cast<std::uint8_t>(params[i + 2])};
-                    i += 2;
-                } else if (i + 4 < params.size() && params[i + 1] == 2) {
-                    *target = TrueColor{Rgb{static_cast<std::uint8_t>(params[i + 2]),
-                                            static_cast<std::uint8_t>(params[i + 3]),
-                                            static_cast<std::uint8_t>(params[i + 4])}};
-                    i += 4;
+                const auto is_sub = [&](std::size_t k) {
+                    return k < sub.size() && sub[k] != 0;
+                };
+                // A colon-form sequence has its selector as a subparameter.
+                const bool colon = is_sub(i + 1);
+                if (i + 1 < params.size() && params[i + 1] == 5) {
+                    // Indexed: 38;5;n or 38:5:n -- same shape either way.
+                    if (i + 2 < params.size()) {
+                        *target = IndexedColor{static_cast<std::uint8_t>(params[i + 2])};
+                        i += 2;
+                    }
+                } else if (i + 1 < params.size() && params[i + 1] == 2) {
+                    // Direct colour. The colon form inserts a colour-space id;
+                    // skip it when the parameter count shows it's there.
+                    std::size_t r = i + 2;
+                    if (colon && i + 5 < params.size()) r = i + 3; // skip colour-space
+                    if (r + 2 < params.size()) {
+                        *target = TrueColor{Rgb{static_cast<std::uint8_t>(params[r]),
+                                                static_cast<std::uint8_t>(params[r + 1]),
+                                                static_cast<std::uint8_t>(params[r + 2])}};
+                        i = r + 2;
+                    }
                 }
             } else if (c == 59) {
                 pen_.underline_color = DefaultColor{}; // reset underline colour to fg

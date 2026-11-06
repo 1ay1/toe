@@ -162,6 +162,8 @@ suite; `-DTOE_INSTALL=ON` to emit `find_package` support.
 ## Docs
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — the design and the reasons
+- **[docs/CONFORMANCE.md](docs/CONFORMANCE.md)** — what's implemented, how it
+  was verified, and what it deliberately doesn't do
 
 ## License
 
