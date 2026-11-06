@@ -150,6 +150,129 @@ int main() {
         expect(p.col.get() == 2, "DECOM: CUP column 1 is the left margin");
     }
 
+    // --- rectangle attribute ops (DECCARA / DECRARA) ----------------------
+    // These had NO test coverage at all, which is how DECCARA's reset form
+    // ended up doing the exact opposite of what it should.
+    {
+        // Fill 6x4 with 'a', then DECCARA bold over rows 2-3, cols 2-4.
+        term::Config cfg;
+        term::Model m{cfg, Extent{6, 4}};
+        (void)term::feed_output(m, "\033[1;1Haaaaaa\033[2;1Haaaaaa"
+                                   "\033[3;1Haaaaaa\033[4;1Haaaaaa");
+        (void)term::feed_output(m, "\033[2;2;3;4;1$r");
+        auto bold_at = [&m](std::int32_t r, std::int32_t c) {
+            return has(m.screen.row(Row{r})[static_cast<std::size_t>(c)].pen.attr,
+                       term::Attr::Bold);
+        };
+        expect(bold_at(1, 1) && bold_at(1, 3) && bold_at(2, 1) && bold_at(2, 3),
+               "DECCARA sets the attribute inside the rectangle");
+        expect(!bold_at(0, 1) && !bold_at(3, 1) && !bold_at(1, 0) && !bold_at(1, 4),
+               "DECCARA leaves cells outside the rectangle alone");
+    }
+    {
+        // DECRARA toggles: on an all-bold screen the rectangle becomes plain.
+        term::Config cfg;
+        term::Model m{cfg, Extent{6, 4}};
+        (void)term::feed_output(m, "\033[1m\033[1;1Haaaaaa\033[2;1Haaaaaa"
+                                   "\033[3;1Haaaaaa\033[4;1Haaaaaa");
+        (void)term::feed_output(m, "\033[2;2;3;4;1$t");
+        auto bold_at = [&m](std::int32_t r, std::int32_t c) {
+            return has(m.screen.row(Row{r})[static_cast<std::size_t>(c)].pen.attr,
+                       term::Attr::Bold);
+        };
+        expect(!bold_at(1, 1) && !bold_at(2, 3), "DECRARA toggles the rectangle off");
+        expect(bold_at(0, 1) && bold_at(1, 0), "DECRARA leaves the outside alone");
+    }
+    {
+        // DECCARA with SGR 0 must CLEAR, not set. This was inverted: it ORed
+        // the full attribute mask, so "reset this rectangle" set every
+        // attribute in it instead.
+        term::Config cfg;
+        term::Model m{cfg, Extent{6, 3}};
+        (void)term::feed_output(m, "\033[4m\033[1;1Haaaaaa\033[2;1Haaaaaa\033[3;1Haaaaaa");
+        (void)term::feed_output(m, "\033[1;2;2;4;0$r");
+        auto attr_at = [&m](std::int32_t r, std::int32_t c) {
+            return m.screen.row(Row{r})[static_cast<std::size_t>(c)].pen.attr;
+        };
+        expect(attr_at(0, 1) == term::Attr::None && attr_at(1, 3) == term::Attr::None,
+               "DECCARA with SGR 0 clears attributes in the rectangle");
+        expect(has(attr_at(0, 0), term::Attr::Underline) &&
+                   has(attr_at(2, 1), term::Attr::Underline),
+               "DECCARA with SGR 0 leaves the outside underlined");
+    }
+
+    // --- left/right margins confine column-wise edits ----------------------
+    // All of this was unreachable-by-test before, and all of it was broken:
+    // writes outside the margins were clipped, and IL/DL moved whole rows.
+    {
+        term::Config cfg;
+        term::Model m{cfg, Extent{8, 3}};
+        // Margins cols 3-6 (0-based 2-5).
+        (void)term::feed_output(m, "\033[?69h\033[3;6s");
+        (void)term::feed_output(m, "\033[1;1HABCDEFGH");
+        std::string row0;
+        for (const term::Cell &c : m.screen.row(Row{0})) row0 += static_cast<char>(c.cp);
+        expect(row0 == "ABCDEFGH",
+               "a write starting outside the margins is not clipped by them");
+    }
+    {
+        term::Config cfg;
+        term::Model m{cfg, Extent{8, 3}};
+        (void)term::feed_output(m, "\033[?69h\033[3;6s\033[1;3HABCDEF");
+        // Starting inside, it wraps at the right margin (col 5) back to col 2.
+        expect(m.screen.row(Row{0})[2].cp == U'A' && m.screen.row(Row{0})[5].cp == U'D' &&
+                   m.screen.row(Row{1})[2].cp == U'E',
+               "inside the margins, a write wraps at the right margin");
+    }
+    {
+        term::Config cfg;
+        term::Model m{cfg, Extent{8, 3}};
+        (void)term::feed_output(m, "\033[?69h\033[3;6s");
+        (void)term::feed_output(m, "\033[1;1HABCDEFGH\033[2;1Habcdefgh\033[3;1HIJKLMNOP");
+        (void)term::feed_output(m, "\033[2;3H\033[1L"); // IL inside the margins
+        auto at = [&m](std::int32_t r, std::int32_t c) {
+            return m.screen.row(Row{r})[static_cast<std::size_t>(c)].cp;
+        };
+        expect(at(1, 0) == U'a' && at(1, 1) == U'b' && at(1, 6) == U'g' && at(1, 7) == U'h',
+               "IL with margins leaves the columns outside them untouched");
+        expect(at(1, 2) == U' ' && at(1, 5) == U' ',
+               "IL with margins blanks only the margin columns");
+        expect(at(2, 2) == U'c' && at(2, 5) == U'f',
+               "IL with margins shifts the margin columns down");
+        expect(at(2, 0) == U'I' && at(2, 7) == U'P',
+               "IL with margins does not disturb the next row's outer columns");
+    }
+    {
+        term::Config cfg;
+        term::Model m{cfg, Extent{8, 3}};
+        (void)term::feed_output(m, "\033[?69h\033[3;6s");
+        (void)term::feed_output(m, "\033[1;1HABCDEFGH\033[2;1Habcdefgh\033[3;1HIJKLMNOP");
+        (void)term::feed_output(m, "\033[2;3H\033[1M"); // DL inside the margins
+        auto at = [&m](std::int32_t r, std::int32_t c) {
+            return m.screen.row(Row{r})[static_cast<std::size_t>(c)].cp;
+        };
+        expect(at(1, 2) == U'K' && at(1, 5) == U'N', "DL with margins shifts them up");
+        expect(at(1, 0) == U'a' && at(1, 7) == U'h',
+               "DL with margins leaves the outer columns alone");
+        expect(at(2, 2) == U' ' && at(2, 5) == U' ',
+               "DL with margins blanks the margin columns of the last row");
+    }
+    {
+        // DECBI / DECFI shift content within the margin columns only.
+        term::Config cfg;
+        term::Model m{cfg, Extent{8, 1}};
+        (void)term::feed_output(m, "\033[?69h\033[3;6s\033[1;3HWXYZ\033[1;3H\0336");
+        expect(m.screen.row(Row{0})[2].cp == U' ' && m.screen.row(Row{0})[3].cp == U'W',
+               "DECBI at the left margin shifts the margin columns right");
+    }
+    {
+        term::Config cfg;
+        term::Model m{cfg, Extent{8, 1}};
+        (void)term::feed_output(m, "\033[?69h\033[3;6s\033[1;3HWXYZ\033[1;6H\0339");
+        expect(m.screen.row(Row{0})[2].cp == U'X' && m.screen.row(Row{0})[5].cp == U' ',
+               "DECFI at the right margin shifts the margin columns left");
+    }
+
     std::printf(failures ? "region: %d FAILURES\n" : "region: PASS\n", failures);
     return failures ? 1 : 0;
 }

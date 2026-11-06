@@ -852,8 +852,9 @@ void Screen::line_feed() {
 
 void Screen::carriage_return() {
     wrap_pending_ = false;
-    // CR returns to the left margin when inside the horizontal region, else col 0.
-    cursor_.col = Col{(cursor_.col.get() >= left_bound()) ? left_bound() : 0};
+    // CR returns to the left margin when the cursor is at or right of it, else
+    // to column 0. Uses the margin itself, not the cursor-relative bound.
+    cursor_.col = Col{(cursor_.col.get() >= margin_left()) ? margin_left() : 0};
     touch();
 }
 
@@ -1016,13 +1017,29 @@ void Screen::insert_lines(std::int32_t n) {
     if (cursor_.row.get() < scroll_top_ || cursor_.row.get() > scroll_bottom_) return;
     n = std::clamp(n, 0, scroll_bottom_ - cursor_.row.get() + 1);
     if (n == 0) return;
+    const std::int32_t top = cursor_.row.get();
+    // With left/right margins active, IL shifts ONLY the margin columns — the
+    // cells outside them must not move. Rotating whole rows (the fast path
+    // below) would drag the untouched columns along with them.
+    if (lr_margins_ && (scroll_left_ > 0 || scroll_right_ < size_.cols - 1)) {
+        const std::int32_t l = scroll_left_, r = scroll_right_;
+        for (std::int32_t row = scroll_bottom_; row >= top + n; --row)
+            for (std::int32_t c = l; c <= r; ++c)
+                at(Row{row}, Col{c}) = at(Row{row - n}, Col{c});
+        for (std::int32_t row = top; row < top + n && row <= scroll_bottom_; ++row)
+            for (std::int32_t c = l; c <= r; ++c) at(Row{row}, Col{c}) = blank_cell();
+        cursor_.col = Col{l};
+        stamp_range(top, scroll_bottom_);
+        touch();
+        return;
+    }
     // Rows [cursor, bottom-n] shift DOWN by n; the freshly-vacated top n rows
     // of the [cursor,bottom] sub-region are blanked.
-    ring_.rotate_view_down(cursor_.row.get(), scroll_bottom_, n);
-    for (std::int32_t r = cursor_.row.get(); r < cursor_.row.get() + n; ++r)
+    ring_.rotate_view_down(top, scroll_bottom_, n);
+    for (std::int32_t r = top; r < top + n; ++r)
         ring_.blank_view_row(r, blank_cell());
-    cursor_.col = Col{0};
-    stamp_range(cursor_.row.get(), scroll_bottom_);
+    cursor_.col = Col{margin_left()};
+    stamp_range(top, scroll_bottom_);
     touch();
 }
 
@@ -1030,20 +1047,34 @@ void Screen::delete_lines(std::int32_t n) {
     if (cursor_.row.get() < scroll_top_ || cursor_.row.get() > scroll_bottom_) return;
     n = std::clamp(n, 0, scroll_bottom_ - cursor_.row.get() + 1);
     if (n == 0) return;
+    const std::int32_t top = cursor_.row.get();
+    // Same margin rule as IL: only the margin columns shift.
+    if (lr_margins_ && (scroll_left_ > 0 || scroll_right_ < size_.cols - 1)) {
+        const std::int32_t l = scroll_left_, r = scroll_right_;
+        for (std::int32_t row = top; row <= scroll_bottom_ - n; ++row)
+            for (std::int32_t c = l; c <= r; ++c)
+                at(Row{row}, Col{c}) = at(Row{row + n}, Col{c});
+        for (std::int32_t row = scroll_bottom_ - n + 1; row <= scroll_bottom_; ++row)
+            for (std::int32_t c = l; c <= r; ++c) at(Row{row}, Col{c}) = blank_cell();
+        cursor_.col = Col{l};
+        stamp_range(top, scroll_bottom_);
+        touch();
+        return;
+    }
     // Rows [cursor+n, bottom] shift UP by n; the vacated bottom n rows blank.
-    ring_.rotate_view_up(cursor_.row.get(), scroll_bottom_, n);
+    ring_.rotate_view_up(top, scroll_bottom_, n);
     for (std::int32_t r = scroll_bottom_ - n + 1; r <= scroll_bottom_; ++r)
         ring_.blank_view_row(r, blank_cell());
-    cursor_.col = Col{0};
-    stamp_range(cursor_.row.get(), scroll_bottom_);
+    cursor_.col = Col{margin_left()};
+    stamp_range(top, scroll_bottom_);
     touch();
 }
 
 void Screen::insert_chars(std::int32_t n) {
     const Row r = cursor_.row;
     const std::int32_t start = cursor_.col.get();
-    const std::int32_t right = right_bound();
-    if (start < left_bound() || start > right) return; // outside the region
+    const std::int32_t right = margin_right();
+    if (start < margin_left() || start > right) return; // outside the region
     n = std::clamp(n, 0, right + 1 - start);
     if (n == 0) return;
     // Shift cells [start, right-n] right by n within the margin; blank the gap.
@@ -1057,8 +1088,8 @@ void Screen::insert_chars(std::int32_t n) {
 void Screen::delete_chars(std::int32_t n) {
     const Row r = cursor_.row;
     const std::int32_t start = cursor_.col.get();
-    const std::int32_t right = right_bound();
-    if (start < left_bound() || start > right) return;
+    const std::int32_t right = margin_right();
+    if (start < margin_left() || start > right) return;
     n = std::clamp(n, 0, right + 1 - start);
     if (n == 0) return;
     for (std::int32_t c = start; c <= right - n; ++c) at(r, Col{c}) = at(r, Col{c + n});
@@ -1105,8 +1136,9 @@ void Screen::set_lr_margins(int left, int right) {
     if (l < r && r <= size_.cols) {
         scroll_left_ = l - 1;
         scroll_right_ = r - 1;
-        // Like DECSTBM, DECSLRM homes the cursor (to the region origin).
-        cursor_ = Pos{Row{scroll_top_}, Col{scroll_left_}};
+        // "DECSLRM moves the cursor to column 1, line 1 of the page" (VT510
+        // manual) — the PAGE origin, not the margin corner.
+        cursor_ = Pos{Row{0}, Col{0}};
         wrap_pending_ = false;
         touch();
     }
@@ -1136,7 +1168,7 @@ void Screen::set_private_mode(int mode, bool set) {
             // Setting or resetting it homes the cursor, per DEC STD 070.
         origin_mode_ = set;
         cursor_ = Pos{Row{origin_mode_ ? scroll_top_ : 0},
-                      Col{origin_mode_ ? left_bound() : 0}};
+                      Col{origin_mode_ ? margin_left() : 0}};
         wrap_pending_ = false;
         touch();
         break;
@@ -1342,25 +1374,37 @@ void Screen::change_rect_attrs(int top, int left, int bottom, int right,
         default: return Attr::None;
         }
     };
+    // Which attributes this call touches, and whether it SETS or CLEARS them.
+    // DECCARA takes SGR codes: 0 means "clear the listed attributes" (and with
+    // no parameters at all, clear everything). ORing the mask for a 0 — which
+    // is what this used to do — turned "reset the rectangle" into "set every
+    // attribute in the rectangle", the exact opposite.
+    constexpr Attr kAll = Attr::Bold | Attr::Underline | Attr::Blink | Attr::Reverse |
+                          Attr::Hidden | Attr::Strike;
     Attr mask = Attr::None;
+    bool clear = false;
     if (attrs.empty()) {
-        // No params: DECCARA clears all; DECRARA toggles all listed attrs.
-        mask = Attr::Bold | Attr::Underline | Attr::Blink | Attr::Reverse |
-               Attr::Hidden | Attr::Strike;
+        mask = kAll;
+        clear = true;
     } else {
         for (int code : attrs) {
-            if (code == 0) { mask = Attr::Bold | Attr::Underline | Attr::Blink |
-                                    Attr::Reverse | Attr::Hidden | Attr::Strike; }
-            else mask |= bit(code);
+            if (code == 0) {
+                // A bare 0 resets everything; 0 alongside other codes still
+                // means this call is a clear.
+                mask |= kAll;
+                clear = true;
+            } else {
+                mask |= bit(code);
+            }
         }
     }
 
     for (int row = t; row <= b; ++row) {
         for (int col = l; col <= r; ++col) {
             Cell &cell = at(Row{row}, Col{col});
-            if (reverse) cell.pen.attr ^= mask;   // DECRARA toggles
-            else if (attrs.empty()) cell.pen.attr &= ~mask; // DECCARA no-param clears
-            else cell.pen.attr |= mask;           // DECCARA sets
+            if (reverse) cell.pen.attr ^= mask;      // DECRARA toggles
+            else if (clear) cell.pen.attr &= ~mask;  // DECCARA with 0 / no params
+            else cell.pen.attr |= mask;              // DECCARA sets
         }
     }
     touch();
@@ -1424,7 +1468,7 @@ void Screen::move_cursor_vert(std::int32_t delta, bool to_first_col) {
     const std::int32_t hi = inside ? scroll_bottom_ : size_.rows - 1;
     wrap_pending_ = false;
     cursor_.row = Row{std::clamp(r + delta, lo, hi)};
-    if (to_first_col) cursor_.col = Col{inside ? left_bound() : 0};
+    if (to_first_col) cursor_.col = Col{inside ? margin_left() : 0};
     touch();
 }
 
@@ -1432,9 +1476,9 @@ void Screen::move_cursor_horiz(std::int32_t delta) {
     // CUF/CUB are bounded by the left/right margins when the cursor is within
     // them, and by the screen otherwise.
     const std::int32_t c = cursor_.col.get();
-    const bool inside = c >= left_bound() && c <= right_bound();
-    const std::int32_t lo = inside ? left_bound() : 0;
-    const std::int32_t hi = inside ? right_bound() : size_.cols - 1;
+    const bool inside = c >= margin_left() && c <= margin_right();
+    const std::int32_t lo = inside ? margin_left() : 0;
+    const std::int32_t hi = inside ? margin_right() : size_.cols - 1;
     wrap_pending_ = false;
     cursor_.col = Col{std::clamp(c + delta, lo, hi)};
     touch();
@@ -1449,7 +1493,7 @@ void Screen::move_cursor_origin(Row r, Col c) {
     // and the cursor is clamped INSIDE the region rather than to the screen.
     wrap_pending_ = false;
     cursor_.row = Row{std::clamp(scroll_top_ + r.get(), scroll_top_, scroll_bottom_)};
-    cursor_.col = Col{std::clamp(left_bound() + c.get(), left_bound(), right_bound())};
+    cursor_.col = Col{std::clamp(margin_left() + c.get(), margin_left(), margin_right())};
     touch();
 }
 
@@ -1937,8 +1981,8 @@ void Screen::esc(const vt::EscDispatch &d) {
         case '>': app_keypad_ = false; return; // DECKPNM (normal keypad)
         case '6': // DECBI — back index: cursor left, or shift content right at
                   // the left margin (a new blank column opens at the left).
-            if (cursor_.col.get() <= left_bound()) {
-                const std::int32_t l = left_bound(), r = right_bound();
+            if (cursor_.col.get() <= margin_left()) {
+                const std::int32_t l = margin_left(), r = margin_right();
                 for (std::int32_t row = scroll_top_; row <= scroll_bottom_; ++row) {
                     for (std::int32_t c = r; c > l; --c) at(Row{row}, Col{c}) = at(Row{row}, Col{c - 1});
                     at(Row{row}, Col{l}) = blank_cell();
@@ -1950,8 +1994,8 @@ void Screen::esc(const vt::EscDispatch &d) {
             return;
         case '9': // DECFI — forward index: cursor right, or shift content left at
                   // the right margin (a new blank column opens at the right).
-            if (cursor_.col.get() >= right_bound()) {
-                const std::int32_t l = left_bound(), r = right_bound();
+            if (cursor_.col.get() >= margin_right()) {
+                const std::int32_t l = margin_left(), r = margin_right();
                 for (std::int32_t row = scroll_top_; row <= scroll_bottom_; ++row) {
                     for (std::int32_t c = l; c < r; ++c) at(Row{row}, Col{c}) = at(Row{row}, Col{c + 1});
                     at(Row{row}, Col{r}) = blank_cell();

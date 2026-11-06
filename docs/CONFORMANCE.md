@@ -45,8 +45,24 @@ cmake -S . -B build-san -DCMAKE_BUILD_TYPE=Debug -DTOE_SANITIZE=ON
 cmake --build build-san -j && ctest --test-dir build-san
 ```
 
-The whole suite (13 binaries, ~460 assertions) passes under
+The whole suite (14 binaries, ~535 assertions) passes under
 AddressSanitizer + UndefinedBehaviorSanitizer.
+
+**4. Coverage-guided probing.**
+Untested code is where bugs live, so `gcov` was used to find what the
+assertions never execute, and each dead region was then probed by hand against
+the spec. That is how the left/right-margin and rectangle-attribute bugs were
+found: those paths had **zero** test coverage, and every one of them was wrong.
+
+```sh
+cmake -S . -B build-cov -DCMAKE_BUILD_TYPE=Debug \
+      -DCMAKE_CXX_FLAGS="--coverage -O0" -DCMAKE_EXE_LINKER_FLAGS="--coverage"
+cmake --build build-cov -j && ctest --test-dir build-cov
+cd build-cov/src/CMakeFiles/toe.dir/term && gcov *.gcno
+```
+
+Current line coverage: `screen.cpp` 88%, `parser.inl` 97%, `rowring.hpp` 97%,
+`update.cpp` 85%, `graphics.cpp` 85%, `sbquery.cpp` 75%.
 
 ## Implemented
 
@@ -67,7 +83,14 @@ Edge rules that are tested rather than assumed: an inverted or single-line
 DECSTBM is **ignored**, not clamped; CUU/CUD stop at the region edge when the
 cursor starts inside it but are not trapped by it from outside; CUF/CUB are
 bounded by the margins the same way; DECOM confines the cursor and homes it on
-both set and reset.
+both set and reset; DECSTBM and DECSLRM both home to "column 1, line 1 of the
+page" (the VT510 manual's wording for both).
+
+Left/right margins (DECSLRM under DECLRMM) bound the cursor only *while it is
+within them*, per DEC STD 070 — a write starting left of the left margin is not
+clipped by it, and columns beyond the right margin stay reachable. IL, DL,
+ICH, DCH, DECBI and DECFI shift only the margin columns, leaving the cells
+outside them untouched.
 
 ### Text and colour
 SGR including 256-colour and truecolour. Both wire forms of 38/48/58 are
@@ -170,5 +193,9 @@ the code and declaring it correct:
 | CUU/CUD/CUF/CUB ignored the scroll region and margins | region test |
 | SGR `38:2::R:G:B` read the colour one parameter early | hand probe of colon forms |
 | SGR `58:2::R:G:B` ignored, so undercurl colours did nothing | hand probe of colon forms |
+| Left/right margins clipped writes that started outside them | coverage-guided probe |
+| IL/DL moved whole rows instead of just the margin columns | coverage-guided probe |
+| DECSLRM homed to the margin corner, not the page origin | VT510 manual |
+| DECCARA with SGR 0 SET every attribute instead of clearing | coverage-guided probe |
 | DA3 silently dropped (an app can block on it) | capability audit |
 | RIS never cleared the hyperlink table | code audit during the above |

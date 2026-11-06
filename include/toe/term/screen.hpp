@@ -389,12 +389,35 @@ private:
     [[nodiscard]] std::int32_t prev_tab_stop(std::int32_t col) const noexcept;
     void set_scroll_region(int top, int bottom); // DECSTBM
     void set_lr_margins(int left, int right);     // DECSLRM
-    // The active right/left column bound: the margin when DECLRMM is on, else
-    // the screen edge. Used by wrap, CR, insert/delete, and horizontal scroll.
+    // The active right/left column bound: the margin when DECLRMM is on AND
+    // the cursor is inside the margins, else the screen edge.
+    //
+    // That condition matters: per DEC STD 070 the margins bound the cursor
+    // only while it is within them. A cursor placed to the LEFT of the left
+    // margin (or right of the right margin) — which CUP can do, since it
+    // addresses the whole page unless DECOM is on — wraps at the screen edge,
+    // not at the margin. Clamping unconditionally meant text written outside
+    // the margins was truncated and the columns beyond the right margin could
+    // never be reached at all.
     [[nodiscard]] std::int32_t left_bound() const noexcept {
-        return lr_margins_ ? scroll_left_ : 0;
+        return cursor_within_margins() ? scroll_left_ : 0;
     }
     [[nodiscard]] std::int32_t right_bound() const noexcept {
+        return cursor_within_margins() ? scroll_right_ : size_.cols - 1;
+    }
+    // Is the cursor's column inside the left/right margins? False whenever
+    // DECLRMM is off, in which case the margins don't exist.
+    [[nodiscard]] bool cursor_within_margins() const noexcept {
+        if (!lr_margins_) return false;
+        const std::int32_t c = cursor_.col.get();
+        return c >= scroll_left_ && c <= scroll_right_;
+    }
+    // The margins as such, ignoring where the cursor is. Operations that act on
+    // a REGION rather than relative to the cursor (IL/DL, scrolling) use these.
+    [[nodiscard]] std::int32_t margin_left() const noexcept {
+        return lr_margins_ ? scroll_left_ : 0;
+    }
+    [[nodiscard]] std::int32_t margin_right() const noexcept {
         return lr_margins_ ? scroll_right_ : size_.cols - 1;
     }
     // True if the cursor is within the vertical scroll region (margins only

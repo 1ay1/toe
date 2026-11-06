@@ -245,13 +245,18 @@ side table specifically so it fits in existing padding.
 
 ## Testing
 
-Nine test binaries, all headless, all linking only `toe::toe`:
+Fourteen test binaries, all headless, all linking only `toe::toe`:
 
 | Test | Covers |
 |---|---|
 | `parser_test` | the VT state machine and its typed actions |
 | `screen_test` | the grid: modes, margins, erase, SGR, OSC, selection |
 | `widechar_test` | CJK/emoji widths, lead/spacer consistency |
+| `utf8_test` | UTF-8 validation per Unicode Table 3-7, combining marks |
+| `sgr_test` | extended colour in both wire forms, underline styles, attrs |
+| `caps_test` | what toe reports matches what it implements |
+| `region_test` | scroll regions, origin mode, margins, rectangle ops |
+| `fuzz_test` | no byte stream crashes, hangs or corrupts the model |
 | `resize_test` | resize and soft-wrap reflow, scroll position preservation |
 | `tea_test` | `feed_output` returns the right `Cmd`s; config reaches the screen |
 | `command_log_test` | OSC 133 command-block lifecycle |
@@ -260,4 +265,5 @@ Nine test binaries, all headless, all linking only `toe::toe`:
 | `simd_scan_test` | the vectorized scan against a scalar reference |
 
 Plus `throughput_bench` and `scroll_bench`, which assert nothing and exist so a
-change can be measured instead of guessed at.
+change can be measured instead of guessed at, and the differential harnesses in
+`tools/` (see [CONFORMANCE.md](CONFORMANCE.md)).

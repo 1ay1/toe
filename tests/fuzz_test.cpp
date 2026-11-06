@@ -121,7 +121,29 @@ int main() {
         return s;
     }();
     const std::string margin_abuse =
-        "\x1b[?69h\x1b[9999;1s\x1b[9999;1r\x1b[1;1H" + std::string(200, 'x');
+        "\033[?69h\033[9999;1s\033[9999;1r\033[1;1H" + std::string(200, 'x');
+    // The margin code paths (IL/DL/ICH/DCH/DECBI/DECFI confined to columns)
+    // are only reachable with DECLRMM on, so drive them explicitly.
+    const std::string margin_ops = [] {
+        std::string s = "\033[?69h\033[3;6s";
+        for (int i = 0; i < 2000; ++i) {
+            s += "\033[2;4Habc";
+            s += (i % 2) ? "\033[1L" : "\033[1M";
+            s += (i % 3) ? "\033[2@" : "\033[2P";
+            s += (i % 5) ? "\0336" : "\0339"; // DECBI / DECFI
+            if (i % 7 == 0) s += "\033[?6h";    // origin mode on/off under margins
+            if (i % 11 == 0) s += "\033[?6l";
+            if (i % 13 == 0) s += "\033[2;5r";  // nested vertical region
+        }
+        return s;
+    }();
+    // Margins plus wide glyphs: a CJK pair straddling the right margin is the
+    // nastiest interaction between wrapping and column confinement.
+    const std::string margin_wide = [] {
+        std::string s = "\033[?69h\033[3;6s\033[1;3H";
+        for (int i = 0; i < 1000; ++i) s += "\xe4\xb8\xadx";
+        return s;
+    }();
     const std::string rect_abuse =
         "\x1b[?69h\x1b[1;1;9999;9999$x\x1b[0;0;0;0$z\x1b[9999;9999;1;1$v";
     const std::string tab_abuse = [] {
@@ -164,6 +186,8 @@ int main() {
         {"5000 SGR subparams", &sub_storm},
         {"20000 RIS", &ris_storm},
         {"out-of-range margins", &margin_abuse},
+        {"margin-confined edits", &margin_ops},
+        {"margins + wide glyphs", &margin_wide},
         {"out-of-range rectangles", &rect_abuse},
         {"2000 tab stops", &tab_abuse},
         {"5000 RI/IND in region", &scroll_abuse},

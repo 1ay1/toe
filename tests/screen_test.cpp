@@ -1142,16 +1142,58 @@ int main() {
         term::Screen s{Extent{10, 4}};
         feed(s, "\x1b[?69h");    // enable DECLRMM
         feed(s, "\x1b[3;7s");    // DECSLRM: left=col3(0-based 2), right=col7(6)
-        // Cursor homed to the region origin (top row, left margin).
-        expect(s.cursor().col.get() == 2 && s.cursor().row.get() == 0,
-               "DECSLRM homes cursor to left margin");
-        // Type past the right margin: it wraps at the margin, not the screen edge.
-        feed(s, "ABCDEF"); // 6 chars into a 5-wide margin region [2..6]
-        expect(glyph_at(s, 0, 2) == U'A' && glyph_at(s, 0, 6) == U'E' &&
-                   glyph_at(s, 1, 2) == U'F',
-               "text wraps at the right margin and CR-to-left-margin");
-        // Insert-chars shifts only within the margins.
-        feed(s, "\x1b[H"); // home (origin off -> absolute 0,0)... clamp
+        // "DECSLRM moves the cursor to column 1, line 1 of the page" (VT510
+        // manual) -- the PAGE origin, not the margin corner. Same wording as
+        // DECSTBM.
+        expect(s.cursor().col.get() == 0 && s.cursor().row.get() == 0,
+               "DECSLRM homes the cursor to the page origin");
+        // Writing from OUTSIDE the margins is not clipped by them: the margins
+        // bound the cursor only while it is within them (DEC STD 070).
+        feed(s, "ABCDEFGHIJ");
+        expect(glyph_at(s, 0, 0) == U'A' && glyph_at(s, 0, 9) == U'J',
+               "a write starting left of the left margin is not clipped");
+        // Now start INSIDE the margins: it wraps at the right margin.
+        term::Screen t{Extent{10, 4}};
+        feed(t, "\x1b[?69h\x1b[3;7s");
+        feed(t, "\x1b[1;3H"); // row 0, col 2 == the left margin
+        feed(t, "ABCDEF");    // 6 chars into the 5-wide region [2..6]
+        expect(glyph_at(t, 0, 2) == U'A' && glyph_at(t, 0, 6) == U'E' &&
+                   glyph_at(t, 1, 2) == U'F',
+               "inside the margins, text wraps at the right margin");
+    }
+    {
+        // IL/DL with margins shift ONLY the margin columns; the cells outside
+        // them must not move.
+        term::Screen s{Extent{8, 3}};
+        feed(s, "\x1b[?69h\x1b[3;6s");          // margins cols 3..6 (0-based 2..5)
+        feed(s, "\x1b[1;1HABCDEFGH");
+        feed(s, "\x1b[2;1Habcdefgh");
+        feed(s, "\x1b[3;1HIJKLMNOP");
+        feed(s, "\x1b[2;3H\x1b[1L");            // IL 1 inside the margins
+        expect(glyph_at(s, 1, 0) == U'a' && glyph_at(s, 1, 1) == U'b',
+               "IL leaves columns left of the left margin alone");
+        expect(glyph_at(s, 1, 6) == U'g' && glyph_at(s, 1, 7) == U'h',
+               "IL leaves columns right of the right margin alone");
+        expect(glyph_at(s, 1, 2) == U' ' && glyph_at(s, 1, 5) == U' ',
+               "IL blanks the margin columns of the cursor row");
+        expect(glyph_at(s, 2, 2) == U'c' && glyph_at(s, 2, 5) == U'f',
+               "IL shifts the margin columns down");
+        expect(glyph_at(s, 2, 0) == U'I' && glyph_at(s, 2, 7) == U'P',
+               "IL does not disturb the row below outside the margins");
+    }
+    {
+        term::Screen s{Extent{8, 3}};
+        feed(s, "\x1b[?69h\x1b[3;6s");
+        feed(s, "\x1b[1;1HABCDEFGH");
+        feed(s, "\x1b[2;1Habcdefgh");
+        feed(s, "\x1b[3;1HIJKLMNOP");
+        feed(s, "\x1b[2;3H\x1b[1M");            // DL 1 inside the margins
+        expect(glyph_at(s, 1, 2) == U'K' && glyph_at(s, 1, 5) == U'N',
+               "DL shifts the margin columns up");
+        expect(glyph_at(s, 1, 0) == U'a' && glyph_at(s, 1, 7) == U'h',
+               "DL leaves columns outside the margins alone");
+        expect(glyph_at(s, 2, 2) == U' ' && glyph_at(s, 2, 5) == U' ',
+               "DL blanks the margin columns of the last region row");
     }
     {
         term::Screen s{Extent{10, 3}};
