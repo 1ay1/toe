@@ -12,14 +12,21 @@ constexpr int modifier_param(Modifiers m) noexcept {
     return 1 + (m.shift ? 1 : 0) + (m.alt ? 2 : 0) + (m.ctrl ? 4 : 0);
 }
 
-// A minimal byte writer over a fixed buffer. No bounds surprises: KeyBuf is
-// sized for the worst case and every path writes far less.
+// A minimal byte writer over a fixed buffer. Bounded: KeyBuf is sized for the
+// longest escape sequence, but a TextInput's length is the HOST's choice (an
+// IME commit, a typed burst), so plain text can exceed it. Writes past the end
+// are dropped and `overflow` is set; encode_key returns an empty span then,
+// and a host should send long text as-is (it needs no encoding).
 struct Writer {
     KeyBuf &buf;
     std::size_t n = 0;
-    void put(char c) noexcept { buf[n++] = c; }
+    bool overflow = false;
+    void put(char c) noexcept {
+        if (n < buf.size()) buf[n++] = c;
+        else overflow = true;
+    }
     void puts(const char *s) noexcept {
-        while (*s) buf[n++] = *s++;
+        while (*s) put(*s++);
     }
     // Write a non-negative integer of any width (kitty codepoints reach 6 digits).
     void num(int v) noexcept {
@@ -29,7 +36,10 @@ struct Writer {
         do { tmp[i++] = static_cast<char>('0' + v % 10); v /= 10; } while (v > 0);
         while (i > 0) put(tmp[--i]);
     }
-    std::span<const char> done() const noexcept { return {buf.data(), n}; }
+    std::span<const char> done() const noexcept {
+        if (overflow) return {};
+        return {buf.data(), n};
+    }
 };
 
 // A CSI/SS3 special key with a trailing letter final (arrows, Home/End, F1-F4).

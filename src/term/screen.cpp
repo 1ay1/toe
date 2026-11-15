@@ -671,6 +671,15 @@ void Screen::put(char32_t cp) {
     }
 
     if (wrap_pending_) {
+        // The autowrap happens NOW, so this is when the row becomes a soft
+        // wrap. Recording it when the last column was merely filled was
+        // wrong: a CR, LF or cursor move cancels a pending wrap, and the row
+        // was then hard-terminated but flagged wrapped. fish fills a row with
+        // spaces after every command (its missing-newline marker) and then
+        // CRs over it, so every prompt row was flagged and a resize rejoined
+        // each prompt with the line below it (seen in hand as indented output
+        // after splitting a pane).
+        set_wrapped(cursor_.row.get(), true);
         cursor_.col = Col{left_bound()};
         line_feed();
         wrap_pending_ = false;
@@ -721,10 +730,9 @@ void Screen::put(char32_t cp) {
     const int advance = w;
     if (cursor_.col.get() + advance > right_bound()) {
         if (autowrap_) {
+            // The row is full; it soft-wraps only if another glyph follows
+            // (see the wrap_pending_ branch above, which records it).
             wrap_pending_ = true;
-            // This logical row's content continues onto the next (soft wrap):
-            // record it so a later resize can rejoin and rewrap the line.
-            set_wrapped(cursor_.row.get(), true);
         }
     } else {
         cursor_.col += advance;
@@ -1556,6 +1564,9 @@ void Screen::erase_in_line(int mode) {
     case 0: // cursor to end of line
         stamp(r.get());
         ring_.blank_view_span(r.get(), cursor_.col.get(), size_.cols, b);
+        // The row's tail is now blank, so it can't continue onto the next
+        // row. Shells redraw prompts with CR + EL over rows they filled.
+        if (!wrap_pending_) set_wrapped(r.get(), false);
         break;
     case 1: // start of line to cursor
         stamp(r.get());

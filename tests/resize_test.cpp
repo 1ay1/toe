@@ -145,7 +145,29 @@ int main() {
         ck(trim(s.row(Row{0})) == "Welcome line one", "shrink: first line stays visible");
     }
     {
-        // Same, but width shrink too (reflow path with trailing blanks).
+        // A row FILLED to the last column and then CR'd over is not a soft
+        // wrap: the pending wrap was cancelled. fish does this after every
+        // command (its missing-newline marker: a glyph, COLUMNS-1 spaces, CR,
+        // EL) and then draws the prompt on that row. Flagged as wrapped, a
+        // later narrowing rejoined each prompt with the output below it.
+        term::Screen s(Extent{20, 6});
+        feed(s, "%");
+        feed(s, std::string(19, ' '));        // exactly fills the row: wrap pending
+        feed(s, "\r\x1b[Kprompt> ls\r\n");   // CR cancels it; the shell redraws
+        feed(s, "out\r\n");
+        s.resize(Extent{10, 6});
+        ck(trim(s.row(Row{0})) == "prompt> ls", "filled-then-CR row: not rejoined on narrowing");
+        ck(trim(s.row(Row{1})) == "out", "filled-then-CR row: the next line keeps column 0");
+    }
+    {
+        // ...whereas a real autowrap still rewraps as one logical line.
+        term::Screen s(Extent{10, 6});
+        feed(s, "0123456789abcde\r\n");
+        s.resize(Extent{20, 6});
+        ck(trim(s.row(Row{0})) == "0123456789abcde", "real autowrap: rejoined when widened");
+    }
+    {
+        // Width shrink with trailing blanks (reflow path).
         term::Screen s(Extent{80, 24});
         feed(s, "alpha\r\nbeta\r\ngamma> ");
         s.resize(Extent{40, 8});

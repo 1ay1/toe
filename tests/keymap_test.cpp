@@ -166,6 +166,18 @@ int main() {
     // Report-all-keys (flag 8): even a plain letter routes through CSI-u.
     check(enc_kitty(text("a"), 0x08), "\x1b[97u", "kitty report-all: 'a' = CSI 97 u");
 
+    // Text longer than KeyBuf (an IME commit, a typed burst) must not write
+    // past the buffer: it encodes to nothing, and the host sends it raw.
+    // This used to overflow the stack (found by ASan in hand).
+    {
+        const std::string long_text(200, 'x');
+        check(enc(text(long_text)), "", "text longer than KeyBuf encodes to nothing (no overflow)");
+        KeyEvent alt = text(long_text);
+        alt.mods.alt = true;
+        check(enc(alt), "", "alt + long text: no overflow either");
+        check(enc(text(std::string(48, 'y'))), std::string(48, 'y'), "text exactly KeyBuf-sized still encodes");
+    }
+
     if (failures == 0) {
         std::printf("all keymap tests passed\n");
         return 0;
