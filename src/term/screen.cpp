@@ -146,10 +146,14 @@ void Screen::scroll_to_abs_row(std::int64_t abs_row, std::int32_t margin) {
     }
 }
 
-void Screen::resize(Extent size) {
+void Screen::resize(Extent size) { resize(size, -1); }
+
+void Screen::resize(Extent size, std::int64_t keep_from) {
     if (size == size_ || size.cols <= 0 || size.rows <= 0) {
         if (size == size_) return;
     }
+    reflow_map_.clear();
+    resize_keep_from_ = keep_from;
 
     // On the alt screen (vim/tmux/htop own the whole grid) reflow is wrong: the
     // app redraws on SIGWINCH and every row — including blank ones — is content
@@ -161,7 +165,7 @@ void Screen::resize(Extent size) {
     const bool do_reflow = !on_alt_ && size_.cols > 0 && size_.rows > 0;
 
     if (do_reflow) {
-        reflow(old_size, size);
+        reflow(old_size, size, keep_from);
     } else {
         // Alt screen: crop/pad in place, anchoring the top-of-viewport to the
         // same absolute row so scroll position doesn't drift.
@@ -199,7 +203,7 @@ void Screen::resize(Extent size) {
 // grid into logical lines (joining soft-wrapped runs), then re-lays them out at
 // the new width, keeping the last `rows` lines live and the rest in scrollback.
 // The cursor's logical position is tracked across the transform.
-void Screen::reflow(Extent old_size, Extent new_size) {
+void Screen::reflow(Extent old_size, Extent new_size, std::int64_t keep_from) {
     // Everything below indexes into ONE reused cell arena (reflow_cells_) via
     // (off,len) Spans, so a resize is O(cells) copies with amortised O(1)
     // allocations — no per-line / per-row std::vector heap churn. A drag-resize
@@ -210,7 +214,10 @@ void Screen::reflow(Extent old_size, Extent new_size) {
 
     // Append a physical row's content into reflow_cells_ and return its length,
     // trimming trailing blanks on a HARD (non-wrapped) line.
-    const auto append_trimmed = [&](const Cell *rowp, std::int32_t cols, bool wrapped) -> std::uint32_t {
+    // `next`: the following physical row (nullptr if none), to tell a wide
+    // glyph's wrap padding from a real space.
+    const auto append_trimmed = [&](const Cell *rowp, std::int32_t cols, bool wrapped,
+                                    const Cell *next) -> std::uint32_t {
         std::int32_t len = cols;
         if (!wrapped) {
             while (len > 0 && rowp[len - 1].blank()) --len;
@@ -223,7 +230,10 @@ void Screen::reflow(Extent old_size, Extent new_size) {
             // line at width 11 grew a blank every 11 columns). Trim them, but
             // only the run that a wide glyph could not have occupied -- at most
             // one column, since a wider gap would mean real trailing spaces.
-            if (len > 0 && rowp[len - 1].blank()) --len;
+            // ...and ONLY when the next row really starts with a wide glyph:
+            // a plain space that happened to land in the last column is text
+            // ("12th Gen Intel" must not rewrap to "12th GenIntel").
+            if (len > 0 && rowp[len - 1].blank() && next != nullptr && next[0].width == 2) --len;
         }
         reflow_cells_.insert(reflow_cells_.end(), rowp, rowp + len);
         // A wide LEAD must keep its width-0 spacer: the pair is one glyph, and a
@@ -252,6 +262,11 @@ void Screen::reflow(Extent old_size, Extent new_size) {
     //    exactly that point. Widening then rewrapped the halves separately, so
     //    a 26-char line at width 5 with 3 rows of history came back as
     //    "ABCDEFGHIJKLMNO" + "PQRSTUVWXYZ" instead of rejoining.
+    // Where each OLD physical row went: its logical line and the cell offset
+    // of the row within it -- turned into new absolute rows after the rewrap.
+    struct RowAt { std::uint32_t line; std::uint32_t off; };
+    std::vector<RowAt> row_at;
+    row_at.reserve(ring_.scrollback() + static_cast<std::size_t>(old_size.rows));
     std::uint32_t carry_off = 0;
     bool carry = false;
     {
@@ -261,7 +276,10 @@ void Screen::reflow(Extent old_size, Extent new_size) {
         for (std::size_t i = 0; i < hist; ++i) {
             const Cell *rowp = ring_.abs_row(i);
             const bool wrapped = ring_.wrapped_abs(i);
-            append_trimmed(rowp, old_size.cols, wrapped);
+            row_at.push_back({static_cast<std::uint32_t>(reflow_lines_.size()),
+                              static_cast<std::uint32_t>(reflow_cells_.size()) - line_off});
+            const Cell *next = i + 1 < hist ? ring_.abs_row(i + 1) : (old_size.rows > 0 ? ring_.view_row(0) : nullptr);
+            append_trimmed(rowp, old_size.cols, wrapped, next);
             have = true;
             if (!wrapped) {
                 const auto end = static_cast<std::uint32_t>(reflow_cells_.size());
@@ -302,21 +320,37 @@ void Screen::reflow(Extent old_size, Extent new_size) {
 
         // Continue the logical line carried over from history, if any, so a
         // line that straddles the scrollback boundary stays one line.
+        // The protected prompt: live rows [protect_row, cur_row] (see resize()).
+        const std::int64_t base = static_cast<std::int64_t>(ring_.scrollback());
+        const std::int32_t protect_row =
+            (keep_from >= base && keep_from - base <= cur_row) ? static_cast<std::int32_t>(keep_from - base) : -1;
         std::uint32_t line_off = carry ? carry_off
                                        : static_cast<std::uint32_t>(reflow_cells_.size());
         bool have = carry;
         for (std::int32_t r = 0; r < live_rows; ++r) {
-            const bool wrapped = wrapped_at(r);
+            const bool crop = protect_row >= 0 && r >= protect_row && r <= cur_row;
+            if (crop && have) {   // close whatever line was open above the prompt
+                const auto end = static_cast<std::uint32_t>(reflow_cells_.size());
+                reflow_lines_.push_back({line_off, end - line_off, false, true});
+                line_off = end;
+                have = false;
+            }
+            const bool wrapped = crop ? false : wrapped_at(r);
             if (r == cur_row) {
                 cursor_line = reflow_lines_.size();
                 cursor_col_in_line =
                     static_cast<std::int32_t>(reflow_cells_.size() - line_off) + cursor_.col.get();
             }
-            append_trimmed(ring_.view_row(r), old_size.cols, wrapped);
+            row_at.push_back({static_cast<std::uint32_t>(reflow_lines_.size()),
+                              static_cast<std::uint32_t>(reflow_cells_.size()) - line_off});
+            append_trimmed(ring_.view_row(r), old_size.cols, wrapped,
+                           r + 1 < live_rows ? ring_.view_row(r + 1) : nullptr);
             have = true;
             if (!wrapped) {
                 const auto end = static_cast<std::uint32_t>(reflow_cells_.size());
-                reflow_lines_.push_back({line_off, end - line_off, false, true});
+                Span ln{line_off, end - line_off, false, true};
+                ln.crop = crop;
+                reflow_lines_.push_back(ln);
                 line_off = end;
                 have = false;
             }
@@ -363,6 +397,16 @@ void Screen::reflow(Extent old_size, Extent new_size) {
         std::uint32_t off = 0;
         // do/while emits at least one row, so an empty logical line yields one
         // blank physical row (no separate empty-line branch that double-counts).
+        if (ln.crop) {   // a protected prompt row: exactly one row, cropped
+            const std::uint32_t take = std::min<std::uint32_t>(static_cast<std::uint32_t>(ncols), ln.len);
+            if (ln.from_live && li == cursor_line && !cursor_placed) {
+                new_cursor_row = static_cast<std::int32_t>(reflow_rows_.size());
+                new_cursor_col = std::clamp(cursor_col_in_line, 0, ncols - 1);
+                cursor_placed = true;
+            }
+            reflow_rows_.push_back({ln.off, take, false, ln.from_live, static_cast<std::uint32_t>(li)});
+            continue;
+        }
         do {
             std::uint32_t take =
                 std::min<std::uint32_t>(static_cast<std::uint32_t>(ncols), ln.len - off);
@@ -443,6 +487,22 @@ void Screen::reflow(Extent old_size, Extent new_size) {
         }
     }
 
+    // The map from old absolute rows to new ones: a row's new home is the first
+    // new physical row of its logical line, plus however many new rows its
+    // cell offset spans; minus whatever history the cap dropped off the top.
+    {
+        std::vector<std::int32_t> first_row(reflow_lines_.size() + 1, total);
+        for (std::int32_t i = total - 1; i >= 0; --i) first_row[reflow_rows_[static_cast<std::size_t>(i)].line] = i;
+        reflow_map_.assign(row_at.size(), -1);
+        for (std::size_t k = 0; k < row_at.size(); ++k) {
+            const auto [line, off] = row_at[k];
+            if (line >= reflow_lines_.size()) { reflow_map_[k] = total - sb_first; continue; }
+            const bool cropped = reflow_lines_[line].crop;
+            const std::int64_t at = static_cast<std::int64_t>(first_row[line]) +
+                                    (cropped ? 0 : static_cast<std::int64_t>(off) / std::max(ncols, 1));
+            reflow_map_[k] = at - sb_first < 0 ? -1 : at - sb_first;
+        }
+    }
     // Restore the scroll position: if the user was scrolled into history, put
     // the SAME logical line back at the top of the viewport (re-wrapped to the
     // new width). Otherwise stay live at the bottom.

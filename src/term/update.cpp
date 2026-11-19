@@ -399,4 +399,22 @@ Cmds feed_output(Model &m, std::string_view bytes) {
     return out;
 }
 
+void resize(Model &m, Extent size) {
+    auto &s = m.screen;
+    if (size == s.size() || size.cols <= 0 || size.rows <= 0) return;
+    // Protect the prompt being edited: when shell integration says the cursor
+    // is at a prompt (A/B seen, no C yet), its rows are cropped, not rewrapped
+    // -- the shell erases and repaints them on SIGWINCH by row count.
+    std::int64_t keep_from = -1;
+    const auto z = m.commands.zone();
+    if (!s.on_alt_screen() && (z == ShellZone::prompt || z == ShellZone::command) && !m.commands.blocks().empty()) {
+        const auto &b = m.commands.blocks().back();
+        const std::int64_t cur = s.viewport_to_abs(s.cursor().row.get()) + s.scroll_offset();
+        if (b.prompt_row >= 0 && b.prompt_row <= cur && cur - b.prompt_row < s.size().rows) keep_from = b.prompt_row;
+    }
+    s.resize(size, keep_from);
+    // Command blocks store absolute rows: carry them through the rewrap.
+    m.commands.remap([&](std::int64_t r) { return s.remap_abs_after_resize(r); });
+}
+
 } // namespace toe::term

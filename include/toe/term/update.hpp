@@ -91,6 +91,12 @@ struct Model {
 // thing mutated; everything else is returned data.
 [[nodiscard]] Cmds feed_output(Model &m, std::string_view bytes);
 
+// Resize the terminal. Everything a resize must keep consistent, in one
+// place: the screen rewraps (protecting the prompt being edited when shell
+// integration says the cursor is at one), and the command log's absolute
+// rows follow the rewrap. Hosts call THIS, not Screen::resize.
+void resize(Model &m, Extent size);
+
 } // namespace toe::term
 
 #endif // TOE_TERM_UPDATE_HPP

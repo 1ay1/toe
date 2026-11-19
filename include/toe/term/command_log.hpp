@@ -157,6 +157,18 @@ public:
         ++generation_;
     }
 
+    // Follow a resize: `map(old_abs)` gives each stored row's new absolute
+    // row (-1: dropped). Blocks whose prompt fell off the scrollback go.
+    template <class Map>
+    void remap(Map &&map) {
+        for (auto &b : blocks_) {
+            const auto m = [&](std::int64_t &r) { if (r >= 0) r = map(r); };
+            m(b.prompt_row); m(b.input_row); m(b.output_row); m(b.end_row);
+        }
+        while (!blocks_.empty() && blocks_.front().prompt_row < 0) blocks_.pop_front();
+        ++generation_;
+    }
+
     // Drop the oldest N history rows (called when scrollback trims) so blocks
     // whose rows fell out of the buffer are pruned and survivors shift down.
     void on_history_trimmed(std::int64_t rows_dropped) {

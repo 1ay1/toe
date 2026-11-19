@@ -34,6 +34,24 @@ public:
 
     // Resize the grid, preserving overlapping content (top-left anchored).
     void resize(Extent size);
+    // Resize, protecting the shell's prompt: live rows from absolute row
+    // `keep_from` down to the cursor are CROPPED to the new width instead of
+    // rewrapped, so they keep their exact row count. A shell redraws its prompt
+    // on SIGWINCH by moving up the number of rows IT printed and erasing --
+    // rewrapping those rows first made it land wrong and leave stale prompt
+    // rows behind (the "prompt duplicates / blank lines pile up on resize"
+    // bug). The shell erases and repaints them at the new width anyway.
+    // -1: no protection (no shell integration, or not at a prompt).
+    void resize(Extent size, std::int64_t keep_from);
+    // Where an absolute row from BEFORE the last resize is now (-1 if it was
+    // dropped off the top of the scrollback). For anything that stores
+    // absolute rows (command marks, bookmarks) to follow the rewrap.
+    [[nodiscard]] std::int64_t remap_abs_after_resize(std::int64_t old_abs) const noexcept {
+        if (old_abs < 0 || reflow_map_.empty()) return old_abs;
+        if (static_cast<std::size_t>(old_abs) >= reflow_map_.size())
+            return reflow_map_.back() < 0 ? -1 : reflow_map_.back() + (old_abs - static_cast<std::int64_t>(reflow_map_.size()) + 1);
+        return reflow_map_[static_cast<std::size_t>(old_abs)];
+    }
 
     // Scrollback capacity: max lines retained above the visible grid.
     // Reallocates the ring (and so drops any history beyond the new cap), so
@@ -311,6 +329,8 @@ public:
     void search_clear();
     [[nodiscard]] bool searching() const noexcept { return !search_matches_.empty(); }
     [[nodiscard]] std::size_t search_count() const noexcept { return search_matches_.size(); }
+    // Every match, in absolute coordinates (for a scrollbar map of the hits).
+    [[nodiscard]] const std::vector<SearchMatch> &search_matches() const noexcept { return search_matches_; }
     // 1-based index of the current match (0 when none), for a "3/17" readout.
     [[nodiscard]] std::size_t search_current() const noexcept {
         return search_matches_.empty() ? 0 : search_cur_ + 1;
@@ -334,6 +354,14 @@ public:
 
     // Convert a viewport (visible) row to an absolute row, and back.
     [[nodiscard]] std::int64_t viewport_to_abs(std::int32_t vrow) const noexcept;
+    // Read-only cells of an absolute row (history row 0 = oldest), for
+    // renderers that summarise the whole scrollback (a minimap). Empty span
+    // when out of range.
+    [[nodiscard]] std::span<const Cell> abs_row_cells(std::int64_t abs_row) const noexcept {
+        if (abs_row < 0 || abs_row >= total_rows()) return {};
+        const Cell *c = cell_at_abs(abs_row, 0);
+        return c ? std::span<const Cell>{c, static_cast<std::size_t>(size_.cols)} : std::span<const Cell>{};
+    }
 
     // The single reduction step: fold one parser Action into the screen. Any
     // effects the action demands (query replies, bell, …) are appended to
@@ -737,7 +765,9 @@ private:
 
     // Rewrap all content (history + live) from old_cols to the new width when a
     // resize changes the column count. Preserves logical lines + the cursor.
-    void reflow(Extent old_size, Extent new_size);
+    void reflow(Extent old_size, Extent new_size, std::int64_t keep_from = -1);
+    std::vector<std::int64_t> reflow_map_{};   // old abs row -> new abs row, from the last resize
+    std::int64_t resize_keep_from_ = -1;
 
     // Reusable scratch for reflow, so a drag-resize / font-zoom storm reuses one
     // allocation instead of churning ~2 heap allocs per row every frame. The
@@ -751,6 +781,7 @@ private:
         bool wrapped;        // soft-wrap continuation follows (physical rows)
         bool from_live;      // originated in the live grid (logical lines)
         std::uint32_t line = 0;  // source logical-line index (physical rows only)
+        bool crop = false;       // a protected prompt row: crop to the new width, never rewrap
     };
     std::vector<Cell> reflow_cells_{};
     std::vector<Span> reflow_lines_{}; // logical lines
