@@ -49,6 +49,7 @@ public:
         blank_ = blank;
         fill_ = blank;
         blank_line_valid_ = false;
+        blank_differs_ = false;
         arena_.assign(cap_slots_ * static_cast<std::size_t>(cols_), blank_);
         wrapped_.assign(cap_slots_, false);
         used_.assign(cap_slots_, 0); // freshly-filled arena: every row all-blank
@@ -182,7 +183,24 @@ public:
         head_ = head_ + 1 == cap_slots_ ? 0 : head_ + 1;
         const std::size_t newbot = count_ - 1; // last absolute row = new bottom
         blank_row(newbot);
+        // The NEXT slot to be recycled (now at head_) was last touched a whole
+        // scrollback ago: cold. Pull its written prefix toward the cache now,
+        // so the next line's blank + write overlap the misses instead of
+        // stalling on each one -- the dominant cost of output once the
+        // scrollback is full.
+        prefetch_slot(head_);
         return newbot;
+    }
+
+    void prefetch_slot(std::size_t slot) const noexcept {
+        // Short rows (a few cells: `yes`, short log lines) are one or two
+        // lines the hardware prefetcher already handles; prefetching them is
+        // pure overhead. Only a wide written prefix is worth it.
+        const std::size_t used = used_[slot];
+        if (used < 16) return;
+        const auto *p = reinterpret_cast<const char *>(arena_.data() + slot * static_cast<std::size_t>(cols_));
+        const std::size_t n = std::min(used + 1, static_cast<std::size_t>(cols_)) * sizeof(Cell);
+        for (std::size_t off = 0; off < n; off += 128) __builtin_prefetch(p + off, 1, 0);
     }
 
     // Blank absolute row `abs` (bulk memcpy from a cached blank line).
@@ -281,6 +299,7 @@ public:
         blank_ = blank;
         fill_ = blank;
         blank_line_valid_ = false;
+        blank_differs_ = false;
         arena_.assign(cap_slots_ * static_cast<std::size_t>(cols_), blank_);
         wrapped_.assign(cap_slots_, false);
         used_.assign(cap_slots_, 0);
@@ -377,15 +396,18 @@ private:
     // blank and must be memcpy-blanked. Compares by value (Cell::operator==) so
     // struct padding bytes never cause a spurious mismatch.
     [[nodiscard]] bool blank_differs_from_fill() const noexcept {
-        return !(blank_ == fill_);
+        return blank_differs_;
     }
 
     // Set the fill/blank cell, invalidating the cached blank line if it changed.
+    // Called once per scrolled line; Pen== is a handful of integer compares
+    // (no variant dispatch), so this is cheap. Not a memcmp: a freshly built
+    // blank cell's padding bytes are unspecified.
     void set_blank(const Cell &b) noexcept {
-        if (!(blank_ == b)) {
-            blank_ = b;
-            blank_line_valid_ = false;
-        }
+        if (blank_ == b) return;
+        blank_ = b;
+        blank_line_valid_ = false;
+        blank_differs_ = !(blank_ == fill_);
     }
 
     std::vector<Cell> arena_{};        // cap_slots_ * cols_ cells (the ring)
@@ -394,6 +416,7 @@ private:
     std::vector<Cell> blank_line_{};   // cached blank row for fast blanking
     std::vector<Cell> scratch_{};      // reusable scratch row for rotate_region
     bool blank_line_valid_ = false;    // is blank_line_ current for blank_?
+    bool blank_differs_ = false;       // !(blank_ == fill_), kept by set_blank / reset
     Cell blank_{};
     Cell fill_{};                      // cell the arena was assign()ed with
     std::size_t high_water_ = 0;       // # of slots ever exposed (pristine above)

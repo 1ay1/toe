@@ -142,6 +142,11 @@ private:
     // meaningful row, column or SGR value.
     static constexpr int kParamMax = 65535;
 
+    // One-pass parse of a complete ESC [ ... final in [p, end); returns the
+    // byte after it, or null to let the state machine take it.
+    template <typename Sink>
+    const std::uint8_t *csi_fast(const std::uint8_t *p, const std::uint8_t *end, Sink &sink);
+
     State state_{State::Ground};
 
     // CSI accumulation

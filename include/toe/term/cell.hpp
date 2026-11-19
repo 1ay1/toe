@@ -36,6 +36,17 @@ struct TrueColor {
 
 using Color = std::variant<DefaultColor, IndexedColor, TrueColor>;
 
+// Color equality without std::variant's dispatch table: libc++ compares two
+// variants through an indirect call per pair, and the screen compares pens
+// per cell (blank checks, BCE, run merging) -- under a `yes` flood that one
+// indirect call was a fifth of all the time spent. Same result, inlined.
+[[nodiscard]] constexpr bool same_color(const Color &a, const Color &b) noexcept {
+    if (a.index() != b.index()) return false;
+    if (const auto *x = std::get_if<IndexedColor>(&a)) return x->index == std::get_if<IndexedColor>(&b)->index;
+    if (const auto *x = std::get_if<TrueColor>(&a)) return x->rgb == std::get_if<TrueColor>(&b)->rgb;
+    return true;   // both default
+}
+
 // --- text style flags ------------------------------------------------------
 // A scoped-enum bitset. Operator overloads keep the bit-twiddling type-safe:
 // you can only combine Attr with Attr, and the result is still an Attr.
@@ -94,6 +105,10 @@ struct Pen {
     Attr attr{Attr::None};
     Underline underline{Underline::None};
     constexpr auto operator<=>(const Pen &) const = default;
+    [[nodiscard]] constexpr bool operator==(const Pen &o) const noexcept {
+        return attr == o.attr && underline == o.underline && same_color(fg, o.fg) && same_color(bg, o.bg) &&
+               same_color(underline_color, o.underline_color);
+    }
 };
 
 // --- a grid cell -----------------------------------------------------------

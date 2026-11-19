@@ -7,6 +7,24 @@
 
 namespace toe::vt {
 
+namespace detail {
+// The two actions that make up nearly every byte of real output -- a run of
+// printable ASCII and a C0 control (CR, LF, BS, HT) -- go straight to a sink
+// that can take them (`print_run(sv)`, `control(byte)`), without building a
+// 64-byte Action variant and dispatching it through a visit table. A plain
+// callable sink still gets every Action, as before.
+template <typename Sink>
+inline void emit_run(Sink &sink, std::string_view text) {
+    if constexpr (requires { sink.print_run(text); }) sink.print_run(text);
+    else sink(Action{PrintRun{text}});
+}
+template <typename Sink>
+inline void emit_control(Sink &sink, std::uint8_t b) {
+    if constexpr (requires { sink.control(b); }) sink.control(b);
+    else sink(Action{Execute{b}});
+}
+} // namespace detail
+
 inline void Parser::clear_csi() noexcept {
     params_.clear();
     param_sub_.clear();
@@ -105,7 +123,7 @@ void Parser::step(std::uint8_t b, Sink &sink) {
     switch (state_) {
     case State::Ground:
         if (b < 0x20 || b == 0x7F) {
-            sink(Action{Execute{b}});
+            detail::emit_control(sink, b);
         } else {
             ground_byte(b, sink);
         }
@@ -320,6 +338,53 @@ void Parser::step(std::uint8_t b, Sink &sink) {
 }
 
 template <typename Sink>
+const std::uint8_t *Parser::csi_fast(const std::uint8_t *p, const std::uint8_t *end, Sink &sink) {
+    // p points at ESC. The shape: ESC '[' [<=>?]? ( [0-9:;] )* [@-~]
+    if (end - p < 3 || p[1] != '[') return nullptr;
+    const std::uint8_t *q = p + 2;
+    char marker = 0;
+    if (*q >= 0x3C && *q <= 0x3F) marker = static_cast<char>(*q++);
+    else if (*q == ':') return nullptr;   // ':' straight after CSI: the sequence is ignored (state machine)
+    params_.clear();
+    param_sub_.clear();
+    bool started = false;
+    int cur = 0;
+    std::uint8_t sub = 0;
+    for (; q < end; ++q) {
+        const std::uint8_t b = *q;
+        if (b >= '0' && b <= '9') {
+            if (cur < kParamMax) cur = cur * 10 + (b - '0');
+            started = true;
+        } else if (b == ';' || b == ':') {
+            params_.push_back(cur);
+            param_sub_.push_back(sub);
+            sub = b == ':' ? 1 : 0;
+            cur = 0;
+            started = true;
+        } else if (b >= 0x40 && b <= 0x7E) {
+            if (started) {
+                params_.push_back(cur);
+                param_sub_.push_back(sub);
+            }
+            intermediates_.clear();
+            CsiDispatch d;
+            d.params = std::span<const int>{params_};
+            d.sub = std::span<const std::uint8_t>{param_sub_};
+            d.intermediates = intermediates_;
+            d.final = static_cast<char>(b);
+            d.private_marker = marker != 0;
+            d.marker = marker;
+            sink(Action{d});
+            state_ = State::Ground;
+            return q + 1;
+        } else {
+            return nullptr;   // intermediates, controls, a nested ESC: the full machine
+        }
+    }
+    return nullptr;   // split across buffers: the state machine carries it over
+}
+
+template <typename Sink>
 void Parser::feed(std::span<const char> bytes, Sink &&sink) {
     const auto *p = reinterpret_cast<const std::uint8_t *>(bytes.data());
     const auto *const end = p + bytes.size();
@@ -339,11 +404,24 @@ void Parser::feed(std::span<const char> bytes, Sink &&sink) {
             if (run != p) {
                 // Emit the whole run as one action — the screen writes it in a
                 // tight loop without per-char variant/visit/apply overhead.
-                sink(Action{PrintRun{std::string_view{
-                    reinterpret_cast<const char *>(run),
-                    static_cast<std::size_t>(p - run)}}});
+                detail::emit_run(sink, std::string_view{reinterpret_cast<const char *>(run),
+                                                        static_cast<std::size_t>(p - run)});
             }
             if (p == end) break;
+            // A C0 control in Ground (CR, LF, BS, HT -- not ESC, which starts a
+            // sequence): no state change, straight to the sink. `yes` and
+            // every line of output is run, CR, LF, run, CR, LF...
+            if (*p < 0x20 && *p != 0x1B) {
+                detail::emit_control(sink, *p++);
+                continue;
+            }
+            // ESC [ ... final, whole in this buffer (SGR colours, cursor
+            // moves): parse it in one pass here instead of a state-machine
+            // step per byte. Anything unusual -- intermediates, a split
+            // across buffers, a control inside -- falls through to step().
+            if (*p == 0x1B) {
+                if (const std::uint8_t *q = csi_fast(p, end, sink)) { p = q; continue; }
+            }
         }
         step(*p++, sink);
     }

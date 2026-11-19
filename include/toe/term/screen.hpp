@@ -380,6 +380,20 @@ public:
     // `out` — the screen performs no I/O itself; it only produces effect data.
     void apply(const vt::Action &action, Cmds &out);
 
+    // The hot actions without the Action variant (what the parser's direct
+    // path delivers): a printable-ASCII run, and a C0 control. Same effect as
+    // apply(PrintRun{...}) / apply(Execute{...}).
+    void apply_print_run(std::string_view ascii, Cmds &out) {
+        pending_ = &out;
+        put_ascii_run(ascii);
+        pending_ = nullptr;
+    }
+    void apply_control(std::uint8_t c0, Cmds &out) {
+        pending_ = &out;
+        execute(c0);
+        pending_ = nullptr;
+    }
+
     // Convenience for tests / simple call sites: apply and return the effects.
     [[nodiscard]] Cmds apply(const vt::Action &action) {
         Cmds out;

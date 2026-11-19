@@ -370,16 +370,25 @@ Cmds feed_output(Model &m, std::string_view bytes) {
     // bottom (see the Key handler). At the live bottom (offset 0) output follows
     // the tail naturally, so both cases are already correct without a forced
     // scroll_to_bottom here — which was yanking readers down on every chunk.
-    m.parser.feed(std::span<const char>{bytes.data(), bytes.size()}, [&](const vt::Action &a) {
-        if (const auto *osc = std::get_if<vt::OscDispatch>(&a)) {
-            handle_osc(m, osc->data, out);
-        } else if (const auto *csi = std::get_if<vt::CsiDispatch>(&a);
-                   csi && handle_sbquery_csi(m, *csi, out)) {
-            // DEC 2034 control/query consumed — don't hand it to the Screen.
-        } else {
-            m.screen.apply(a, out); // Screen emits its own effects (replies, bell)
+    // The sink: the parser hands runs and C0 controls straight to the screen
+    // (no Action variant, no visit); everything else arrives as an Action.
+    struct Sink {
+        Model &m;
+        Cmds &out;
+        void print_run(std::string_view s) { m.screen.apply_print_run(s, out); }
+        void control(std::uint8_t b) { m.screen.apply_control(b, out); }
+        void operator()(const vt::Action &a) {
+            if (const auto *osc = std::get_if<vt::OscDispatch>(&a)) {
+                handle_osc(m, osc->data, out);
+            } else if (const auto *csi = std::get_if<vt::CsiDispatch>(&a);
+                       csi && handle_sbquery_csi(m, *csi, out)) {
+                // DEC 2034 control/query consumed — don't hand it to the Screen.
+            } else {
+                m.screen.apply(a, out); // Screen emits its own effects (replies, bell)
+            }
         }
-    });
+    };
+    m.parser.feed(std::span<const char>{bytes.data(), bytes.size()}, Sink{m, out});
 
     // Refresh the command-minimap marks from the OSC-133 command log so the
     // renderer's scroll rail shows a live map of this session's commands

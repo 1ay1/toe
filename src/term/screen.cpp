@@ -632,8 +632,14 @@ void Screen::put_ascii_run(std::string_view ascii) {
                 Cell *after = cell_ptr(cursor_.row, Col{endc});
                 if (after->width == 0) *after = blank_cell();
             }
+            // One template cell (pen, width, link) built once per span; each
+            // cell is then a 24-byte trivially-copyable store plus its char --
+            // not a Cell constructed field by field through the Color variants.
+            Cell tmpl{U' ', pen_, 1, 0, cur_link_};
+            const char *src = ascii.data() + i;
             for (std::size_t k = 0; k < take; ++k) {
-                base[k] = Cell{static_cast<char32_t>(ascii[i + k]), pen_, 1, 0, cur_link_};
+                tmpl.cp = static_cast<char32_t>(static_cast<unsigned char>(src[k]));
+                std::memcpy(static_cast<void *>(base + k), &tmpl, sizeof(Cell));
             }
             ring_.note_used(r, endc + (endc < size_.cols ? 1 : 0));
             last_char_ = static_cast<char32_t>(ascii[i + take - 1]);

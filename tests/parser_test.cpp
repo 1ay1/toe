@@ -5,7 +5,9 @@
 // literal byte strings and check the emitted Action stream. Exit 0 == pass.
 
 #include <cassert>
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -129,6 +131,86 @@ int main() {
 
     // DCS with a $ intermediate ($q = DECRQSS); the query 'm' is the payload.
     check("\x1bP$qm\x1b\\", "DCS[$q,m]", "dcs decrqss prefix");
+
+    // The fast paths (whole-buffer run / control / one-pass CSI) must emit the
+    // SAME actions as the byte-at-a-time state machine, for every input --
+    // a buffer fed one byte per call never takes them.
+    {
+        const auto bytewise = [](std::string_view in) {
+            std::string all;
+            Parser p;
+            std::string out;
+            for (const char c : in) {
+                const std::string one(1, c);
+                const std::string t = [&] {
+                    std::string o;
+                    p.feed(std::span<const char>{one.data(), 1}, [&](const Action &a) {
+                        std::visit([&](auto &&x) {
+                            using T = std::decay_t<decltype(x)>;
+                            if constexpr (std::is_same_v<T, PrintRun>) for (char ch : x.text) o += "P(" + std::to_string(static_cast<unsigned char>(ch)) + ")";
+                            else if constexpr (std::is_same_v<T, Print>) o += "P(" + std::to_string(static_cast<unsigned>(x.cp)) + ")";
+                            else if constexpr (std::is_same_v<T, Execute>) o += "X(" + std::to_string(x.byte) + ")";
+                            else if constexpr (std::is_same_v<T, CsiDispatch>) {
+                                o += "CSI["; if (x.private_marker) o += x.marker;
+                                for (std::size_t i = 0; i < x.params.size(); ++i) { if (i) o += x.sub[i] ? ':' : ';'; o += std::to_string(x.params[i]); }
+                                o += x.intermediates; o += x.final; o += "]";
+                            } else if constexpr (std::is_same_v<T, EscDispatch>) { o += "ESC["; o += x.intermediates; o += x.final; o += "]"; }
+                            else o += "?";
+                        }, a);
+                    });
+                    return o;
+                }();
+                out += t;
+            }
+            return out;
+        };
+        const auto whole = [](std::string_view in) {
+            Parser p;
+            std::string o;
+            p.feed(std::span<const char>{in.data(), in.size()}, [&](const Action &a) {
+                std::visit([&](auto &&x) {
+                    using T = std::decay_t<decltype(x)>;
+                    if constexpr (std::is_same_v<T, PrintRun>) for (char ch : x.text) o += "P(" + std::to_string(static_cast<unsigned char>(ch)) + ")";
+                    else if constexpr (std::is_same_v<T, Print>) o += "P(" + std::to_string(static_cast<unsigned>(x.cp)) + ")";
+                    else if constexpr (std::is_same_v<T, Execute>) o += "X(" + std::to_string(x.byte) + ")";
+                    else if constexpr (std::is_same_v<T, CsiDispatch>) {
+                        o += "CSI["; if (x.private_marker) o += x.marker;
+                        for (std::size_t i = 0; i < x.params.size(); ++i) { if (i) o += x.sub[i] ? ':' : ';'; o += std::to_string(x.params[i]); }
+                        o += x.intermediates; o += x.final; o += "]";
+                    } else if constexpr (std::is_same_v<T, EscDispatch>) { o += "ESC["; o += x.intermediates; o += x.final; o += "]"; }
+                    else o += "?";
+                }, a);
+            });
+            return o;
+        };
+        const char *cases[] = {
+            "\x1b[m", "\x1b[;m", "\x1b[0;;1m", "\x1b[38:2::10:20:30m", "\x1b[38;5;196mred\x1b[0m",
+            "\x1b[?1049h\x1b[?25l", "\x1b[>4;2m", "\x1b[99999999999999999999H", "\x1b[1 q", "\x1b[!p",
+            "\x1b[1\n2H", "\x1b[12\x1b[3m", "\x1b[", "\x1b", "a\rb\nc\x08\td", "\x1b[1;2;3;4;5;6;7;8;9;10;11;12;13;14;15;16;17;18;19;20;21;22;23;24;25;26;27;28;29;30;31;32;33;34;35m",
+            "\x1b[?u\x1b[=1;1u", "\x1b[" "\x7f" "2J", "\xc3\xa9\x1b[2K\xe2\x82\xac", "\x1b]0;t\x07" "x",
+        };
+        bool same = true;
+        for (const char *cs : cases) {
+            const std::string a = bytewise(cs), b = whole(cs);
+            if (a != b) { std::printf("FAIL fast path differs on %zu-byte case:\n  slow %s\n  fast %s\n", std::string_view{cs}.size(), a.c_str(), b.c_str()); same = false; }
+        }
+        // fuzz: random mixes of the bytes that matter
+        std::uint64_t s = 0x9E3779B97F4A7C15ull;
+        const char alphabet[] = "\x1b[;:0123456789?>mHJKhlq !\r\n\x08\x07" "abc\xc3\xa9]P\\";
+        for (int t = 0; t < 40000 && same; ++t) {
+            std::string in;
+            const int len = 1 + static_cast<int>((s >> 33) % 40);
+            for (int i = 0; i < len; ++i) { s = s * 6364136223846793005ull + 1442695040888963407ull; in += alphabet[(s >> 33) % (sizeof alphabet - 1)]; }
+            if (bytewise(in) != whole(in)) {
+                std::printf("FAIL fast path differs on fuzz input #%d (%zu bytes):", t, in.size());
+                for (unsigned char ch : in) std::printf(" %02x", ch);
+                std::printf("\n  slow %s\n  fast %s\n", bytewise(in).c_str(), whole(in).c_str());
+                same = false;
+            }
+        }
+        if (!same) std::exit(1);
+        std::printf("ok   fast paths match the state machine (cases + 40000 fuzz inputs)\n");
+    }
 
     std::printf("all parser tests passed\n");
     return 0;
