@@ -643,6 +643,13 @@ public:
     // clickable. Pass (-1,-1) to clear. Returns true if the hovered link id
     // changed (the host uses that to trigger a redraw).
     bool set_hover(std::int32_t vrow, std::int32_t col) noexcept;
+
+    // A plain-text URL (http(s)://, file://, www.) under a viewport cell,
+    // for click-to-open when there is no OSC 8 link; empty if none. The view
+    // is valid until the next call.
+    [[nodiscard]] std::string_view url_at(std::int32_t vrow, std::int32_t col) const noexcept {
+        return detect_url_at(vrow, col);
+    }
     [[nodiscard]] std::uint16_t hover_link() const noexcept { return hover_link_; }
 
     // Focus reporting (DEC 1004): when the app enabled it, returns the bytes to
@@ -743,7 +750,7 @@ private:
         std::uint32_t len;   // cell count
         bool wrapped;        // soft-wrap continuation follows (physical rows)
         bool from_live;      // originated in the live grid (logical lines)
-        std::uint32_t line;  // source logical-line index (physical rows only)
+        std::uint32_t line = 0;  // source logical-line index (physical rows only)
     };
     std::vector<Cell> reflow_cells_{};
     std::vector<Span> reflow_lines_{}; // logical lines
