@@ -1163,6 +1163,28 @@ void Screen::insert_lines(std::int32_t n) {
     touch();
 }
 
+std::int32_t Screen::collapse_blank_rows(std::int64_t from, std::int64_t to) {
+    const auto base = static_cast<std::int64_t>(ring_.scrollback());
+    if (on_alt_ || to <= from || from < base) return 0;
+    const auto r0 = static_cast<std::int32_t>(from - base), r1 = static_cast<std::int32_t>(to - base);
+    if (r1 > cursor_.row.get()) return 0;
+    for (std::int32_t r = r0; r < r1; ++r) {
+        const Cell *row = ring_.view_row(r);
+        for (std::int32_t c = 0; c < size_.cols; ++c)
+            if (!row[c].blank()) return 0;
+    }
+    const Pos saved = cursor_;
+    const std::int32_t top = scroll_top_, bottom = scroll_bottom_;
+    const bool lr = lr_margins_;
+    scroll_top_ = 0; scroll_bottom_ = size_.rows - 1; lr_margins_ = false;
+    cursor_.row = Row{r0};
+    delete_lines(r1 - r0);
+    scroll_top_ = top; scroll_bottom_ = bottom; lr_margins_ = lr;
+    cursor_ = saved;
+    cursor_.row = Row{saved.row.get() - (r1 - r0)};
+    return r1 - r0;
+}
+
 void Screen::delete_lines(std::int32_t n) {
     if (cursor_.row.get() < scroll_top_ || cursor_.row.get() > scroll_bottom_) return;
     n = std::clamp(n, 0, scroll_bottom_ - cursor_.row.get() + 1);

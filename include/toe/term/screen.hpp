@@ -10,6 +10,7 @@
 #define TOE_TERM_SCREEN_HPP
 
 #include <cstdint>
+#include <optional>
 #include <deque>
 #include <functional>
 #include <span>
@@ -43,6 +44,12 @@ public:
     // bug). The shell erases and repaints them at the new width anyway.
     // -1: no protection (no shell integration, or not at a prompt).
     void resize(Extent size, std::int64_t keep_from);
+    // Remove the live rows [abs_from, abs_to) -- only if every one is blank and
+    // all are above the cursor -- pulling everything below up by that many (the
+    // cursor with it). For a shell that redrew its prompt LOWER than it was (a
+    // resize racing the redraw): the blank rows it left behind are not content.
+    // Returns how many rows went.
+    std::int32_t collapse_blank_rows(std::int64_t abs_from, std::int64_t abs_to);
     // Where an absolute row from BEFORE the last resize is now (-1 if it was
     // dropped off the top of the scrollback). For anything that stores
     // absolute rows (command marks, bookmarks) to follow the rewrap.
@@ -291,6 +298,11 @@ public:
     void selection_clear();
     [[nodiscard]] bool has_selection() const noexcept { return sel_mode_ != SelectMode::none; }
     [[nodiscard]] SelectMode selection_mode() const noexcept { return sel_mode_; }
+    // The selection's normalized [begin, end] in absolute coordinates; {} when none.
+    [[nodiscard]] std::optional<std::pair<AbsPos, AbsPos>> selection_range() const noexcept {
+        if (sel_mode_ == SelectMode::none) return std::nullopt;
+        return selection_span();
+    }
 
     // Extra codepoints (beyond the built-in alnum + path/URL set) that count as
     // part of a word for double-click selection. Host wires this from config so

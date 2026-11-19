@@ -240,6 +240,16 @@ void handle_osc(Model &m, std::string_view d, Cmds &out) {
     } else if (d == "133;A" || d.starts_with("133;A;")) {
         // FTCS_PROMPT: a new prompt begins — open a fresh command block, tagged
         // with the cwd known so far.
+        // A prompt drawn again, lower than before, with no command in between
+        // (fish repainting on SIGWINCH while a resize raced it): the blank rows
+        // left between the old start and the new one go, so gaps never pile up.
+        if (!m.commands.blocks().empty()) {
+            const auto &b = m.commands.blocks().back();
+            const bool pending = b.output_row < 0 && !b.finished();
+            const std::int64_t now = cursor_abs_row(m);
+            if (pending && b.prompt_row >= 0 && b.prompt_row < now)
+                (void)m.screen.collapse_blank_rows(b.prompt_row, now);
+        }
         m.commands.mark_prompt(cursor_abs_row(m), m.working_dir);
         m.shell_zone = Model::ShellZone::prompt;
     } else if (d == "133;B" || d.starts_with("133;B;")) {
@@ -407,7 +417,7 @@ void resize(Model &m, Extent size) {
     // -- the shell erases and repaints them on SIGWINCH by row count.
     std::int64_t keep_from = -1;
     const auto z = m.commands.zone();
-    if (!s.on_alt_screen() && (z == ShellZone::prompt || z == ShellZone::command) && !m.commands.blocks().empty()) {
+    if (m.cfg.protect_prompt_on_resize && !s.on_alt_screen() && (z == ShellZone::prompt || z == ShellZone::command) && !m.commands.blocks().empty()) {
         const auto &b = m.commands.blocks().back();
         const std::int64_t cur = s.viewport_to_abs(s.cursor().row.get()) + s.scroll_offset();
         if (b.prompt_row >= 0 && b.prompt_row <= cur && cur - b.prompt_row < s.size().rows) keep_from = b.prompt_row;

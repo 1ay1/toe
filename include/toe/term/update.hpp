@@ -42,6 +42,11 @@ struct Config {
     std::string word_separators{};
     // Scrollback lines retained above the visible grid.
     int scrollback_lines = 10000;
+    // On a resize at a prompt, crop the prompt's rows instead of rewrapping
+    // them -- for shells that repaint by counting rows up from the cursor
+    // (zsh, bash). Off for a shell that leaves reflow to the terminal (fish
+    // with fish_handle_reflow 0): then the prompt rewraps like any text.
+    bool protect_prompt_on_resize = true;
 };
 
 // Decode UTF-8 to codepoints, skipping malformed bytes rather than failing: a
