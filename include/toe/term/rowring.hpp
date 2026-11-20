@@ -30,17 +30,81 @@
 #include <cstdint>
 #include <algorithm>
 #include <cstring>
+#include <memory>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "toe/term/cell.hpp"
 
 namespace toe::term {
 
+// The ring's cell storage: allocated in full, initialised lazily.
+//
+// A 10,000-line scrollback at 110 columns is ~20 MB of cells. Filling all of
+// it in reset() -- once when the screen is built and AGAIN on every width
+// change, since reflow resets the ring -- was ~5 ms each on a terminal's
+// startup path, for history that is mostly never written. The OS hands out
+// untouched pages for free, so only the prefix actually exposed is filled
+// (RowRing::fill_to, in chunks ahead of high_water_): the same total work
+// under a flood, none for scrollback nobody reaches.
+class CellArena {
+    static_assert(std::is_trivially_copyable_v<Cell> && std::is_trivially_destructible_v<Cell>,
+                  "CellArena hands out raw storage: Cell must stay a plain value");
+public:
+    CellArena() = default;
+    CellArena(const CellArena &o) {
+        if (o.n_ == 0) return;
+        p_ = std::allocator<Cell>{}.allocate(o.n_);
+        n_ = o.n_;
+        std::uninitialized_copy(o.p_, o.p_ + o.init_, p_);
+        init_ = o.init_;
+    }
+    CellArena(CellArena &&o) noexcept { swap(o); }
+    CellArena &operator=(CellArena o) noexcept { swap(o); return *this; }
+    ~CellArena() { release(); }
+    void swap(CellArena &o) noexcept {
+        std::swap(p_, o.p_);
+        std::swap(n_, o.n_);
+        std::swap(init_, o.init_);
+    }
+
+    // `n` cells of storage with only the first `prefix` set to `fill`.
+    void reset(std::size_t n, std::size_t prefix, const Cell &fill) {
+        if (n != n_) {
+            release();
+            if (n != 0) p_ = std::allocator<Cell>{}.allocate(n);
+            n_ = n;
+        }
+        init_ = 0;   // same size: the old cells are stale, refilled on demand
+        ensure(prefix, fill);
+    }
+    // Cells [0, upto) valid: the ones not yet initialised become `fill`.
+    void ensure(std::size_t upto, const Cell &fill) noexcept {
+        if (upto > n_) upto = n_;
+        if (upto <= init_) return;
+        std::uninitialized_fill(p_ + init_, p_ + upto, fill);
+        init_ = upto;
+    }
+    [[nodiscard]] Cell *data() noexcept { return p_; }
+    [[nodiscard]] const Cell *data() const noexcept { return p_; }
+
+private:
+    void release() noexcept {
+        if (p_ != nullptr) std::allocator<Cell>{}.deallocate(p_, n_);
+        p_ = nullptr;
+        n_ = init_ = 0;
+    }
+    Cell *p_ = nullptr;
+    std::size_t n_ = 0, init_ = 0;
+};
+
 class RowRing {
 public:
     // (Re)allocate for `rows` visible × `cols` wide, retaining up to `scroll`
-    // scrollback lines. Fills every slot blank. Starts with exactly `rows` live
-    // rows (no scrollback yet). `blank` is the fill cell.
+    // scrollback lines. Starts with exactly `rows` live blank rows (no
+    // scrollback yet); the scrollback slots are filled with `blank` as they
+    // are first exposed (fill_to). `blank` is the fill cell.
     void reset(std::int32_t rows, std::int32_t cols, std::size_t scroll, const Cell &blank) {
         rows_ = rows < 0 ? 0 : rows;
         cols_ = cols < 0 ? 0 : cols;
@@ -50,7 +114,9 @@ public:
         fill_ = blank;
         blank_line_valid_ = false;
         blank_differs_ = false;
-        arena_.assign(cap_slots_ * static_cast<std::size_t>(cols_), blank_);
+        arena_.reset(cap_slots_ * static_cast<std::size_t>(cols_),
+                     static_cast<std::size_t>(rows_) * static_cast<std::size_t>(cols_), blank_);
+        filled_slots_ = std::min(static_cast<std::size_t>(rows_), cap_slots_);
         wrapped_.assign(cap_slots_, false);
         used_.assign(cap_slots_, 0); // freshly-filled arena: every row all-blank
         head_ = 0;
@@ -169,6 +235,7 @@ public:
             const std::size_t newbot = count_; // absolute index of the new row
             ++count_;
             const std::size_t slot = slot_of(newbot);
+            if (slot >= filled_slots_) [[unlikely]] fill_to(slot + 1);
             if (slot >= high_water_ && !blank_differs_from_fill()) {
                 high_water_ = slot + 1;
                 wrapped_[slot] = false; // arena is already blank here
@@ -300,11 +367,6 @@ public:
         fill_ = blank;
         blank_line_valid_ = false;
         blank_differs_ = false;
-        arena_.assign(cap_slots_ * static_cast<std::size_t>(cols_), blank_);
-        wrapped_.assign(cap_slots_, false);
-        used_.assign(cap_slots_, 0);
-        blank_line_.clear();
-        head_ = 0;
         const std::size_t want = cap_slots_;
         const std::size_t have = old_total;
         const std::size_t drop = have > want ? have - want : 0;
@@ -312,6 +374,15 @@ public:
         const std::size_t live_from_saved = std::min(kept, static_cast<std::size_t>(rows_));
         const std::size_t sb = kept - live_from_saved;
         count_ = sb + static_cast<std::size_t>(rows_);
+        // Every live row must be valid (the ones not restored below are
+        // blank); the rest of the scrollback fills as it is exposed.
+        arena_.reset(cap_slots_ * static_cast<std::size_t>(cols_),
+                     std::min(count_, cap_slots_) * static_cast<std::size_t>(cols_), blank_);
+        filled_slots_ = std::min(count_, cap_slots_);
+        wrapped_.assign(cap_slots_, false);
+        used_.assign(cap_slots_, 0);
+        blank_line_.clear();
+        head_ = 0;
         for (std::size_t i = 0; i < kept; ++i) {
             Cell *dst = abs_row(i);
             const Cell *src = keep_scratch_.data() + (drop + i) * ncols;
@@ -326,6 +397,18 @@ public:
 
 private:
     [[nodiscard]] std::size_t view_base_slot() const noexcept { return slot_of(view_base()); }
+
+    // Initialise the arena out to at least `slots` slots, in chunks so a
+    // flood pays one bulk fill per kFillChunk lines instead of a branchy
+    // per-line one. Cold: once every kFillChunk new scrollback lines, and
+    // never again once the ring has been filled.
+    static constexpr std::size_t kFillChunk = 512;
+    [[gnu::noinline, gnu::cold]] void fill_to(std::size_t slots) noexcept {
+        std::size_t to = std::max(slots, filled_slots_ + kFillChunk);
+        if (to > cap_slots_) to = cap_slots_;
+        arena_.ensure(to * static_cast<std::size_t>(cols_), fill_);
+        filled_slots_ = to;
+    }
 
     // Left-rotate visible rows [top,bottom] (inclusive) by k, moving both cell
     // contents and wrapped flags. std::rotate semantics: the row originally at
@@ -410,7 +493,8 @@ private:
         blank_differs_ = !(blank_ == fill_);
     }
 
-    std::vector<Cell> arena_{};        // cap_slots_ * cols_ cells (the ring)
+    CellArena arena_{};                // cap_slots_ * cols_ cells (the ring); [0, filled_slots_) initialised
+    std::size_t filled_slots_ = 0;     // slots whose cells are valid (>= every slot ever live)
     std::vector<bool> wrapped_{};      // per-slot soft-wrap flag
     std::vector<std::size_t> used_{};  // per-slot high-water column (dirty prefix)
     std::vector<Cell> blank_line_{};   // cached blank row for fast blanking
