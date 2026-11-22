@@ -7,7 +7,6 @@
 
 #include "toe/term/palette.hpp"
 
-#include <chrono>
 #include <cstdio>
 #include <optional>
 
@@ -40,12 +39,6 @@ std::u32string decode_utf8(std::string_view utf8) {
 }
 
 namespace {
-
-// Wall-clock milliseconds, for command-block timing (OSC 133 C→D duration).
-std::int64_t now_ms() {
-    using namespace std::chrono;
-    return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
-}
 
 // The cursor's ABSOLUTE row (0 == oldest history row), where a shell-integration
 // mark lands. CommandBlocks store absolute rows so they track content as it
@@ -142,7 +135,7 @@ std::string decode_base64(std::string_view in) {
 
 // Handle one OSC string, appending any effects. OSC is handled here (not in
 // Screen) because colour replies need the Model's configured palette.
-void handle_osc(Model &m, std::string_view d, Cmds &out) {
+void handle_osc(Model &m, std::string_view d, Cmds &out, std::int64_t now_ms) {
     if (d.size() > 2 && (d.starts_with("0;") || d.starts_with("2;"))) {
         m.title = std::string{d.substr(2)};
         out.emplace_back(SetTitle{m.title});
@@ -258,7 +251,7 @@ void handle_osc(Model &m, std::string_view d, Cmds &out) {
         m.shell_zone = Model::ShellZone::command;
     } else if (d == "133;C" || d.starts_with("133;C;")) {
         // FTCS_COMMAND_EXECUTED: output starts (Enter pressed).
-        m.commands.mark_output(cursor_abs_row(m), now_ms());
+        m.commands.mark_output(cursor_abs_row(m), now_ms);
         m.shell_zone = Model::ShellZone::output;
     } else if (d == "133;D" || d.starts_with("133;D;")) {
         // FTCS_COMMAND_FINISHED: parse the optional exit code from 133;D;<code>.
@@ -278,7 +271,7 @@ void handle_osc(Model &m, std::string_view d, Cmds &out) {
             }
             if (ok) code = neg ? -v : v;
         }
-        m.commands.mark_finished(cursor_abs_row(m), code, now_ms());
+        m.commands.mark_finished(cursor_abs_row(m), code, now_ms);
         m.shell_zone = Model::ShellZone::unknown;
     } else if (d.starts_with("9;")) {
         // OSC 9: a desktop notification body (iTerm2/kitty style). Surface it to
@@ -362,7 +355,7 @@ static bool handle_sbquery_csi(Model &m, const vt::CsiDispatch &c, Cmds &out) {
 }
 
 
-Cmds feed_output(Model &m, std::string_view bytes) {
+Cmds feed_output(Model &m, std::string_view bytes, std::int64_t now_ms) {
     Cmds out;
     // New output does NOT snap the view to the bottom: if the user has scrolled
     // up into history, they stay anchored to what they're reading (Screen's
@@ -375,11 +368,12 @@ Cmds feed_output(Model &m, std::string_view bytes) {
     struct Sink {
         Model &m;
         Cmds &out;
+        std::int64_t now_ms;
         void print_run(std::string_view s) { m.screen.apply_print_run(s, out); }
         void control(std::uint8_t b) { m.screen.apply_control(b, out); }
         void operator()(const vt::Action &a) {
             if (const auto *osc = std::get_if<vt::OscDispatch>(&a)) {
-                handle_osc(m, osc->data, out);
+                handle_osc(m, osc->data, out, now_ms);
             } else if (const auto *csi = std::get_if<vt::CsiDispatch>(&a);
                        csi && handle_sbquery_csi(m, *csi, out)) {
                 // DEC 2034 control/query consumed — don't hand it to the Screen.
@@ -388,7 +382,7 @@ Cmds feed_output(Model &m, std::string_view bytes) {
             }
         }
     };
-    m.parser.feed(std::span<const char>{bytes.data(), bytes.size()}, Sink{m, out});
+    m.parser.feed(std::span<const char>{bytes.data(), bytes.size()}, Sink{m, out, now_ms});
 
     // Refresh the command-minimap marks from the OSC-133 command log so the
     // renderer's scroll rail shows a live map of this session's commands

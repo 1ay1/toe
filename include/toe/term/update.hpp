@@ -47,6 +47,10 @@ struct Config {
     // (zsh, bash). Off for a shell that leaves reflow to the terminal (fish
     // with fish_handle_reflow 0): then the prompt rewraps like any text.
     bool protect_prompt_on_resize = true;
+    // Seed for the DEC 2034 session tokens. The reducer never reads the OS
+    // for randomness; a host that exposes 2034 to untrusted programs seeds
+    // this from the OS once, when it makes the Model.
+    std::uint64_t entropy = 0;
 };
 
 // Decode UTF-8 to codepoints, skipping malformed bytes rather than failing: a
@@ -77,9 +81,9 @@ struct Model {
 
     // DEC 2034 Semantic Block Query session state (token + enabled flag). The
     // JSON-over-DCS agent read-out of `commands`.
-    SemanticBlockQuery sbquery{};
+    SemanticBlockQuery sbquery;
 
-    explicit Model(Config c, Extent grid) : cfg(std::move(c)), screen(grid) {
+    explicit Model(Config c, Extent grid) : cfg(std::move(c)), screen(grid), sbquery(cfg.entropy) {
         if (cfg.scrollback_lines >= 0)
             screen.set_max_history(static_cast<std::size_t>(cfg.scrollback_lines));
         if (!cfg.word_separators.empty())
@@ -94,7 +98,12 @@ struct Model {
 // demands (query replies as WriteChild, OSC-0/2 as SetTitle, OSC-52 as
 // SetClipboard, colour-query replies, bells). Pure: the model is the only
 // thing mutated; everything else is returned data.
-[[nodiscard]] Cmds feed_output(Model &m, std::string_view bytes);
+//
+// `now_ms` is when the chunk arrived, on the host's wall clock (ms since the
+// unix epoch): command blocks (OSC 133 C/D) are timed in it. Time is an
+// argument, not something the reducer reads, so the same bytes at the same
+// time always fold to the same model. 0 (tests) times every command as 0 ms.
+[[nodiscard]] Cmds feed_output(Model &m, std::string_view bytes, std::int64_t now_ms = 0);
 
 // Resize the terminal. Everything a resize must keep consistent, in one
 // place: the screen rewraps (protecting the prompt being edited when shell

@@ -141,7 +141,7 @@ int main() {
         ok(breply.rfind("\x1bP>3b", 0) == 0, "query with bad token -> status 3");
 
         // Disable -> a subsequent query has no active token (status 2).
-        term::feed_output(mq, "\x1b[?2034l");
+        (void)term::feed_output(mq, "\x1b[?2034l");
         ok(!mq.sbquery.enabled(), "2034 disabled after CSI ?2034l");
         std::string noreply = writes(term::feed_output(mq, q));
         ok(noreply.rfind("\x1bP>2b", 0) == 0, "query after disable -> status 2");
@@ -222,6 +222,30 @@ int main() {
         feed(r, "/tmp\r\n");
         feed(r, ftcs('D', "0"));
         ok(r.commands.size() == 2, "two real commands, no phantom blocks");
+    }
+
+    // ── purity: time and the 2034 token are inputs, not reads ──────────────
+    {
+        term::Model t(term::Config{}, Extent{40, 5});
+        (void)term::feed_output(t, ftcs('A') + "$ " + ftcs('B') + "sleep 2\r\n", 1'000'000);
+        (void)term::feed_output(t, ftcs('C'), 1'000'000);
+        (void)term::feed_output(t, ftcs('D', "0"), 1'002'500);
+        ok(t.commands.size() == 1 && t.commands.blocks().back().duration_ms() == 2500,
+           "a command is timed by the clock the host passes in");
+
+        term::Config seeded{};
+        seeded.entropy = 42;
+        term::Model a(seeded, Extent{40, 5}), b(seeded, Extent{40, 5});
+        const std::string ha = writes(term::feed_output(a, "\x1b[?2034h"));
+        const std::string hb = writes(term::feed_output(b, "\x1b[?2034h"));
+        ok(ha == hb && a.sbquery.token() != 0, "the same seed gives the same token");
+        (void)term::feed_output(a, "\x1b[?2034l");
+        (void)term::feed_output(a, "\x1b[?2034h");
+        ok(a.sbquery.token() != b.sbquery.token(), "re-enabling draws a fresh token");
+        seeded.entropy = 43;
+        term::Model c(seeded, Extent{40, 5});
+        (void)term::feed_output(c, "\x1b[?2034h");
+        ok(c.sbquery.token() != b.sbquery.token(), "another seed, another token");
     }
 
     std::printf(fails ? "%d command-log test(s) failed\n" : "all command-log tests passed\n",

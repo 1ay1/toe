@@ -49,6 +49,12 @@ struct BlockTextResolver {
 // The 2034 session state: whether tracking is enabled and the current token.
 class SemanticBlockQuery {
 public:
+    // Tokens are drawn from a stream seeded by the HOST (Config::entropy):
+    // the reducer stays a pure function of (model, bytes) -- no
+    // random_device or clock inside -- and a host that wants unguessable
+    // tokens seeds it from the OS once, outside the fold.
+    explicit SemanticBlockQuery(std::uint64_t seed = 0) noexcept : seed_(seed) {}
+
     [[nodiscard]] bool enabled() const noexcept { return enabled_; }
     [[nodiscard]] std::uint64_t token() const noexcept { return token_; }
 
@@ -79,11 +85,12 @@ public:
     }
 
 private:
-    static std::uint64_t mint_token();
+    std::uint64_t mint_token() noexcept;
     [[nodiscard]] std::string handshake_reply() const;
 
     bool enabled_{false};
     std::uint64_t token_{0};
+    std::uint64_t seed_{0};
 };
 
 // JSON-encode one block (command/output resolved via `res`). Exposed for tests.

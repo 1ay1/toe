@@ -5,9 +5,7 @@
 #include "toe/term/sbquery.hpp"
 
 #include <array>
-#include <chrono>
 #include <cstdio>
-#include <random>
 #include <tuple>
 #include <vector>
 
@@ -104,14 +102,15 @@ std::string block_to_json(const CommandBlock &b, const BlockTextResolver &res, b
     return j;
 }
 
-std::uint64_t SemanticBlockQuery::mint_token() {
-    // A non-zero, hard-to-guess 64-bit token. Seeded from a random_device mixed
-    // with the clock so two sessions in the same process differ.
-    std::random_device rd;
-    std::uint64_t hi = (static_cast<std::uint64_t>(rd()) << 32) ^ rd();
-    const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
-    std::uint64_t t = hi ^ static_cast<std::uint64_t>(now);
-    return t ? t : 0x9E3779B97F4A7C15ull; // never 0 (0 means "no token")
+std::uint64_t SemanticBlockQuery::mint_token() noexcept {
+    // splitmix64 over the host's seed: every enable draws a fresh token, and
+    // as unguessable as the seed is. Deterministic given the seed, so a test
+    // (or a replay) sees the same handshake every time.
+    std::uint64_t z = (seed_ += 0x9E3779B97F4A7C15ull);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    z ^= z >> 31;
+    return z ? z : 0x9E3779B97F4A7C15ull; // never 0 (0 means "no token")
 }
 
 std::string SemanticBlockQuery::handshake_reply() const {
