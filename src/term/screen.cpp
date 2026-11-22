@@ -451,38 +451,40 @@ void Screen::reflow(Extent old_size, Extent new_size, std::int64_t keep_from) {
     const std::int32_t live_count = std::min(total, nrows);
     const std::int32_t live_first = total - live_count;
 
-    // Write a rewrapped physical-row Span into a destination cell buffer, zero-
-    // padding to ncols. src cells come from reflow_cells_[span.off .. +span.len].
-    const auto paint = [&](Cell *dst, const Span &sp) {
-        const Cell *src = reflow_cells_.data() + sp.off;
+    // Write a rewrapped physical-row Span into a destination cell buffer,
+    // blank-padding to ncols: one memcpy and one fill per row. Returns its
+    // content length (what a later blank_row has to clear).
+    const auto paint = [&](Cell *dst, const Span &sp) -> std::size_t {
         const std::uint32_t len = std::min<std::uint32_t>(sp.len, static_cast<std::uint32_t>(ncols));
-        for (std::uint32_t c = 0; c < len; ++c) dst[c] = src[c];
-        for (std::int32_t c = static_cast<std::int32_t>(len); c < ncols; ++c) dst[c] = Cell{};
+        std::memcpy(dst, reflow_cells_.data() + sp.off, static_cast<std::size_t>(len) * sizeof(Cell));
+        std::fill(dst + len, dst + ncols, Cell{});
+        return len;
     };
 
     size_ = new_size;
-    ring_.reset(nrows, ncols, max_history_, Cell{});
-
     std::int32_t sb_first = 0;
     if (static_cast<std::size_t>(live_first) > max_history_)
         sb_first = live_first - static_cast<std::int32_t>(max_history_);
+    // The ring is sized for the whole result at once and every row written
+    // once, in place. (It used to reset to an empty ring and scroll each
+    // history row in -- blanking a slot per row only to overwrite it: 8 ms
+    // of a 14 ms reflow at 10k lines.)
+    ring_.reset_with_history(nrows, ncols, max_history_, static_cast<std::size_t>(live_first - sb_first), Cell{});
     for (std::int32_t i = sb_first; i < live_first; ++i) {
         const Span &sp = reflow_rows_[static_cast<std::size_t>(i)];
-        paint(ring_.view_row(0), sp);
-        ring_.mark_view_full(0);
-        ring_.set_view_wrapped(0, sp.wrapped);
-        ring_.scroll_up_one(true, Cell{});
+        const std::size_t abs = static_cast<std::size_t>(i - sb_first);
+        ring_.set_used_abs(abs, paint(ring_.abs_row(abs), sp));
+        ring_.set_wrapped_abs(abs, sp.wrapped);
     }
 
     for (std::int32_t r = 0; r < nrows; ++r) {
         Cell *dst = ring_.view_row(r);
-        ring_.mark_view_full(r);
         if (r < live_count) {
             const Span &sp = reflow_rows_[static_cast<std::size_t>(live_first + r)];
-            paint(dst, sp);
+            ring_.note_used(r, static_cast<std::int32_t>(paint(dst, sp)));
             ring_.set_view_wrapped(r, sp.wrapped);
         } else {
-            for (std::int32_t c = 0; c < ncols; ++c) dst[c] = Cell{};
+            std::fill(dst, dst + ncols, Cell{});
             ring_.set_view_wrapped(r, false);
         }
     }

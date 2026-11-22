@@ -56,7 +56,7 @@ public:
     CellArena(const CellArena &o) {
         if (o.n_ == 0) return;
         p_ = std::allocator<Cell>{}.allocate(o.n_);
-        n_ = o.n_;
+        n_ = cap_ = o.n_;
         std::uninitialized_copy(o.p_, o.p_ + o.init_, p_);
         init_ = o.init_;
     }
@@ -67,16 +67,25 @@ public:
         std::swap(p_, o.p_);
         std::swap(n_, o.n_);
         std::swap(init_, o.init_);
+        std::swap(cap_, o.cap_);
     }
 
     // `n` cells of storage with only the first `prefix` set to `fill`.
+    //
+    // The block is KEPT when it is big enough (and not wastefully so): a
+    // width change asks for a slightly different size every column, and
+    // freeing it each time handed back fresh pages that the reflow then
+    // page-faulted in, 40 MB of them per column at 10k lines. Growth comes
+    // with headroom so a widening drag reallocates once, not per column.
     void reset(std::size_t n, std::size_t prefix, const Cell &fill) {
-        if (n != n_) {
+        if (n > cap_ || n < cap_ / 2) {
             release();
-            if (n != 0) p_ = std::allocator<Cell>{}.allocate(n);
-            n_ = n;
+            const std::size_t want = n + n / 8;
+            if (want != 0) p_ = std::allocator<Cell>{}.allocate(want);
+            cap_ = want;
         }
-        init_ = 0;   // same size: the old cells are stale, refilled on demand
+        n_ = n;
+        init_ = 0;   // the old cells are stale, refilled on demand
         ensure(prefix, fill);
     }
     // Cells [0, upto) valid: the ones not yet initialised become `fill`.
@@ -86,17 +95,24 @@ public:
         std::uninitialized_fill(p_ + init_, p_ + upto, fill);
         init_ = upto;
     }
+    // Cells [0, upto) count as valid WITHOUT a fill: the caller writes every
+    // one of them before anything reads (Cell is trivially copyable).
+    void claim(std::size_t upto) noexcept {
+        static_assert(std::is_trivially_copyable_v<Cell>);
+        if (upto > n_) upto = n_;
+        if (upto > init_) init_ = upto;
+    }
     [[nodiscard]] Cell *data() noexcept { return p_; }
     [[nodiscard]] const Cell *data() const noexcept { return p_; }
 
 private:
     void release() noexcept {
-        if (p_ != nullptr) std::allocator<Cell>{}.deallocate(p_, n_);
+        if (p_ != nullptr) std::allocator<Cell>{}.deallocate(p_, cap_);
         p_ = nullptr;
-        n_ = init_ = 0;
+        n_ = init_ = cap_ = 0;
     }
     Cell *p_ = nullptr;
-    std::size_t n_ = 0, init_ = 0;
+    std::size_t n_ = 0, init_ = 0, cap_ = 0;   // cap_: allocated cells (>= n_)
 };
 
 class RowRing {
@@ -125,6 +141,23 @@ public:
     }
 
     [[nodiscard]] std::int32_t rows() const noexcept { return rows_; }
+
+    /// (Re)allocate like reset(), but with `history` scrollback rows already
+    /// live (capped at `scroll`): rows [0, history + rows) are addressable at
+    /// once, uninitialised, for a caller that writes EVERY cell of each
+    /// (a reflow). One pass instead of a scroll per row plus a blank fill per
+    /// row it then overwrites. The caller sets used / wrapped per row.
+    void reset_with_history(std::int32_t rows, std::int32_t cols, std::size_t scroll, std::size_t history,
+                            const Cell &blank) {
+        reset(rows, cols, scroll, blank);
+        if (history > scroll) history = scroll;
+        count_ = static_cast<std::size_t>(rows_) + history;
+        high_water_ = count_;
+        filled_slots_ = std::max(filled_slots_, count_);
+        arena_.claim(count_ * static_cast<std::size_t>(cols_));
+    }
+    /// A row written whole by the caller: content out to `used`.
+    void set_used_abs(std::size_t abs, std::size_t used) noexcept { used_[slot_of(abs)] = used; }
     [[nodiscard]] std::int32_t cols() const noexcept { return cols_; }
     // Scrollback line count (live rows above the visible grid).
     [[nodiscard]] std::size_t scrollback() const noexcept {
