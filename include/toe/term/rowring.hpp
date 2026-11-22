@@ -122,6 +122,7 @@ public:
     // scrollback yet); the scrollback slots are filled with `blank` as they
     // are first exposed (fill_to). `blank` is the fill cell.
     void reset(std::int32_t rows, std::int32_t cols, std::size_t scroll, const Cell &blank) {
+        ++history_seq_;
         rows_ = rows < 0 ? 0 : rows;
         cols_ = cols < 0 ? 0 : cols;
         cap_slots_ = static_cast<std::size_t>(rows_) + scroll;
@@ -164,6 +165,11 @@ public:
         return count_ - static_cast<std::size_t>(rows_);
     }
     [[nodiscard]] std::size_t total() const noexcept { return count_; }
+    // Changes whenever ANY scrollback row's content or position can have
+    // changed (a line pushed into history, a reset, a resize, a clear). The
+    // scrollback is otherwise immutable, so a cache over history rows (a
+    // minimap, a search index) stays valid while this holds still.
+    [[nodiscard]] std::uint64_t history_seq() const noexcept { return history_seq_; }
 
     // Physical slot backing absolute row `abs` (0 = oldest). Ring arithmetic
     // WITHOUT a modulo: head_ and abs are each < cap_slots_, so head_+abs is
@@ -258,6 +264,7 @@ public:
     // Returns the absolute index of the newly blanked bottom row.
     std::size_t scroll_up_one(bool push_scrollback, const Cell &blank) noexcept {
         set_blank(blank);
+        if (push_scrollback) ++history_seq_;
         if (push_scrollback && count_ < cap_slots_) {
             // Grow the scrollback by one: claim a fresh tail slot. Until the ring
             // has wrapped once (high_water_ tracks the furthest slot ever used),
@@ -342,6 +349,7 @@ public:
     // Drop all scrollback (used on RIS / alt-screen enter): keep only the
     // visible grid as the live rows.
     void clear_scrollback() noexcept {
+        ++history_seq_;
         // Move the visible rows to the front conceptually by making them the
         // only live rows. Their slots stay put; we just forget the scrollback.
         head_ = view_base_slot();
@@ -374,6 +382,7 @@ public:
     // Used for non-reflow resizes (alt screen, or height-only changes).
     void resize_keep(std::int32_t new_rows, std::int32_t new_cols, std::size_t scroll,
                      const Cell &blank) {
+        ++history_seq_;
         new_rows = new_rows < 0 ? 0 : new_rows;
         new_cols = new_cols < 0 ? 0 : new_cols;
         const std::size_t old_total = count_;
@@ -541,6 +550,7 @@ private:
     std::int32_t rows_ = 0, cols_ = 0;
     std::size_t head_ = 0;             // slot of absolute row 0 (oldest)
     std::size_t count_ = 0;            // total live rows (scrollback + visible)
+    std::uint64_t history_seq_ = 0;    // see history_seq()
     // Reusable flat snapshot for resize_keep (one alloc, not one per row).
     std::vector<Cell> keep_scratch_{};
     std::vector<bool> keep_wrapped_{};

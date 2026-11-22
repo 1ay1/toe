@@ -431,6 +431,14 @@ public:
         return e > all_stamp_ ? e : all_stamp_;
     }
 
+    // Changes whenever any scrollback row can have changed (see
+    // RowRing::history_seq); distinct between the primary and alternate
+    // screens. Together with row_version() for the live rows it covers every
+    // cell: a cache keyed on both is never stale (tests/damage_test.cpp).
+    [[nodiscard]] std::uint64_t history_epoch() const noexcept {
+        return ring_.history_seq() * 2 + (on_alt_ ? 1 : 0);
+    }
+
 private:
     // --- bounds-checked cell access (the only raw indexing in the class) ---
     [[nodiscard]] Cell &at(Row r, Col c);

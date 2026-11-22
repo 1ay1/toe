@@ -48,6 +48,12 @@ target_link_libraries(fuzz_test PRIVATE toe::toe)
 add_test(NAME fuzz COMMAND fuzz_test)
 set_tests_properties(fuzz PROPERTIES TIMEOUT 300)
 
+# The damage keys (row_version, history_epoch) never hold still over a change:
+# every cache built on them (hand's row memo, the minimap) relies on it.
+add_executable(damage_test damage_test.cpp)
+target_link_libraries(damage_test PRIVATE toe::toe)
+add_test(NAME damage COMMAND damage_test)
+
 add_executable(resize_test resize_test.cpp)
 target_link_libraries(resize_test PRIVATE toe::toe)
 add_test(NAME resize COMMAND resize_test)
