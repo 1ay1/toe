@@ -51,9 +51,9 @@ public:
     [[nodiscard]] Rgb resolve(const Color &c, bool is_fg) const noexcept {
         switch (c.index()) {
         case 1: // IndexedColor
-            return table_[std::get_if<IndexedColor>(&c)->index];
+            return table_[c.as<IndexedColor>()->index];
         case 2: // TrueColor
-            return std::get_if<TrueColor>(&c)->rgb;
+            return c.as<TrueColor>()->rgb;
         default: // DefaultColor (0) or valueless
             return is_fg ? fg_ : bg_;
         }

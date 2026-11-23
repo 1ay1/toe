@@ -10,7 +10,8 @@
 #define TOE_TERM_CELL_HPP
 
 #include <cstdint>
-#include <variant>
+#include <optional>
+#include <type_traits>
 
 #include "toe/core/types.hpp"
 
@@ -34,18 +35,47 @@ struct TrueColor {
     constexpr auto operator<=>(const TrueColor &) const = default;
 };
 
-using Color = std::variant<DefaultColor, IndexedColor, TrueColor>;
+// One of the three, in FOUR bytes on every platform: which (index()) and its
+// value. This was a std::variant<DefaultColor, IndexedColor, TrueColor>, and
+// a variant's index is a library choice -- one byte on libstdc++, four on
+// libc++ -- so on the Mac every Color was 8 bytes, every Pen 28 and every
+// Cell 36 instead of 24: half again the memory for the same scrollback, and
+// a rewrap / render / copy that much slower. Plain bytes, every one always
+// written (a value, never padding), so equality is one compare and the
+// layout is the same everywhere; `static_assert(sizeof(Cell) == 24)` below.
+//
+//   c.index()           0 default, 1 indexed, 2 true colour (as the variant)
+//   c.is<TrueColor>()   which one
+//   c.as<TrueColor>()   the value, or nullopt
+class Color {
+public:
+    constexpr Color() noexcept = default;
+    constexpr Color(DefaultColor) noexcept {}
+    constexpr Color(IndexedColor c) noexcept : kind_{1}, a_{c.index} {}
+    constexpr Color(TrueColor c) noexcept : kind_{2}, a_{c.rgb.r}, b_{c.rgb.g}, c_{c.rgb.b} {}
 
-// Color equality without std::variant's dispatch table: libc++ compares two
-// variants through an indirect call per pair, and the screen compares pens
-// per cell (blank checks, BCE, run merging) -- under a `yes` flood that one
-// indirect call was a fifth of all the time spent. Same result, inlined.
-[[nodiscard]] constexpr bool same_color(const Color &a, const Color &b) noexcept {
-    if (a.index() != b.index()) return false;
-    if (const auto *x = std::get_if<IndexedColor>(&a)) return x->index == std::get_if<IndexedColor>(&b)->index;
-    if (const auto *x = std::get_if<TrueColor>(&a)) return x->rgb == std::get_if<TrueColor>(&b)->rgb;
-    return true;   // both default
-}
+    [[nodiscard]] constexpr std::size_t index() const noexcept { return kind_; }
+    template <class T> [[nodiscard]] constexpr bool is() const noexcept { return kind_ == kind_of<T>(); }
+    template <class T> [[nodiscard]] constexpr std::optional<T> as() const noexcept {
+        if (!is<T>()) return std::nullopt;
+        if constexpr (std::is_same_v<T, IndexedColor>) return IndexedColor{a_};
+        else if constexpr (std::is_same_v<T, TrueColor>) return TrueColor{Rgb{a_, b_, c_}};
+        else return DefaultColor{};
+    }
+    // kind first, then the value: the order std::variant had
+    constexpr auto operator<=>(const Color &) const = default;
+
+private:
+    template <class T> static constexpr std::uint8_t kind_of() noexcept {
+        static_assert(std::is_same_v<T, DefaultColor> || std::is_same_v<T, IndexedColor> || std::is_same_v<T, TrueColor>,
+                      "a Color is a DefaultColor, an IndexedColor or a TrueColor");
+        return std::is_same_v<T, DefaultColor> ? 0 : std::is_same_v<T, IndexedColor> ? 1 : 2;
+    }
+    std::uint8_t kind_ = 0, a_ = 0, b_ = 0, c_ = 0;
+};
+static_assert(sizeof(Color) == 4 && std::is_trivially_copyable_v<Color>);
+
+[[nodiscard]] constexpr bool same_color(const Color &a, const Color &b) noexcept { return a == b; }
 
 // --- text style flags ------------------------------------------------------
 // A scoped-enum bitset. Operator overloads keep the bit-twiddling type-safe:
@@ -109,6 +139,12 @@ struct Pen {
         return attr == o.attr && underline == o.underline && same_color(fg, o.fg) && same_color(bg, o.bg) &&
                same_color(underline_color, o.underline_color);
     }
+    /// == Pen{}, without building one: the blank test runs on every trailing
+    /// cell a reflow trims.
+    [[nodiscard]] constexpr bool is_default() const noexcept {
+        return attr == Attr::None && underline == Underline::None && fg.index() == 0 && bg.index() == 0 &&
+               underline_color.index() == 0;
+    }
 };
 
 // --- a grid cell -----------------------------------------------------------
@@ -127,11 +163,15 @@ struct Cell {
     std::uint16_t link{0};
 
     [[nodiscard]] constexpr bool blank() const noexcept {
-        return cp == U' ' && marks == 0 && pen == Pen{};
+        return cp == U' ' && marks == 0 && pen.is_default();
     }
     [[nodiscard]] constexpr bool spacer() const noexcept { return width == 0; }
     constexpr auto operator<=>(const Cell &) const = default;
 };
+// The scrollback is an array of these (10k lines x 200 columns = 2M cells):
+// every byte here is 2 MB there. Same size on every platform.
+static_assert(sizeof(Cell) == 24, "toe::term::Cell grew");
+static_assert(std::is_trivially_copyable_v<Cell>);
 
 } // namespace toe::term
 

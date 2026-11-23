@@ -2065,12 +2065,12 @@ std::string Screen::current_sgr() const {
 
     const auto add_color = [&](const Color &c, int base) {
         // base 30 = fg (38 extended), 40 = bg (48 extended).
-        if (const auto *idx = std::get_if<IndexedColor>(&c)) {
+        if (const auto idx = c.as<IndexedColor>()) {
             const int i = idx->index;
             if (i < 8) add(std::to_string(base + i));
             else if (i < 16) add(std::to_string(base + 60 + (i - 8))); // bright
             else { add(std::to_string(base + 8)); add("5"); add(std::to_string(i)); }
-        } else if (const auto *tc = std::get_if<TrueColor>(&c)) {
+        } else if (const auto tc = c.as<TrueColor>()) {
             add(std::to_string(base + 8)); add("2");
             add(std::to_string(tc->rgb.r));
             add(std::to_string(tc->rgb.g));

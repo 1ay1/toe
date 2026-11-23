@@ -113,9 +113,9 @@ int main() {
         term::Screen s{Extent{4, 1}};
         feed(s, "\x1b[38;2;10;20;30mZ");
         const auto &cell = s.row(Row{0})[0];
-        bool ok = std::holds_alternative<term::TrueColor>(cell.pen.fg);
+        bool ok = cell.pen.fg.is<term::TrueColor>();
         if (ok) {
-            auto tc = std::get<term::TrueColor>(cell.pen.fg);
+            auto tc = cell.pen.fg.as<term::TrueColor>().value();
             ok = tc.rgb == Rgb{10, 20, 30};
         }
         expect(ok && cell.cp == U'Z', "SGR truecolor fg");
@@ -127,8 +127,8 @@ int main() {
         feed(s, "\x1b[1;31mR");
         const auto &cell = s.row(Row{0})[0];
         bool bold = has(cell.pen.attr, term::Attr::Bold);
-        bool red = std::holds_alternative<term::IndexedColor>(cell.pen.fg) &&
-                   std::get<term::IndexedColor>(cell.pen.fg).index == 1;
+        bool red = cell.pen.fg.is<term::IndexedColor>() &&
+                   cell.pen.fg.as<term::IndexedColor>().value().index == 1;
         expect(bold && red, "SGR bold + indexed fg");
     }
 
@@ -235,7 +235,7 @@ int main() {
         feed(s, "\x1b[1;1H\x1b[0m\x1b" "8Z");  // home, reset, DECRC, print Z
         expect(glyph_at(s, 2, 3) == U'Z', "DECRC restores cursor position");
         const auto &cell = s.row(Row{2})[3];
-        expect(std::holds_alternative<term::IndexedColor>(cell.pen.fg), "DECRC restores pen");
+        expect(cell.pen.fg.is<term::IndexedColor>(), "DECRC restores pen");
     }
 
     // DECTCEM: CSI ?25 l hides the cursor, h shows it.
@@ -533,7 +533,7 @@ int main() {
     // not the default. This is how htop's meter bars / TUI colour fills work.
     {
         auto bg_idx = [](const term::Cell &c) -> int {
-            if (auto *ic = std::get_if<term::IndexedColor>(&c.pen.bg)) return ic->index;
+            if (auto ic = c.pen.bg.as<term::IndexedColor>()) return ic->index;
             return -1; // default or truecolor
         };
         // ECH: set bg to index 4, erase 5 chars, they must carry bg=4.
@@ -579,7 +579,7 @@ int main() {
             for (std::int32_t r = 0; r < 24; ++r) {
                 auto row = s.row(Row{r});
                 for (std::int32_t c = 0; c < 80; ++c)
-                    if (!std::holds_alternative<term::DefaultColor>(row[c].pen.bg)) ++n;
+                    if (!row[c].pen.bg.is<term::DefaultColor>()) ++n;
             }
             return n;
         };
@@ -678,7 +678,7 @@ int main() {
             feed(s, "\x1b[38:2:10:20:30mZ");
             auto &cell = s.row(Row{0})[0];
             bool tc = false;
-            if (auto *t = std::get_if<term::TrueColor>(&cell.pen.fg))
+            if (auto t = cell.pen.fg.as<term::TrueColor>())
                 tc = t->rgb == Rgb{10, 20, 30};
             expect(tc && cell.cp == U'Z', "38:2:r:g:b colon truecolor parses");
         }
@@ -688,13 +688,13 @@ int main() {
             feed(s, "\x1b[4;58;2;200;50;50mA\x1b[59mB");
             auto &a = s.row(Row{0})[0];
             bool uc = false;
-            if (auto *t = std::get_if<term::TrueColor>(&a.pen.underline_color))
+            if (auto t = a.pen.underline_color.as<term::TrueColor>())
                 uc = t->rgb == Rgb{200, 50, 50};
             expect(uc, "SGR 58;2;r;g;b sets a distinct underline colour");
-            expect(std::holds_alternative<term::DefaultColor>(a.pen.fg),
+            expect(a.pen.fg.is<term::DefaultColor>(),
                    "58 does not touch the fg colour");
             auto &b = s.row(Row{0})[1];
-            expect(std::holds_alternative<term::DefaultColor>(b.pen.underline_color),
+            expect(b.pen.underline_color.is<term::DefaultColor>(),
                    "SGR 59 resets the underline colour to default");
         }
     }
@@ -908,7 +908,7 @@ int main() {
         auto row = s.row(Row{0});
         expect(row[0].cp == 0x10EEEE, "placeholder char (U+10EEEE) stored in the cell");
         bool id_ok = false;
-        if (auto *tc = std::get_if<term::TrueColor>(&row[0].pen.fg))
+        if (auto tc = row[0].pen.fg.as<term::TrueColor>())
             id_ok = tc->rgb == Rgb{0, 0, 1};
         expect(id_ok, "image id encoded in the placeholder cell's fg colour");
     }
