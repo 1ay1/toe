@@ -1219,6 +1219,34 @@ int main() {
         expect(s.preedit().empty(), "empty set_preedit clears the composition");
     }
 
+    {   // a coloured erase (BCE) leaves the row FULL: a later default erase clears it
+        term::Model m{term::Config{}, Extent{20, 5}};
+        (void)term::feed_output(m, "\x1b[41m\x1b[2J\x1b[0m\x1b[2J");
+        bool clean = true;
+        for (int r = 0; r < 5; ++r)
+            for (std::size_t c = 0; c < 20; ++c) clean = clean && m.screen.row(Row{r})[c].pen.bg.is<term::DefaultColor>();
+        expect(clean, "a red ED 2 then a default ED 2 leaves no red behind");
+    }
+    {   // region scrolls move only each row's used prefix: the content is still exact
+        std::string s = "\x1b[2;5r\x1b[5;1H";
+        for (int i = 0; i < 9; ++i) s += (i % 2 ? "long line " + std::to_string(i) : std::string{"y"}) + "\r\n";
+        s += "\x1b[2;1H\x1b[L\x1b[3;1H\x1b[M\x1b[44m\x1b[4;1H\x1b[L\x1b[0m";   // IL, DL, and a coloured IL
+        const auto screen_of = [](const std::string& bytes) {
+            term::Model m{term::Config{}, Extent{12, 6}};
+            (void)term::feed_output(m, bytes);
+            std::string t;
+            for (int r = 0; r < 6; ++r)
+                for (const auto& c : m.screen.row(Row{r}))
+                    t += (c.cp < 128 ? static_cast<char>(c.cp) : '?'), t += c.pen.bg.is<term::DefaultColor>() ? ' ' : 'B';
+            return t;
+        };
+        // reference: every row written full width (and erased) first, so no row starts sparse
+        std::string pre;
+        for (int r = 0; r < 6; ++r) pre += "\x1b[" + std::to_string(r + 1) + ";1H" + std::string(12, 'x');
+        expect(screen_of(s) == screen_of(pre + "\x1b[2J\x1b[H" + s),
+               "region scroll / IL / DL give the same screen from sparse rows as from full ones");
+    }
+
     if (failures == 0) {
         std::printf("all screen tests passed\n");
         return 0;

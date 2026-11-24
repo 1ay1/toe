@@ -327,8 +327,29 @@ public:
         if (blank_differs_from_fill()) n = static_cast<std::size_t>(cols_);
         if (n > static_cast<std::size_t>(cols_)) n = static_cast<std::size_t>(cols_);
         std::memcpy(dst, blank_line_.data(), n * sizeof(Cell));
-        used_[slot] = 0;
+        // The invariant every row operation keeps: cells past used_ ARE the
+        // fill. A blank that differs from the fill (BCE: an erase with a
+        // background colour) just wrote the whole width, so the row is full
+        // -- recording 0 here left the colour behind on the next default
+        // erase, which then cleared nothing (`clear` after a coloured app).
+        used_[slot] = blank_differs_from_fill() ? static_cast<std::size_t>(cols_) : 0;
         wrapped_[slot] = false;
+    }
+
+    // Copy visible row `src` over visible row `dst`: cells, wrap flag and
+    // used. Only the cells that can differ move -- [0, max(used src, used
+    // dst)), since past its used each row is the fill -- so a region scroll
+    // of sparse rows (`yes` in a tmux pane) copies a few cells per row
+    // instead of the full width.
+    void copy_view_row(std::int32_t dst, std::int32_t src) noexcept {
+        const std::size_t vb = view_base();
+        const std::size_t sd = slot_of(vb + static_cast<std::size_t>(dst));
+        const std::size_t ss = slot_of(vb + static_cast<std::size_t>(src));
+        const std::size_t n = std::min(std::max(used_[sd], used_[ss]), static_cast<std::size_t>(cols_));
+        std::memcpy(abs_row(vb + static_cast<std::size_t>(dst)), abs_row(vb + static_cast<std::size_t>(src)),
+                    n * sizeof(Cell));
+        used_[sd] = used_[ss];
+        wrapped_[sd] = wrapped_[ss];
     }
 
     // Record that visible row `r` has content out to (exclusive) column `endcol`,
@@ -478,13 +499,17 @@ private:
         // Left-rotate by k using cycle leaders: element i receives element
         // (i+k) mod span. gcd(span,k) cycles cover all positions; each element
         // is moved exactly once. Track wrapped/used alongside the cell bytes.
+        // Only the prefix that can differ moves: past its used_ every row is
+        // the fill, so row i receiving row j copies max(used i, used j)
+        // cells -- a pane of short lines rotates a few cells per row, not
+        // the full width (`yes` in a tmux pane was 0.5 MB/s).
         const std::int32_t g = gcd_i32(span, k);
         for (std::int32_t start = 0; start < g; ++start) {
             const std::int32_t s0 = top + start;
             const std::size_t slot0 = slot_of(vbase + static_cast<std::size_t>(s0));
-            std::memcpy(tmp, view_row(s0), rowbytes);
             const bool w0 = wrapped_[slot0];
             const std::size_t u0 = used_[slot0];
+            std::memcpy(tmp, view_row(s0), std::min(u0, static_cast<std::size_t>(cols_)) * sizeof(Cell));
             std::int32_t i = start;
             for (;;) {
                 const std::int32_t j = (i + k) % span;
@@ -493,17 +518,21 @@ private:
                 const Cell *sj = view_row(top + j);
                 const std::size_t sloti = slot_of(vbase + static_cast<std::size_t>(top + i));
                 const std::size_t slotj = slot_of(vbase + static_cast<std::size_t>(top + j));
-                std::memcpy(di, sj, rowbytes);
+                std::memcpy(di, sj, std::min(std::max(used_[sloti], used_[slotj]), static_cast<std::size_t>(cols_)) * sizeof(Cell));
                 wrapped_[sloti] = wrapped_[slotj];
                 used_[sloti] = used_[slotj];
                 i = j;
             }
             Cell *dlast = view_row(top + i);
             const std::size_t slotlast = slot_of(vbase + static_cast<std::size_t>(top + i));
-            std::memcpy(dlast, tmp, rowbytes);
+            const std::size_t ul = std::min(u0, static_cast<std::size_t>(cols_));
+            const std::size_t old = std::min(used_[slotlast], static_cast<std::size_t>(cols_));
+            std::memcpy(dlast, tmp, ul * sizeof(Cell));
+            if (old > ul) std::fill(dlast + ul, dlast + old, fill_);   // what was past u0 in row 0: the fill
             wrapped_[slotlast] = w0;
             used_[slotlast] = u0;
         }
+        (void)rowbytes;
     }
 
     static std::int32_t gcd_i32(std::int32_t a, std::int32_t b) noexcept {

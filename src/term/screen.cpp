@@ -1098,16 +1098,11 @@ void Screen::scroll_up(std::int32_t n) {
     // region by cell copy. No scrollback (DEC: only a full-screen scroll feeds
     // scrollback). This is the rare case, so a straightforward copy is fine.
     const Cell blank = blank_cell();
-    for (std::int32_t row = scroll_top_; row <= scroll_bottom_ - n; ++row) {
-        std::memcpy(ring_.view_row(row), ring_.view_row(row + n),
-                    static_cast<std::size_t>(size_.cols) * sizeof(Cell));
-        ring_.mark_view_full(row);
-    }
-    for (std::int32_t row = scroll_bottom_ - n + 1; row <= scroll_bottom_; ++row) {
-        Cell *dst = ring_.view_row(row);
-        for (std::int32_t c = 0; c < size_.cols; ++c) dst[c] = blank;
-        ring_.mark_view_full(row);
-    }
+    // Each row moves its used prefix only, and the vacated rows blank only
+    // theirs (BCE marks them full): a region scroll is O(content), not
+    // O(rows x cols).
+    for (std::int32_t row = scroll_top_; row <= scroll_bottom_ - n; ++row) ring_.copy_view_row(row, row + n);
+    for (std::int32_t row = scroll_bottom_ - n + 1; row <= scroll_bottom_; ++row) ring_.blank_view_row(row, blank);
     stamp_range(scroll_top_, scroll_bottom_);
     touch();
 }
