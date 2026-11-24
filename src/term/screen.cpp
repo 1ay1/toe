@@ -211,6 +211,15 @@ void Screen::reflow(Extent old_size, Extent new_size, std::int64_t keep_from) {
     reflow_cells_.clear();
     reflow_lines_.clear();
     reflow_rows_.clear();
+    // The gather copies at most every cell of history + screen (plus a wide
+    // spacer per row). Reserve it up front: growing by doubling re-copied and
+    // page-faulted ~2x the arena -- 10 of a 13.5 ms reflow at 10k lines on
+    // Windows, whose fresh-page cost is high. The buffer is reused after.
+    {
+        const std::size_t rows_total = ring_.scrollback() + static_cast<std::size_t>(std::max(old_size.rows, 0));
+        reflow_cells_.reserve(rows_total * (static_cast<std::size_t>(std::max(old_size.cols, 0)) + 1));
+        reflow_lines_.reserve(rows_total);
+    }
 
     // Append a physical row's content into reflow_cells_ and return its length,
     // trimming trailing blanks on a HARD (non-wrapped) line.
@@ -279,7 +288,14 @@ void Screen::reflow(Extent old_size, Extent new_size, std::int64_t keep_from) {
             row_at.push_back({static_cast<std::uint32_t>(reflow_lines_.size()),
                               static_cast<std::uint32_t>(reflow_cells_.size()) - line_off});
             const Cell *next = i + 1 < hist ? ring_.abs_row(i + 1) : (old_size.rows > 0 ? ring_.view_row(0) : nullptr);
-            append_trimmed(rowp, old_size.cols, wrapped, next);
+            // Past the row's written high-water every cell is the fill, so a
+            // hard line's trailing-blank scan starts there, not at the last
+            // column (a 10k-line history of short lines scanned ~1M blank
+            // cells, 24-byte compares each, on every width change). Only when
+            // the fill IS blank -- BCE can make it coloured content.
+            const std::int32_t used = ring_.fill_is_blank()
+                                          ? static_cast<std::int32_t>(ring_.used_abs(i)) : old_size.cols;
+            append_trimmed(rowp, wrapped ? old_size.cols : used, wrapped, next);
             have = true;
             if (!wrapped) {
                 const auto end = static_cast<std::uint32_t>(reflow_cells_.size());

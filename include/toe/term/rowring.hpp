@@ -161,6 +161,13 @@ public:
     }
     /// A row written whole by the caller: content out to `used`.
     void set_used_abs(std::size_t abs, std::size_t used) noexcept { used_[slot_of(abs)] = used; }
+    /// How far row `abs` was ever written: every cell past it is the fill.
+    [[nodiscard]] std::size_t used_abs(std::size_t abs) const noexcept {
+        return std::min(used_[slot_of(abs)], static_cast<std::size_t>(cols_));
+    }
+    /// The arena's fill is a plain blank (what a hard line's trailing trim
+    /// removes): then a row past its used_ high-water needs no scan.
+    [[nodiscard]] bool fill_is_blank() const noexcept { return fill_.blank(); }
     [[nodiscard]] std::int32_t cols() const noexcept { return cols_; }
     // Scrollback line count (live rows above the visible grid).
     [[nodiscard]] std::size_t scrollback() const noexcept {
