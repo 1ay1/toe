@@ -35,6 +35,8 @@
 #include <utility>
 #include <vector>
 
+#include "toe/core/target.hpp"
+
 #include "toe/term/cell.hpp"
 
 namespace toe::term {
@@ -307,7 +309,7 @@ public:
         if (used < 16) return;
         const auto *p = reinterpret_cast<const char *>(arena_.data() + slot * static_cast<std::size_t>(cols_));
         const std::size_t n = std::min(used + 1, static_cast<std::size_t>(cols_)) * sizeof(Cell);
-        for (std::size_t off = 0; off < n; off += 128) __builtin_prefetch(p + off, 1, 0);
+        for (std::size_t off = 0; off < n; off += 128) toe::prefetch_for_write(p + off);
     }
 
     // Blank absolute row `abs` (bulk memcpy from a cached blank line).

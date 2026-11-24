@@ -23,22 +23,25 @@
 #ifndef TOE_VT_SIMD_SCAN_HPP
 #define TOE_VT_SIMD_SCAN_HPP
 
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 
+#include "toe/core/target.hpp"
+
 #if defined(TOE_FORCE_SCALAR)
 // Benchmark/debug: force the portable scalar path regardless of arch.
-#elif defined(__aarch64__) || defined(__ARM_NEON)
+#elif TOE_ISA_NEON
 #include <arm_neon.h>
 #define TOE_SIMD_NEON 1
-#elif defined(__AVX2__)
+#elif TOE_ISA_AVX2
 // AVX2 doubles the window to 32 bytes per compare and, unlike SSE2, has a
 // direct unsigned min/max so the range test needs no sign-bias trick. Gated on
-// __AVX2__ so the binary still runs on pre-2015 CPUs when built at the plain
+// the build's ISA so the binary still runs on pre-2015 CPUs when built at the plain
 // x86-64 baseline (see TOE_ARCH in the top-level CMakeLists).
 #include <immintrin.h>
 #define TOE_SIMD_AVX2 1
-#elif defined(__x86_64__) || defined(__SSE2__)
+#elif TOE_ISA_SSE2
 #include <emmintrin.h>
 #define TOE_SIMD_SSE2 1
 #endif
@@ -72,7 +75,7 @@ namespace toe::vt {
         const uint64_t mask =
             vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(vreinterpretq_u16_u8(bad), 4)), 0);
         if (mask != 0) {
-            return i + (static_cast<std::size_t>(__builtin_ctzll(mask)) >> 2);
+            return i + (static_cast<std::size_t>(std::countr_zero(mask)) >> 2);
         }
     }
 #elif defined(TOE_SIMD_AVX2)
@@ -96,7 +99,7 @@ namespace toe::vt {
         const __m256i bad = _mm256_or_si256(lt, gt);
         const std::uint32_t mask = static_cast<std::uint32_t>(_mm256_movemask_epi8(bad));
         if (mask != 0) {
-            return i + static_cast<std::size_t>(__builtin_ctz(mask));
+            return i + static_cast<std::size_t>(std::countr_zero(mask));
         }
     }
     // Fall through to the scalar tail for the final <32 bytes.
@@ -117,7 +120,7 @@ namespace toe::vt {
         const __m128i bad = _mm_or_si128(lt, gt);
         const int mask = _mm_movemask_epi8(bad); // bit k set == byte k is bad
         if (mask != 0) {
-            return i + static_cast<std::size_t>(__builtin_ctz(static_cast<unsigned>(mask)));
+            return i + static_cast<std::size_t>(std::countr_zero(static_cast<unsigned>(mask)));
         }
     }
 #endif
