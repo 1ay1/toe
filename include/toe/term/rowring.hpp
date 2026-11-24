@@ -152,11 +152,26 @@ public:
     /// row it then overwrites. The caller sets used / wrapped per row.
     void reset_with_history(std::int32_t rows, std::int32_t cols, std::size_t scroll, std::size_t history,
                             const Cell &blank) {
-        reset(rows, cols, scroll, blank);
+        // reset()'s arena fill of the visible rows is skipped: every one of
+        // [0, history + rows) is written by the caller. (It filled 10k-line
+        // reflows' worth of rows_ x cols_ cells only to overwrite them.)
+        ++history_seq_;
+        rows_ = rows < 0 ? 0 : rows;
+        cols_ = cols < 0 ? 0 : cols;
+        cap_slots_ = static_cast<std::size_t>(rows_) + scroll;
+        if (cap_slots_ == 0) cap_slots_ = 1;
+        blank_ = blank;
+        fill_ = blank;
+        blank_line_valid_ = false;
+        blank_differs_ = false;
+        arena_.reset(cap_slots_ * static_cast<std::size_t>(cols_), 0, blank_);
+        wrapped_.assign(cap_slots_, false);
+        used_.assign(cap_slots_, 0);
+        head_ = 0;
         if (history > scroll) history = scroll;
-        count_ = static_cast<std::size_t>(rows_) + history;
+        count_ = std::min(static_cast<std::size_t>(rows_) + history, cap_slots_);
         high_water_ = count_;
-        filled_slots_ = std::max(filled_slots_, count_);
+        filled_slots_ = count_;
         arena_.claim(count_ * static_cast<std::size_t>(cols_));
     }
     /// A row written whole by the caller: content out to `used`.
@@ -179,6 +194,10 @@ public:
     // scrollback is otherwise immutable, so a cache over history rows (a
     // minimap, a search index) stays valid while this holds still.
     [[nodiscard]] std::uint64_t history_seq() const noexcept { return history_seq_; }
+    /// A ring rebuilt beside this one (a reflow builds the new grid in a spare
+    /// ring, then swaps): continue THIS ring's sequence past `other`'s, so a
+    /// cache keyed on history_seq never sees an old value again.
+    void continue_history_seq(std::uint64_t other) noexcept { history_seq_ = std::max(history_seq_, other) + 1; }
 
     // Physical slot backing absolute row `abs` (0 = oldest). Ring arithmetic
     // WITHOUT a modulo: head_ and abs are each < cap_slots_, so head_+abs is

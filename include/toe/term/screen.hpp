@@ -374,6 +374,12 @@ public:
         const Cell *c = cell_at_abs(abs_row, 0);
         return c ? std::span<const Cell>{c, static_cast<std::size_t>(size_.cols)} : std::span<const Cell>{};
     }
+    /// Does absolute row `abs_row` soft-wrap into the next (one logical line
+    /// continues)? False out of range. For a host rejoining lines (copy,
+    /// search) and for tests that pin reflow down.
+    [[nodiscard]] bool wrapped_abs(std::int64_t abs_row) const noexcept {
+        return abs_row >= 0 && abs_row < total_rows() && ring_.wrapped_abs(static_cast<std::size_t>(abs_row));
+    }
 
     // The single reduction step: fold one parser Action into the screen. Any
     // effects the action demands (query replies, bell, …) are appended to
@@ -810,16 +816,24 @@ private:
     // no per-line/per-row std::vector, so a resize is O(cells) copies with O(1)
     // allocations (amortised) rather than O(rows) heap traffic.
     struct Span {
-        std::uint32_t off;   // start index into reflow_cells_
+        std::uint32_t off;   // logical lines: start index into reflow_cells_; physical rows: offset WITHIN the line
         std::uint32_t len;   // cell count
         bool wrapped;        // soft-wrap continuation follows (physical rows)
         bool from_live;      // originated in the live grid (logical lines)
         std::uint32_t line = 0;  // source logical-line index (physical rows only)
         bool crop = false;       // a protected prompt row: crop to the new width, never rewrap
+        // logical lines: the cells IN PLACE in the old ring (nullptr: in
+        // reflow_cells_ at `off`). A hard line that is one row -- nearly every
+        // line of a history -- is never copied to the scratch, only painted.
+        const Cell *src = nullptr;
     };
     std::vector<Cell> reflow_cells_{};
     std::vector<Span> reflow_lines_{}; // logical lines
     std::vector<Span> reflow_rows_{};  // rewrapped physical rows
+    // The new grid is painted HERE (reading the old ring in place), then the
+    // two swap. Kept across resizes so its pages are warm: a drag or a zoom
+    // storm never page-faults a fresh multi-MB arena per step.
+    RowRing reflow_ring_{};
 
     // Soft-wrap flag helpers for the live grid (indexed by visible row). These
     // route straight to the ring so wrapped flags travel with the row on scroll.

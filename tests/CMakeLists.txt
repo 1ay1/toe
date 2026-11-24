@@ -58,6 +58,13 @@ add_executable(resize_test resize_test.cpp)
 target_link_libraries(resize_test PRIVATE toe::toe)
 add_test(NAME resize COMMAND resize_test)
 
+# A resize is a pure function: thousands of random screens x random resizes,
+# every observable bit folded into one digest checked against a golden from
+# the reference reflow. Speed work on reflow must leave it unchanged.
+add_executable(reflow_oracle_test reflow_oracle_test.cpp)
+target_link_libraries(reflow_oracle_test PRIVATE toe::toe)
+add_test(NAME reflow_oracle COMMAND reflow_oracle_test)
+
 add_executable(tea_test tea_test.cpp)
 target_link_libraries(tea_test PRIVATE toe::toe)
 add_test(NAME tea COMMAND tea_test)
