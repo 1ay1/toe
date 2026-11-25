@@ -94,7 +94,8 @@ property of the library, not of the tests.
 | value types | `core/types.hpp` | `Coord<Tag>` phantom newtypes — a Row cannot be passed as a Col; `Result<T>` = `expected<T, Error>` |
 | effects | `core/tea.hpp` | the closed `Cmd` / `Msg` sum types |
 | parser | `vt/parser.hpp` | Williams DEC state machine → typed actions; `PrintRun` batches ASCII; `simd_scan.hpp` vectorizes the scan for the next control byte |
-| grid + history | `term/rowring.hpp` | **one** arena shared by viewport and scrollback: a scroll is pointer arithmetic plus blanking one row, never a per-line memcpy |
+| grid | `term/rowring.hpp` | **one** arena for the viewport and the newest history rows: a scroll is pointer arithmetic plus blanking one row, never a per-line memcpy |
+| history | `term/linelog.hpp` | scrollback as **logical lines**, rows a view at the current width: a resize never re-wraps history, so it costs O(screen) at any scrollback size; rows join it zero-copy (the ring's arena is frozen in place) |
 | screen | `term/screen.hpp` | the reduction target — modes, margins, tabs, selection, search, reflow |
 | colour | `term/palette.hpp` | the xterm 256 table and `Color` → `Rgb` resolution |
 | reducer | `term/update.hpp` | `feed_output` — the public entry point |
@@ -108,7 +109,8 @@ from a generated Unicode Character Database table (not locale-dependent libc
 `wcwidth`), full SGR (256 + truecolour, italic/strike/underline styles,
 coloured underlines), the alternate screen, origin/autowrap/insert
 modes, bracketed paste, focus reporting, all four mouse encodings, soft-wrap
-reflow on resize (scrollback included), scroll regions with left/right margins,
+reflow on resize (scrollback included, in O(screen): history is held as logical
+lines and never re-wrapped), scroll regions with left/right margins,
 synchronized output (DEC 2026), OSC 8 hyperlinks, OSC 7 cwd, OSC 133 shell
 integration, OSC 10/11/12 + 4/104 dynamic colours, DEC line attributes
 (double-width/height, DECALN), tab stops, insert/delete/erase/repeat, and the

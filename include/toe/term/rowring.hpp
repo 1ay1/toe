@@ -137,6 +137,7 @@ public:
                      static_cast<std::size_t>(rows_) * static_cast<std::size_t>(cols_), blank_);
         filled_slots_ = std::min(static_cast<std::size_t>(rows_), cap_slots_);
         wrapped_.assign(cap_slots_, false);
+        wide_.assign(cap_slots_, 0);
         used_.assign(cap_slots_, 0); // freshly-filled arena: every row all-blank
         head_ = 0;
         high_water_ = static_cast<std::size_t>(rows_); // reset exposes rows_ slots
@@ -166,6 +167,7 @@ public:
         blank_differs_ = false;
         arena_.reset(cap_slots_ * static_cast<std::size_t>(cols_), 0, blank_);
         wrapped_.assign(cap_slots_, false);
+        wide_.assign(cap_slots_, 1);   // painted rows: unknown, assume wide
         used_.assign(cap_slots_, 0);
         head_ = 0;
         if (history > scroll) history = scroll;
@@ -198,6 +200,18 @@ public:
     /// ring, then swaps): continue THIS ring's sequence past `other`'s, so a
     /// cache keyed on history_seq never sees an old value again.
     void continue_history_seq(std::uint64_t other) noexcept { history_seq_ = std::max(history_seq_, other) + 1; }
+    /// The arena (slot-major, `cols()` cells a slot) and its slot count: what
+    /// a LineLog needs to reference rows in place once it is handed over.
+    [[nodiscard]] const Cell *arena_data() const noexcept { return arena_.data(); }
+    [[nodiscard]] std::size_t cap_slots() const noexcept { return cap_slots_; }
+    /// Hand the arena over (frozen, to a LineLog); the ring must be reset
+    /// before it is used again.
+    [[nodiscard]] CellArena take_storage() noexcept {
+        CellArena a;
+        a.swap(arena_);
+        filled_slots_ = 0;
+        return a;
+    }
 
     // Physical slot backing absolute row `abs` (0 = oldest). Ring arithmetic
     // WITHOUT a modulo: head_ and abs are each < cap_slots_, so head_+abs is
@@ -232,6 +246,10 @@ public:
         return wrapped_[slot_of(abs)];
     }
     void set_wrapped_abs(std::size_t abs, bool w) noexcept { wrapped_[slot_of(abs)] = w; }
+    /// May row `abs` hold a double-width glyph? (False is a promise.)
+    [[nodiscard]] bool wide_abs(std::size_t abs) const noexcept { return wide_[slot_of(abs)] != 0; }
+    void mark_view_wide(std::int32_t r) noexcept { wide_[slot_of(view_base() + static_cast<std::size_t>(r))] = 1; }
+    void set_view_wide(std::int32_t r, bool w) noexcept { wide_[slot_of(view_base() + static_cast<std::size_t>(r))] = w; }
 
     // View-relative wrapped accessors (0 = top of visible grid).
     [[nodiscard]] bool view_wrapped(std::int32_t r) const noexcept {
@@ -307,6 +325,7 @@ public:
             if (slot >= high_water_ && !blank_differs_from_fill()) {
                 high_water_ = slot + 1;
                 wrapped_[slot] = false; // arena is already blank here
+                wide_[slot] = 0;
             } else {
                 blank_row(newbot);
             }
@@ -360,6 +379,7 @@ public:
         // erase, which then cleared nothing (`clear` after a coloured app).
         used_[slot] = blank_differs_from_fill() ? static_cast<std::size_t>(cols_) : 0;
         wrapped_[slot] = false;
+        wide_[slot] = 0;
     }
 
     // Copy visible row `src` over visible row `dst`: cells, wrap flag and
@@ -376,6 +396,7 @@ public:
                     n * sizeof(Cell));
         used_[sd] = used_[ss];
         wrapped_[sd] = wrapped_[ss];
+        wide_[sd] = wide_[ss];
     }
 
     // Record that visible row `r` has content out to (exclusive) column `endcol`,
@@ -471,6 +492,7 @@ public:
                      std::min(count_, cap_slots_) * static_cast<std::size_t>(cols_), blank_);
         filled_slots_ = std::min(count_, cap_slots_);
         wrapped_.assign(cap_slots_, false);
+        wide_.assign(cap_slots_, 1);
         used_.assign(cap_slots_, 0);
         blank_line_.clear();
         head_ = 0;
@@ -534,6 +556,7 @@ private:
             const std::int32_t s0 = top + start;
             const std::size_t slot0 = slot_of(vbase + static_cast<std::size_t>(s0));
             const bool w0 = wrapped_[slot0];
+            const std::uint8_t wd0 = wide_[slot0];
             const std::size_t u0 = used_[slot0];
             std::memcpy(tmp, view_row(s0), std::min(u0, static_cast<std::size_t>(cols_)) * sizeof(Cell));
             std::int32_t i = start;
@@ -546,6 +569,7 @@ private:
                 const std::size_t slotj = slot_of(vbase + static_cast<std::size_t>(top + j));
                 std::memcpy(di, sj, std::min(std::max(used_[sloti], used_[slotj]), static_cast<std::size_t>(cols_)) * sizeof(Cell));
                 wrapped_[sloti] = wrapped_[slotj];
+                wide_[sloti] = wide_[slotj];
                 used_[sloti] = used_[slotj];
                 i = j;
             }
@@ -556,6 +580,7 @@ private:
             std::memcpy(dlast, tmp, ul * sizeof(Cell));
             if (old > ul) std::fill(dlast + ul, dlast + old, fill_);   // what was past u0 in row 0: the fill
             wrapped_[slotlast] = w0;
+            wide_[slotlast] = wd0;
             used_[slotlast] = u0;
         }
         (void)rowbytes;
@@ -595,6 +620,7 @@ private:
     CellArena arena_{};                // cap_slots_ * cols_ cells (the ring); [0, filled_slots_) initialised
     std::size_t filled_slots_ = 0;     // slots whose cells are valid (>= every slot ever live)
     std::vector<bool> wrapped_{};      // per-slot soft-wrap flag
+    std::vector<std::uint8_t> wide_{};         // per-slot: may hold a width-2 glyph (set by the only writer of one)
     std::vector<std::size_t> used_{};  // per-slot high-water column (dirty prefix)
     std::vector<Cell> blank_line_{};   // cached blank row for fast blanking
     std::vector<Cell> scratch_{};      // reusable scratch row for rotate_region

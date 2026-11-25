@@ -65,6 +65,12 @@ add_executable(reflow_oracle_test reflow_oracle_test.cpp)
 target_link_libraries(reflow_oracle_test PRIVATE toe::toe)
 add_test(NAME reflow_oracle COMMAND reflow_oracle_test)
 
+# LineLog's row view against a naive re-wrap: owned and in-place lines, every
+# width, eviction, drop_back, extend/take of the open line.
+add_executable(linelog_test linelog_test.cpp)
+target_link_libraries(linelog_test PRIVATE toe::toe)
+add_test(NAME linelog COMMAND linelog_test)
+
 add_executable(tea_test tea_test.cpp)
 target_link_libraries(tea_test PRIVATE toe::toe)
 add_test(NAME tea COMMAND tea_test)

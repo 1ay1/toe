@@ -24,7 +24,7 @@
 #include "toe/term/graphics.hpp"
 #include "toe/term/cell.hpp"
 #include "toe/term/palette.hpp"
-#include "toe/term/rowring.hpp"
+#include "toe/term/linelog.hpp"
 #include "toe/vt/parser.hpp"
 
 namespace toe::term {
@@ -65,6 +65,10 @@ public:
     // set it once at startup rather than per frame.
     void set_max_history(std::size_t lines);
     [[nodiscard]] std::size_t max_history() const noexcept { return max_history_; }
+    /// Tests: take history zero-copy (freeze the row ring's arena) on EVERY
+    /// resize, not only when much of the ring is history, so the in-place
+    /// path is exercised by every case.
+    void set_freeze_always(bool on) noexcept { freeze_always_ = on; }
 
     [[nodiscard]] Extent size() const noexcept { return size_; }
     [[nodiscard]] Pos cursor() const noexcept { return cursor_; }
@@ -77,7 +81,7 @@ public:
     // --- scrollback --------------------------------------------------------
     // How many history rows exist above the live view.
     [[nodiscard]] std::int32_t history_rows() const noexcept {
-        return static_cast<std::int32_t>(ring_.scrollback());
+        return static_cast<std::int32_t>(hist_rows());
     }
     // Current scroll position: 0 = live (bottom), up to history_rows().
     [[nodiscard]] std::int32_t scroll_offset() const noexcept { return scroll_offset_; }
@@ -377,9 +381,7 @@ public:
     /// Does absolute row `abs_row` soft-wrap into the next (one logical line
     /// continues)? False out of range. For a host rejoining lines (copy,
     /// search) and for tests that pin reflow down.
-    [[nodiscard]] bool wrapped_abs(std::int64_t abs_row) const noexcept {
-        return abs_row >= 0 && abs_row < total_rows() && ring_.wrapped_abs(static_cast<std::size_t>(abs_row));
-    }
+    [[nodiscard]] bool wrapped_abs(std::int64_t abs_row) const noexcept;
 
     // The single reduction step: fold one parser Action into the screen. Any
     // effects the action demands (query replies, bell, …) are appended to
@@ -442,13 +444,15 @@ public:
     // screens. Together with row_version() for the live rows it covers every
     // cell: a cache keyed on both is never stale (tests/damage_test.cpp).
     [[nodiscard]] std::uint64_t history_epoch() const noexcept {
-        return ring_.history_seq() * 2 + (on_alt_ ? 1 : 0);
+        return (ring_.history_seq() + (on_alt_ ? 0 : log_.seq()) * 0x100000000ull) * 2 + (on_alt_ ? 1 : 0);
     }
 
 private:
     // --- bounds-checked cell access (the only raw indexing in the class) ---
     [[nodiscard]] Cell &at(Row r, Col c);
     [[nodiscard]] const Cell &at(Row r, Col c) const;
+    // Copy live cell (sr,sc) to (dr,dc), keeping the row's wide flag honest.
+    void copy_cell(std::int32_t dr, std::int32_t dc, std::int32_t sr, std::int32_t sc);
     [[nodiscard]] std::size_t index(Row r, Col c) const noexcept;
     [[nodiscard]] Cell *cell_ptr(Row r, Col c) noexcept; // ring row pointer for bulk writes
 
@@ -794,6 +798,19 @@ private:
     mutable std::string detected_url_{};
     // Fetch the cell at an absolute row/col (history or live), or nullptr.
     [[nodiscard]] const Cell *cell_at_abs(std::int64_t abs_row, std::int32_t col) const noexcept;
+    // History is TWO parts, oldest first: the log of logical lines (what
+    // scrolled off before the last resize, held width-free: a resize never
+    // touches it) and the ring's own scrollback (rows pushed since, at the
+    // current width). Absolute rows run across both, then the live grid.
+    LineLog log_{};
+    [[nodiscard]] std::size_t log_rows() const noexcept { return on_alt_ ? 0 : static_cast<std::size_t>(log_.rows()); }
+    [[nodiscard]] std::size_t hist_rows() const noexcept { return log_rows() + ring_.scrollback(); }
+    // One history row painted from the log, for pointer-returning reads.
+    // Slot = abs mod (2 x rows): any screenful of consecutive rows (and its
+    // neighbours) is resident at once, so spans a renderer holds stay valid.
+    struct LogRowCache { std::int64_t abs = -1; std::uint64_t seq = 0; std::int32_t cols = 0; bool soft = false; std::vector<Cell> cells; };
+    mutable std::vector<LogRowCache> log_cache_{};
+    [[nodiscard]] const LogRowCache &log_row(std::int64_t abs) const noexcept;
 
     // (scrollback + soft-wrap flags now live in ring_)
     bool any_line_attr_ = false; // fast-skip flag: any non-normal line_attr_?
@@ -826,6 +843,7 @@ private:
         // reflow_cells_ at `off`). A hard line that is one row -- nearly every
         // line of a history -- is never copied to the scratch, only painted.
         const Cell *src = nullptr;
+        bool wide = true;        // logical lines: may hold a width-2 glyph
     };
     std::vector<Cell> reflow_cells_{};
     std::vector<Span> reflow_lines_{}; // logical lines
@@ -834,6 +852,11 @@ private:
     // two swap. Kept across resizes so its pages are warm: a drag or a zoom
     // storm never page-faults a fresh multi-MB arena per step.
     RowRing reflow_ring_{};
+    // Reflow scratch for the log: each re-cut log row's (line id, offset),
+    // and the log ids of the lines a reflow appended.
+    std::vector<std::pair<std::uint64_t, std::uint32_t>> log_map_{};
+    std::vector<std::uint64_t> hist_ids_{};
+    bool freeze_always_ = false;   // tests: zero-copy on every resize (see set_freeze_always)
 
     // Soft-wrap flag helpers for the live grid (indexed by visible row). These
     // route straight to the ring so wrapped flags travel with the row on scroll.

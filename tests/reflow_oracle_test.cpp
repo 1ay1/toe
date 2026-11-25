@@ -22,6 +22,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <random>
 #include <string>
@@ -34,9 +35,10 @@ using namespace toe;
 
 namespace {
 
-// Recorded from the reference reflow (toe 4a78ede, before any of the speed
-// work; 06fd611 reproduces it exactly). See the header comment.
-constexpr std::uint64_t kGolden = 0x88129721eaa71eaaull;
+// Recorded from the reference grid reflow (toe 4a78ede, before any of the
+// speed work). The logical-line history (LineLog) reproduces it exactly,
+// with history copied and with it taken zero-copy. See the header comment.
+constexpr std::uint64_t kGolden = 0x992812b5960c06f5ull;
 
 struct Fnv {
     std::uint64_t h = 0xcbf29ce484222325ull;
@@ -83,6 +85,9 @@ void digest(Fnv &f, term::Screen &s, std::int64_t old_total) {
         f.byte(s.wrapped_abs(a) ? 1 : 0);
     }
     for (std::int64_t a = 0; a < old_total + 2; ++a) f.i64(s.remap_abs_after_resize(a));
+    // the viewport exactly as a renderer reads it (scrolled into history or live)
+    for (std::int32_t r = 0; r < sz.rows; ++r)
+        for (const auto &c : s.row(Row{r})) f.cell(c);
 }
 
 /// A random screen: `lines` lines of random shape at width `cols`.
@@ -111,15 +116,42 @@ std::string random_history(std::mt19937_64 &rng, int lines, int maxlen) {
 
 }  // namespace
 
-int main(int argc, char **argv) {
-    const bool print = argc > 1 && std::strcmp(argv[1], "--print") == 0;
+static void dump_screen(term::Screen &s, const char *tag) {
+    std::printf("== %s size %dx%d hist %d off %d cur %d,%d total %lld\n", tag, s.size().cols, s.size().rows, s.history_rows(),
+                s.scroll_offset(), s.cursor().row.get(), s.cursor().col.get(), static_cast<long long>(s.total_rows()));
+    for (std::int64_t a = 0; a < s.total_rows(); ++a) {
+        std::string t;
+        for (const auto &c : s.abs_row_cells(a)) {
+            if (c.width == 0) t += '_';
+            else if (c.width == 2) t += 'W';
+            else t += (c.cp >= 0x20 && c.cp < 0x7f) ? static_cast<char>(c.cp) : '?';
+        }
+        std::printf("%4lld%c|%s|\n", static_cast<long long>(a), s.wrapped_abs(a) ? '+' : ' ', t.c_str());
+    }
+}
+
+namespace {
+struct Opts { bool steps = false, dumping = false, freeze = false; std::uint64_t dump_seed = 0; int dump_step = 0; };
+
+/// Every case once; returns the digest (or exits early when dumping).
+std::uint64_t run(const Opts &o, std::uint64_t &cases, std::uint64_t &resizes) {
     Fnv f;
-    std::uint64_t cases = 0, resizes = 0;
+    // --steps: one line per digest point (seed, step, the step's own digest)
+    // -- diff two builds' output to find the first screen that differs.
+    const auto point = [&](Fnv &g, std::uint64_t seed, int step, auto &&body) {
+        Fnv one;
+        body(one);
+        g.u64(one.h);
+        if (o.steps) std::printf("%llu %d %016llx\n", static_cast<unsigned long long>(seed), step, static_cast<unsigned long long>(one.h));
+    };
     for (std::uint64_t seed = 1; seed <= 600; ++seed) {
         std::mt19937_64 rng(seed * 0x9E3779B97F4A7C15ull);
         std::uniform_int_distribution<int> cols(4, 90), rows(2, 24), cap(0, 3), count(1, 6), coin(0, 9);
         const int c0 = cols(rng), r0 = rows(rng);
         term::Screen s(Extent{c0, r0});
+#ifndef TOE_ORACLE_REF
+        s.set_freeze_always(o.freeze);
+#endif
         // scrollback: unlimited-ish, small (so the cap evicts), or none
         const int cp = cap(rng);
         s.set_max_history(cp == 0 ? 0u : cp == 1 ? 7u : cp == 2 ? 40u : 1000u);
@@ -130,8 +162,14 @@ int main(int argc, char **argv) {
         // sometimes read history
         if (coin(rng) < 3) s.scroll(std::uniform_int_distribution<int>(1, 50)(rng));
         ++cases;
+        if (o.dumping && seed == o.dump_seed && o.dump_step == -1) { dump_screen(s, "before"); std::exit(0); }
+        point(f, seed, -1, [&](Fnv &g) { digest(g, s, s.total_rows()); });   // pushed rows, before any resize
         const int n = count(rng);
         for (int i = 0; i < n; ++i) {
+            if (i > 0 && coin(rng) < 4) {   // output between resizes: rows pushed at the new width
+                feed(s, random_history(rng, std::uniform_int_distribution<int>(1, 30)(rng), s.size().cols * 2));
+                point(f, seed, 100 + i, [&](Fnv &g) { digest(g, s, s.total_rows()); });
+            }
             const Extent to{cols(rng), coin(rng) < 6 ? s.size().rows : rows(rng)};
             const std::int64_t old_total = s.total_rows();
             // a protected prompt: from the cursor's row, or a few rows above it
@@ -140,19 +178,42 @@ int main(int argc, char **argv) {
                 const std::int64_t cur = s.history_rows() + s.cursor().row.get();
                 keep = cur - std::uniform_int_distribution<int>(0, 2)(rng);
             }
+            if (o.dumping && seed == o.dump_seed && o.dump_step == i) dump_screen(s, "pre");
             s.resize(to, keep);
             ++resizes;
-            digest(f, s, old_total);
+            if (o.dumping && seed == o.dump_seed && o.dump_step == i) { dump_screen(s, "post"); std::exit(0); }
+            point(f, seed, i, [&](Fnv &g) { digest(g, s, old_total); });
         }
     }
+    return f.h;
+}
+}  // namespace
+
+int main(int argc, char **argv) {
+    const bool print = argc > 1 && std::strcmp(argv[1], "--print") == 0;
+    Opts o;
+    o.steps = argc > 1 && std::strcmp(argv[1], "--steps") == 0;
+    o.dumping = argc > 3 && std::strcmp(argv[1], "--dump") == 0;
+    o.dump_seed = o.dumping ? std::strtoull(argv[2], nullptr, 10) : 0;
+    o.dump_step = o.dumping ? std::atoi(argv[3]) : 0;
+    o.freeze = std::getenv("TOE_ORACLE_FREEZE") != nullptr;   // for --steps / --dump
+    std::uint64_t cases = 0, resizes = 0;
+    const std::uint64_t h = run(o, cases, resizes);
+    if (o.steps) return 0;
     std::printf("reflow oracle: %llu screens, %llu resizes, digest 0x%016llx\n", static_cast<unsigned long long>(cases),
-                static_cast<unsigned long long>(resizes), static_cast<unsigned long long>(f.h));
+                static_cast<unsigned long long>(resizes), static_cast<unsigned long long>(h));
     if (print) return 0;
-    if (f.h != kGolden) {
-        std::printf("FAIL reflow output changed (golden 0x%016llx). Intended? Re-record with --print.\n",
-                    static_cast<unsigned long long>(kGolden));
+    // ...and again with history taken zero-copy on EVERY resize: the in-place
+    // path must be just as exact
+    std::uint64_t c2 = 0, r2 = 0;
+    Opts fz = o;
+    fz.freeze = true;
+    const std::uint64_t h2 = run(fz, c2, r2);
+    if (h != kGolden || h2 != kGolden) {
+        std::printf("FAIL reflow output changed (golden 0x%016llx; zero-copy every resize: 0x%016llx). Intended? Re-record with --print.\n",
+                    static_cast<unsigned long long>(kGolden), static_cast<unsigned long long>(h2));
         return 1;
     }
-    std::printf("ok   every resize is bit-identical to the reference\n");
+    std::printf("ok   every resize is bit-identical to the reference (copied and zero-copy history)\n");
     return 0;
 }
