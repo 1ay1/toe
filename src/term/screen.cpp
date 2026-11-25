@@ -545,10 +545,12 @@ void Screen::reflow(Extent old_size, Extent new_size, std::int64_t keep_from) {
     }
     const std::int64_t T = static_cast<std::int64_t>(reflow_rows_.size());
     // The live grid is the last `nrows` rows of everything: history rows come
-    // DOWN into it when the grid's lines are short (pull), the grid's top rows
-    // go UP into history when they are long (ovf).
+    // DOWN into it when the grid's lines are short (pull -- unless the pty
+    // repaints the viewport itself: then they stay history and the spare rows
+    // are blank below), the grid's top rows go UP into history when they are
+    // long (ovf).
     const std::int64_t ovf = std::max<std::int64_t>(0, T - nrows);
-    const std::int64_t pull = std::min<std::int64_t>(std::max<std::int64_t>(0, nrows - T), P0);
+    const std::int64_t pull = pull_history_ ? std::min<std::int64_t>(std::max<std::int64_t>(0, nrows - T), P0) : 0;
     const std::int64_t live_first_raw = P0 - pull + ovf;   // history rows before the cap
 
     // Raw (pre-cap) new rows of the lines the row map and the anchor need.

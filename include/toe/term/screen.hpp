@@ -69,6 +69,9 @@ public:
     /// resize, not only when much of the ring is history, so the in-place
     /// path is exercised by every case.
     void set_freeze_always(bool on) noexcept { freeze_always_ = on; }
+    /// Bring history rows down into spare screen rows on a resize (see
+    /// Config::pull_history_on_resize). Off for a pty that repaints the viewport.
+    void set_pull_history_on_resize(bool on) noexcept { pull_history_ = on; }
 
     [[nodiscard]] Extent size() const noexcept { return size_; }
     [[nodiscard]] Pos cursor() const noexcept { return cursor_; }
@@ -857,6 +860,7 @@ private:
     std::vector<std::pair<std::uint64_t, std::uint32_t>> log_map_{};
     std::vector<std::uint64_t> hist_ids_{};
     bool freeze_always_ = false;   // tests: zero-copy on every resize (see set_freeze_always)
+    bool pull_history_ = true;     // see set_pull_history_on_resize
 
     // Soft-wrap flag helpers for the live grid (indexed by visible row). These
     // route straight to the ring so wrapped flags travel with the row on scroll.

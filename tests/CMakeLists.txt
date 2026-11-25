@@ -71,6 +71,12 @@ add_executable(linelog_test linelog_test.cpp)
 target_link_libraries(linelog_test PRIVATE toe::toe)
 add_test(NAME linelog COMMAND linelog_test)
 
+# Nothing in the scrollback is lost on resize, at a host's real sizes (10k
+# scrollback, prompts, thousands of lines, drags, the alternate screen).
+add_executable(history_resize_test history_resize_test.cpp)
+target_link_libraries(history_resize_test PRIVATE toe::toe)
+add_test(NAME history_resize COMMAND history_resize_test)
+
 add_executable(tea_test tea_test.cpp)
 target_link_libraries(tea_test PRIVATE toe::toe)
 add_test(NAME tea COMMAND tea_test)

@@ -47,6 +47,13 @@ struct Config {
     // (zsh, bash). Off for a shell that leaves reflow to the terminal (fish
     // with fish_handle_reflow 0): then the prompt rewraps like any text.
     bool protect_prompt_on_resize = true;
+    // On a resize that leaves the screen room to spare (taller, or wider so
+    // the lines need fewer rows), bring history rows DOWN into it, so the
+    // screen stays full (kitty, foot). Off for a pty that repaints the whole
+    // viewport from its own buffer after every resize (Windows ConPTY): it
+    // paints over whatever was pulled down, and those history lines were
+    // gone -- a window drag lost ~100 lines. Off: history stays history.
+    bool pull_history_on_resize = true;
     // Seed for the DEC 2034 session tokens. The reducer never reads the OS
     // for randomness; a host that exposes 2034 to untrusted programs seeds
     // this from the OS once, when it makes the Model.
@@ -86,6 +93,7 @@ struct Model {
     explicit Model(Config c, Extent grid) : cfg(std::move(c)), screen(grid), sbquery(cfg.entropy) {
         if (cfg.scrollback_lines >= 0)
             screen.set_max_history(static_cast<std::size_t>(cfg.scrollback_lines));
+        screen.set_pull_history_on_resize(cfg.pull_history_on_resize);
         if (!cfg.word_separators.empty())
             screen.set_word_separators_extra(decode_utf8(cfg.word_separators));
         // Seed the live palette so a colour query before any OSC reports the
